@@ -5,7 +5,7 @@ import type { SessionStore } from "./session-store.js";
 import type { HookHandler } from "./hook-handler.js";
 import type { VscodeBridge } from "./vscode-bridge.js";
 import type { Notifier } from "./notifier.js";
-import type { HookEvent } from "./types.js";
+import type { HookEvent, Session } from "./types.js";
 import { normalizeCwd } from "./hook-handler.js";
 
 type Log = { info: (obj: Record<string, unknown>, msg?: string) => void; warn: (obj: Record<string, unknown>, msg?: string) => void; error: (obj: Record<string, unknown>, msg?: string) => void };
@@ -52,42 +52,67 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     res.json(deps.store.list());
   });
 
-  app.get("/sessions/:cwd", (req, res) => {
-    const session = deps.store.get(decodeURIComponent(req.params.cwd!));
+  app.get("/sessions/:session_uuid", (req, res) => {
+    const session = deps.store.get(decodeURIComponent(req.params.session_uuid!));
     if (!session) { res.status(404).end(); return; }
     res.json(session);
   });
 
+  function buildFocusUrl(sessionUuid: string | null): string {
+    const base = "vscode://anthropic.claude-code/open";
+    return sessionUuid ? `${base}?session=${encodeURIComponent(sessionUuid)}` : base;
+  }
+
+  function buildSendUrl(sessionUuid: string | null, prompt: string): string {
+    const parts: string[] = [];
+    if (sessionUuid) parts.push(`session=${encodeURIComponent(sessionUuid)}`);
+    parts.push(`prompt=${encodeURIComponent(prompt)}`);
+    return `vscode://anthropic.claude-code/open?${parts.join("&")}`;
+  }
+
+  // /focus and /send accept session_uuid (primary). For backwards compatibility,
+  // a cwd-only request still works: we pick the most recently active session in that cwd.
+  function resolveSession(body: any): { session: Session | null; key: string; via: "session_uuid" | "cwd" | null } {
+    if (typeof body?.session_uuid === "string" && body.session_uuid) {
+      const s = deps.store.get(body.session_uuid);
+      return { session: s ?? null, key: body.session_uuid, via: "session_uuid" };
+    }
+    if (typeof body?.cwd === "string" && body.cwd) {
+      const cwd = normalizeCwd(body.cwd);
+      const list = deps.store.getByCwd(cwd);
+      return { session: list[0] ?? null, key: cwd, via: "cwd" };
+    }
+    return { session: null, key: "", via: null };
+  }
+
   app.post("/focus", async (req: Request, res: Response) => {
-    const rawCwd = typeof req.body?.cwd === "string" ? req.body.cwd : null;
-    if (!rawCwd) { deps.log?.warn({ route: "/focus" }, "missing cwd"); res.status(400).json({ error: "missing cwd" }); return; }
-    const cwd = normalizeCwd(rawCwd);
-    const session = deps.store.get(cwd);
-    if (!session) { deps.log?.warn({ route: "/focus", cwd, rawCwd }, "session not found"); res.status(404).json({ error: "session not found", cwd }); return; }
+    const { session, key, via } = resolveSession(req.body);
+    if (!via) { deps.log?.warn({ route: "/focus" }, "missing session_uuid or cwd"); res.status(400).json({ error: "missing session_uuid or cwd" }); return; }
+    if (!session) { deps.log?.warn({ route: "/focus", via, key }, "session not found"); res.status(404).json({ error: "session not found", lookup: { via, key } }); return; }
+    const url = buildFocusUrl(session.session_uuid);
     try {
       await deps.bridge.focus(session.session_uuid);
-      deps.log?.info({ route: "/focus", cwd, session_uuid: session.session_uuid, project: session.project_name }, "URI launched");
-      res.status(204).end();
+      deps.log?.info({ route: "/focus", via, key, cwd: session.cwd, session_uuid: session.session_uuid, project: session.project_name, url }, "URI launched");
+      res.status(200).json({ ok: true, url, session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name });
     } catch (err) {
-      deps.log?.error({ route: "/focus", cwd, error: String(err) }, "bridge.focus threw");
-      res.status(500).json({ error: String(err) });
+      deps.log?.error({ route: "/focus", via, key, url, error: String(err) }, "bridge.focus threw");
+      res.status(500).json({ error: String(err), url });
     }
   });
 
   app.post("/send", async (req: Request, res: Response) => {
-    const rawCwd = typeof req.body?.cwd === "string" ? req.body.cwd : null;
     const prompt = typeof req.body?.prompt === "string" ? req.body.prompt : null;
-    if (!rawCwd || !prompt) { deps.log?.warn({ route: "/send", hasCwd: !!rawCwd, hasPrompt: !!prompt }, "missing cwd or prompt"); res.status(400).json({ error: "missing cwd or prompt" }); return; }
-    const cwd = normalizeCwd(rawCwd);
-    const session = deps.store.get(cwd);
-    if (!session) { deps.log?.warn({ route: "/send", cwd, rawCwd }, "session not found"); res.status(404).json({ error: "session not found", cwd }); return; }
+    const { session, key, via } = resolveSession(req.body);
+    if (!via || !prompt) { deps.log?.warn({ route: "/send", hasKey: !!via, hasPrompt: !!prompt }, "missing session_uuid/cwd or prompt"); res.status(400).json({ error: "missing session_uuid or cwd, or missing prompt" }); return; }
+    if (!session) { deps.log?.warn({ route: "/send", via, key }, "session not found"); res.status(404).json({ error: "session not found", lookup: { via, key } }); return; }
+    const url = buildSendUrl(session.session_uuid, prompt);
     try {
       await deps.bridge.send(session.session_uuid, prompt);
-      deps.log?.info({ route: "/send", cwd, session_uuid: session.session_uuid, project: session.project_name, promptLength: prompt.length }, "URI launched (prompt prefilled)");
-      res.status(204).end();
+      deps.log?.info({ route: "/send", via, key, cwd: session.cwd, session_uuid: session.session_uuid, project: session.project_name, promptLength: prompt.length, url }, "URI launched (prompt prefilled)");
+      res.status(200).json({ ok: true, url, session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name });
     } catch (err) {
-      deps.log?.error({ route: "/send", cwd, error: String(err) }, "bridge.send threw");
-      res.status(500).json({ error: String(err) });
+      deps.log?.error({ route: "/send", via, key, url, error: String(err) }, "bridge.send threw");
+      res.status(500).json({ error: String(err), url });
     }
   });
 

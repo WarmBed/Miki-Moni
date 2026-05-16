@@ -120,15 +120,21 @@ export class RelayClient {
     }
   }
 
+  private resolveCmdSession(pt: { session_uuid?: string; cwd?: string }) {
+    if (pt.session_uuid) return this.deps.store.get(pt.session_uuid);
+    if (pt.cwd) return this.deps.store.getByCwd(pt.cwd)[0];
+    return undefined;
+  }
+
   private async dispatchPlaintext(pt: Plaintext, p: PeerSecrets): Promise<void> {
     switch (pt.kind) {
       case "cmd_focus": {
-        const session = this.deps.store.get(pt.cwd);
+        const session = this.resolveCmdSession(pt);
         if (session) await this.deps.bridge.focus(session.session_uuid);
         return;
       }
       case "cmd_send": {
-        const session = this.deps.store.get(pt.cwd);
+        const session = this.resolveCmdSession(pt);
         if (session) await this.deps.bridge.send(session.session_uuid, pt.prompt);
         return;
       }

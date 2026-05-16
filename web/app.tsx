@@ -58,33 +58,34 @@ function fmtTime(ts: number): string {
 
 // ── Card ──────────────────────────────────────────────────────────────────
 
-type ActionResult = { ok: boolean; label: string; ts: number } | null;
+type ActionResult = { ok: boolean; label: string; url?: string; ts: number } | null;
 
 function Card({ s, onFocus, onSend }: {
   s: Session;
-  onFocus: (cwd: string) => Promise<{ ok: boolean; status: number }>;
-  onSend: (cwd: string, prompt: string) => Promise<{ ok: boolean; status: number }>;
+  onFocus: (session_uuid: string) => Promise<{ ok: boolean; status: number; url?: string }>;
+  onSend: (session_uuid: string, prompt: string) => Promise<{ ok: boolean; status: number; url?: string }>;
 }) {
   const [draft, setDraft] = useState("");
   const [focusResult, setFocusResult] = useState<ActionResult>(null);
   const [sendResult, setSendResult] = useState<ActionResult>(null);
+  const sessionUuid = s.session_uuid ?? "";
 
   async function handleFocus() {
     clog("click 叫起視窗", { cwd: s.cwd, session_uuid: s.session_uuid, project_name: s.project_name });
     setFocusResult(null);
-    const r = await onFocus(s.cwd);
-    setFocusResult({ ok: r.ok, label: r.ok ? `已送出 (HTTP ${r.status})` : `失敗 HTTP ${r.status}`, ts: Date.now() });
-    setTimeout(() => setFocusResult(null), 5000);
+    const r = await onFocus(sessionUuid);
+    setFocusResult({ ok: r.ok, label: r.ok ? `daemon OK (HTTP ${r.status})—現在 Alt+Tab 去看 VSCode` : `失敗 HTTP ${r.status}`, url: r.url, ts: Date.now() });
+    setTimeout(() => setFocusResult(null), 30000);
   }
   async function handleSend() {
     const prompt = draft.trim();
     if (!prompt) return;
     clog("click 送出", { cwd: s.cwd, session_uuid: s.session_uuid, project_name: s.project_name, promptPreview: prompt.slice(0, 40), promptLength: prompt.length });
     setSendResult(null);
-    const r = await onSend(s.cwd, prompt);
-    setSendResult({ ok: r.ok, label: r.ok ? `已送出 (HTTP ${r.status})—請看 VSCode panel` : `失敗 HTTP ${r.status}`, ts: Date.now() });
+    const r = await onSend(sessionUuid, prompt);
+    setSendResult({ ok: r.ok, label: r.ok ? `daemon OK (HTTP ${r.status})—現在 Alt+Tab 去看 VSCode 的 Claude panel` : `失敗 HTTP ${r.status}`, url: r.url, ts: Date.now() });
     setDraft("");
-    setTimeout(() => setSendResult(null), 8000);
+    setTimeout(() => setSendResult(null), 60000);
   }
 
   return (
@@ -105,8 +106,15 @@ function Card({ s, onFocus, onSend }: {
         <div class="text-sm text-slate-300 line-clamp-2">{s.last_message_preview}</div>
       )}
       {focusResult && (
-        <div class={`text-xs ${focusResult.ok ? "text-emerald-400" : "text-red-400"}`}>
-          叫起視窗：{focusResult.label}
+        <div class="text-xs">
+          <div class={focusResult.ok ? "text-emerald-400" : "text-red-400"}>叫起視窗：{focusResult.label}</div>
+          {focusResult.url && (
+            <div class="mt-1 text-slate-500 font-mono break-all">
+              URI：<a href={focusResult.url} class="text-indigo-300 hover:underline">{focusResult.url}</a>
+              <button class="ml-2 text-slate-400 hover:text-slate-200" onClick={() => navigator.clipboard?.writeText(focusResult.url!)}>📋 複製</button>
+              <button class="ml-2 text-slate-400 hover:text-slate-200" onClick={() => window.open(focusResult.url!, "_self")}>🔄 瀏覽器再開一次</button>
+            </div>
+          )}
         </div>
       )}
       <div class="flex gap-2 mt-2">
@@ -124,8 +132,15 @@ function Card({ s, onFocus, onSend }: {
         >送出</button>
       </div>
       {sendResult && (
-        <div class={`text-xs ${sendResult.ok ? "text-emerald-400" : "text-red-400"}`}>
-          送 prompt：{sendResult.label}
+        <div class="text-xs">
+          <div class={sendResult.ok ? "text-emerald-400" : "text-red-400"}>送 prompt：{sendResult.label}</div>
+          {sendResult.url && (
+            <div class="mt-1 text-slate-500 font-mono break-all">
+              URI：<a href={sendResult.url} class="text-indigo-300 hover:underline">{sendResult.url}</a>
+              <button class="ml-2 text-slate-400 hover:text-slate-200" onClick={() => navigator.clipboard?.writeText(sendResult.url!)}>📋 複製</button>
+              <button class="ml-2 text-slate-400 hover:text-slate-200" onClick={() => window.open(sendResult.url!, "_self")}>🔄 瀏覽器再開一次</button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -205,7 +220,7 @@ function App() {
           session_uuid: s.session_uuid,
         });
         setSessions((prev) => {
-          const others = prev.filter((x) => x.cwd !== s.cwd);
+          const others = prev.filter((x) => x.session_uuid !== s.session_uuid);
           return [s, ...others].sort((a, b) => b.last_event_at - a.last_event_at);
         });
       } else {
@@ -216,35 +231,39 @@ function App() {
     return () => ws.close();
   }, []);
 
-  async function onFocus(cwd: string): Promise<{ ok: boolean; status: number }> {
-    addLog("info", `POST /focus`, { cwd });
+  async function onFocus(session_uuid: string): Promise<{ ok: boolean; status: number; url?: string }> {
+    addLog("info", `POST /focus`, { session_uuid });
     try {
-      const r = await fetch("/focus", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd }) });
-      const body = r.status === 204 ? null : await r.text().catch(() => null);
-      const ctx = { cwd, status: r.status, body };
-      if (r.ok) addLog("info", `/focus ${r.status}`, ctx);
+      const r = await fetch("/focus", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_uuid }) });
+      let body: any = null;
+      try { body = await r.json(); } catch { /* may be empty */ }
+      const url: string | undefined = body?.url;
+      const ctx = { session_uuid, status: r.status, url, body };
+      if (r.ok) addLog("info", `/focus ${r.status} — daemon 已叫起 URI`, ctx);
       else addLog("error", `/focus 失敗`, ctx);
-      return { ok: r.ok, status: r.status };
+      return { ok: r.ok, status: r.status, url };
     } catch (e) {
-      addLog("error", `/focus throw`, { cwd, error: String(e) });
+      addLog("error", `/focus throw`, { session_uuid, error: String(e) });
       return { ok: false, status: 0 };
     }
   }
-  async function onSend(cwd: string, prompt: string): Promise<{ ok: boolean; status: number }> {
-    addLog("info", `POST /send`, { cwd, promptLength: prompt.length, promptPreview: prompt.slice(0, 40) });
+  async function onSend(session_uuid: string, prompt: string): Promise<{ ok: boolean; status: number; url?: string }> {
+    addLog("info", `POST /send`, { session_uuid, promptLength: prompt.length, promptPreview: prompt.slice(0, 40) });
     try {
       const r = await fetch("/send", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ cwd, prompt }),
+        body: JSON.stringify({ session_uuid, prompt }),
       });
-      const body = r.status === 204 ? null : await r.text().catch(() => null);
-      const ctx = { cwd, status: r.status, body };
-      if (r.ok) addLog("info", `/send ${r.status} — VSCode 應該叫起該 session 且 prompt 已預填`, ctx);
+      let body: any = null;
+      try { body = await r.json(); } catch { /* may be empty */ }
+      const url: string | undefined = body?.url;
+      const ctx = { session_uuid, status: r.status, url, body };
+      if (r.ok) addLog("info", `/send ${r.status} — daemon 已叫起 URI（VSCode 應該 raise 到前面 + prompt 預填）`, ctx);
       else addLog("error", `/send 失敗`, ctx);
-      return { ok: r.ok, status: r.status };
+      return { ok: r.ok, status: r.status, url };
     } catch (e) {
-      addLog("error", `/send throw`, { cwd, error: String(e) });
+      addLog("error", `/send throw`, { session_uuid, error: String(e) });
       return { ok: false, status: 0 };
     }
   }
@@ -265,7 +284,7 @@ function App() {
         </div>
       )}
       <div class="grid gap-4">
-        {sessions.map((s) => <Card key={s.cwd} s={s} onFocus={onFocus} onSend={onSend} />)}
+        {sessions.map((s) => <Card key={s.session_uuid ?? s.cwd} s={s} onFocus={onFocus} onSend={onSend} />)}
       </div>
       <ActivityLog entries={log} onClear={() => setLog([])} />
     </div>

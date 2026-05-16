@@ -37,12 +37,22 @@ export class HookHandler {
 
   async handle(ev: HookEvent): Promise<void> {
     const cwd = normalizeCwd(ev.cwd);
-    const existing = this.store.get(cwd);
+
+    // session_uuid is the primary identity. Hooks should always provide it
+    // (Claude Code sends session_id in every hook event per the official docs).
+    // If absent, try resolver as a last resort; otherwise drop the event silently.
+    let sessionUuid = ev.session_uuid;
+    if (!sessionUuid) {
+      sessionUuid = await this.resolver.resolveLatest(cwd);
+      if (!sessionUuid) return;  // cannot insert without a primary key
+    }
+
+    const existing = this.store.get(sessionUuid);
     if (existing && existing.last_event_at > ev.timestamp) return;  // last-write-wins
 
     const next: Session = {
       cwd,
-      session_uuid: ev.session_uuid ?? existing?.session_uuid ?? null,
+      session_uuid: sessionUuid,
       project_name: basename(cwd),
       status: STATUS_BY_EVENT[ev.event_type],
       last_event_at: ev.timestamp,
@@ -61,18 +71,5 @@ export class HookHandler {
         message: "Claude is waiting for you",
       });
     }
-
-    if (!next.session_uuid) {
-      // Fire-and-forget backfill
-      void this.backfillUuid(cwd);
-    }
-  }
-
-  private async backfillUuid(cwd: string): Promise<void> {
-    const uuid = await this.resolver.resolveLatest(cwd);
-    if (!uuid) return;
-    const current = this.store.get(cwd);
-    if (!current || current.session_uuid) return;
-    this.store.upsert({ ...current, session_uuid: uuid });
   }
 }

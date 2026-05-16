@@ -29,7 +29,8 @@ describe("server POST /event", () => {
       timestamp: Date.now(),
     });
     expect(res.status).toBe(204);
-    expect(store.get("d:\\code\\dragonfly")?.status).toBe("active");
+    expect(store.get("u-1")?.status).toBe("active");
+    expect(store.get("u-1")?.cwd).toBe("d:\\code\\dragonfly");
   });
 
   it("rejects malformed payload with 400", async () => {
@@ -110,7 +111,9 @@ describe("server POST /focus + /send", () => {
     const { app } = createApp({ store, handler, bridge, notifier: null as any, webDir: "/tmp/none" });
 
     const res = await request(app).post("/focus").send({ cwd: "d:\\code\\x" });
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.url).toBe("vscode://anthropic.claude-code/open?session=uuid-xyz");
     expect(launches).toContain("vscode://anthropic.claude-code/open?session=uuid-xyz");
     store.close();
   });
@@ -128,7 +131,10 @@ describe("server POST /focus + /send", () => {
     const { app } = createApp({ store, handler, bridge, notifier: null as any, webDir: "/tmp/none" });
 
     const res = await request(app).post("/send").send({ cwd: "d:\\code\\x", prompt: "run tests" });
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.url).toMatch(/session=uuid-xyz/);
+    expect(res.body.url).toMatch(/prompt=run\+tests|prompt=run%20tests/);
     expect(launches[0]).toMatch(/session=uuid-xyz/);
     expect(launches[0]).toMatch(/prompt=run\+tests|prompt=run%20tests/);
     store.close();

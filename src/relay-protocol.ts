@@ -15,8 +15,8 @@ export interface Envelope {
 export type Plaintext =
   | { kind: "event"; session: Session }
   | { kind: "state_snapshot"; sessions: Session[] }
-  | { kind: "cmd_focus"; cwd: string }
-  | { kind: "cmd_send"; cwd: string; prompt: string }
+  | { kind: "cmd_focus"; session_uuid?: string; cwd?: string }
+  | { kind: "cmd_send"; session_uuid?: string; cwd?: string; prompt: string }
   | { kind: "request_snapshot" }
   | { kind: "ping"; echo: string }
   | { kind: "pong"; echo: string }
