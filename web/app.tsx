@@ -1,5 +1,8 @@
 import { render } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { marked } from "marked";
+
+// ── Types ──────────────────────────────────────────────────────────────────
 
 interface Session {
   cwd: string;
@@ -12,11 +15,20 @@ interface Session {
   tokens_out: number;
 }
 
-const STATUS_COLOR: Record<Session["status"], string> = {
-  active: "bg-emerald-500",
-  waiting: "bg-amber-500",
-  idle: "bg-slate-500",
-  stale: "bg-red-500",
+interface ToolUseInfo { id: string; name: string; description?: string; input: unknown; input_summary: string }
+interface ToolResultInfo { tool_use_id?: string; content: string; truncated: boolean; is_error?: boolean }
+interface TranscriptTurn { ts: string; role: "user" | "assistant"; text: string; tool_use?: ToolUseInfo; tool_result?: ToolResultInfo; raw_type?: string }
+interface TranscriptResp { session_uuid: string; transcript_path: string; file_size: number; last_modified: string; turn_count: number; turns: TranscriptTurn[] }
+
+interface LogEntry { ts: number; level: "info" | "warn" | "error"; msg: string; ctx?: Record<string, unknown> }
+
+// ── Constants ──────────────────────────────────────────────────────────────
+
+const STATUS_DOT: Record<Session["status"], string> = {
+  active: "dot dot-active",
+  waiting: "dot dot-waiting",
+  idle: "dot dot-idle",
+  stale: "dot dot-stale",
 };
 
 const STATUS_LABEL: Record<Session["status"], string> = {
@@ -26,68 +38,130 @@ const STATUS_LABEL: Record<Session["status"], string> = {
   stale: "已斷線",
 };
 
-// ── F12 console logging helper ────────────────────────────────────────────
-const TAG = "%c[cc-hub]";
-const TAG_STYLE = "color:#818cf8;font-weight:bold";
-
-function clog(label: string, ctx?: Record<string, unknown>): void {
-  console.log(TAG, label, ctx ?? "");
-}
-function cwarn(label: string, ctx?: Record<string, unknown>): void {
-  console.warn(TAG, label, ctx ?? "");
-}
-function cerr(label: string, ctx?: Record<string, unknown>): void {
-  console.error(TAG, label, ctx ?? "");
-}
-
-// ── In-page activity log (also goes to F12) ───────────────────────────────
-
-interface LogEntry {
-  ts: number;
-  level: "info" | "warn" | "error";
-  msg: string;
-  ctx?: Record<string, unknown>;
-}
-
 const ACT_LOG_MAX = 50;
 
-function fmtTime(ts: number): string {
-  const d = new Date(ts);
-  return d.toLocaleTimeString("zh-TW", { hour12: false }) + "." + String(d.getMilliseconds()).padStart(3, "0");
+// ── Console logging helper ─────────────────────────────────────────────────
+
+const TAG = "%c[cc-hub]";
+const TAG_STYLE = "color:#4b556a;font-weight:600";
+function clog(label: string, ctx?: Record<string, unknown>) { console.log(TAG, TAG_STYLE, label, ctx ?? ""); }
+function cwarn(label: string, ctx?: Record<string, unknown>) { console.warn(TAG, TAG_STYLE, label, ctx ?? ""); }
+function cerr(label: string, ctx?: Record<string, unknown>) { console.error(TAG, TAG_STYLE, label, ctx ?? ""); }
+
+// ── Format helpers ─────────────────────────────────────────────────────────
+
+function fmtTime(ts: number | string): string {
+  const d = typeof ts === "number" ? new Date(ts) : new Date(ts);
+  if (isNaN(d.getTime())) return "";
+  const HH = String(d.getHours()).padStart(2, "0");
+  const MM = String(d.getMinutes()).padStart(2, "0");
+  const SS = String(d.getSeconds()).padStart(2, "0");
+  return `${HH}:${MM}:${SS}`;
+}
+function fmtDateTime(ts: number | string): string {
+  const d = typeof ts === "number" ? new Date(ts) : new Date(ts);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleString("zh-TW", { hour12: false });
+}
+function fmtRelative(ts: number): string {
+  const ms = Date.now() - ts;
+  if (ms < 60_000) return `${Math.floor(ms / 1000)} 秒前`;
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)} 分鐘前`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)} 小時前`;
+  return `${Math.floor(ms / 86_400_000)} 天前`;
 }
 
-// ── Card ──────────────────────────────────────────────────────────────────
+// ── Markdown rendering ─────────────────────────────────────────────────────
 
-interface TranscriptTurn {
-  ts: string;
-  role: "user" | "assistant" | "system" | "tool" | "other";
-  text: string;
-  tool_use?: { name: string; summary: string };
-  is_tool_result?: boolean;
+marked.setOptions({ gfm: true, breaks: true });
+
+function MD({ text }: { text: string }) {
+  const html = useMemo(() => {
+    try { return marked.parse(text, { async: false }) as string; }
+    catch { return `<pre>${escapeHtml(text)}</pre>`; }
+  }, [text]);
+  return <div class="md" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-interface TranscriptResp {
-  session_uuid: string;
-  transcript_path: string;
-  file_size: number;
-  last_modified: string;
-  turn_count: number;
-  turns: TranscriptTurn[];
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
+
+// ── Tool box (IN/OUT) ──────────────────────────────────────────────────────
+
+function ToolUseBox({ t }: { t: TranscriptTurn }) {
+  const u = t.tool_use!;
+  const inputStr = typeof u.input === "string" ? u.input : JSON.stringify(u.input, null, 2);
+  return (
+    <div class="toolbox" style={{ marginTop: 4 }}>
+      <div class="toolbox-head">
+        <span class="dot dot-active" style={{ width: 6, height: 6 }} />
+        <span>{u.name}</span>
+        {u.description && <span style={{ color: "var(--fg-subtle)" }}>{u.description}</span>}
+      </div>
+      <div class="toolbox-row">
+        <div class="toolbox-label">IN</div>
+        <pre class="toolbox-content" style={{ margin: 0 }}>{inputStr}</pre>
+      </div>
+    </div>
+  );
+}
+
+function ToolResultBox({ t }: { t: TranscriptTurn }) {
+  const r = t.tool_result!;
+  return (
+    <div class="toolbox" style={{ marginTop: 4 }}>
+      <div class="toolbox-row">
+        <div class="toolbox-label">OUT</div>
+        <pre class={"toolbox-content" + (r.is_error ? " is-error" : "")} style={{ margin: 0 }}>
+          {r.content || "(empty)"}
+          {r.truncated && <div style={{ color: "var(--fg-subtle)", fontSize: 10, marginTop: 4 }}>…[truncated]</div>}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
+function TurnView({ t }: { t: TranscriptTurn }) {
+  const isUser = t.role === "user";
+  const roleLabel = isUser ? "user" : "assistant";
+  const roleColor = isUser ? "var(--neutral)" : "var(--pass)";
+  return (
+    <div style={{ padding: "10px 14px", borderTop: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <span style={{ color: roleColor, fontWeight: 600, fontSize: 12 }}>{roleLabel}</span>
+        <span style={{ color: "var(--fg-subtle)", fontSize: 11 }}>{fmtDateTime(t.ts)}</span>
+        {t.tool_use && (
+          <span style={{ color: "var(--fg-subtle)", fontSize: 11 }}>· 🔧 {t.tool_use.name}</span>
+        )}
+        {t.tool_result && (
+          <span style={{ color: "var(--fg-subtle)", fontSize: 11 }}>· 📤 tool result</span>
+        )}
+      </div>
+      {t.text && <MD text={t.text} />}
+      {t.tool_use && <ToolUseBox t={t} />}
+      {t.tool_result && <ToolResultBox t={t} />}
+    </div>
+  );
+}
+
+// ── Session card ───────────────────────────────────────────────────────────
 
 type ActionResult = { ok: boolean; label: string; url?: string; reply?: string; durationMs?: number; ts: number } | null;
 
-function Card({ s, onFocus, onSend }: {
+function Card({ s, defaultExpanded, onFocus, onSend }: {
   s: Session;
-  onFocus: (session_uuid: string) => Promise<{ ok: boolean; status: number; url?: string }>;
-  onSend: (session_uuid: string, prompt: string, submit: boolean) => Promise<{ ok: boolean; status: number; url?: string; reply?: string; duration_ms?: number }>;
+  defaultExpanded: boolean;
+  onFocus: (uuid: string) => Promise<{ ok: boolean; status: number; url?: string }>;
+  onSend: (uuid: string, prompt: string, submit: boolean) => Promise<{ ok: boolean; status: number; url?: string; reply?: string; duration_ms?: number }>;
 }) {
+  const [collapsed, setCollapsed] = useState(!defaultExpanded);
   const [draft, setDraft] = useState("");
-  const [submitMode, setSubmitMode] = useState(true);  // default = real submit (headless), users opt out for prefill
+  const [submitMode, setSubmitMode] = useState(true);
   const [busy, setBusy] = useState(false);
   const [focusResult, setFocusResult] = useState<ActionResult>(null);
   const [sendResult, setSendResult] = useState<ActionResult>(null);
-  const [expanded, setExpanded] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(false);
   const [transcript, setTranscript] = useState<TranscriptResp | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
@@ -107,7 +181,7 @@ function Card({ s, onFocus, onSend }: {
       }
       const data: TranscriptResp = await r.json();
       setTranscript(data);
-      clog("transcript loaded", { session_uuid: sessionUuid, turns: data.turn_count, fileSize: data.file_size });
+      clog("transcript loaded", { session_uuid: sessionUuid, turns: data.turn_count });
     } catch (e) {
       setTranscriptError(String(e));
     } finally {
@@ -115,25 +189,23 @@ function Card({ s, onFocus, onSend }: {
     }
   }
 
-  function toggleExpand() {
-    const next = !expanded;
-    setExpanded(next);
-    if (next && !transcript && !transcriptLoading) {
-      void loadTranscript();
-    }
+  function toggleTranscript() {
+    const next = !showTranscript;
+    setShowTranscript(next);
+    if (next && !transcript && !transcriptLoading) void loadTranscript();
   }
 
   async function handleFocus() {
-    clog("click 叫起視窗", { cwd: s.cwd, session_uuid: s.session_uuid, project_name: s.project_name });
+    clog("click focus", { cwd: s.cwd, uuid: sessionUuid });
     setFocusResult(null);
     const r = await onFocus(sessionUuid);
-    setFocusResult({ ok: r.ok, label: r.ok ? `daemon OK (HTTP ${r.status})—現在 Alt+Tab 去看 VSCode` : `失敗 HTTP ${r.status}`, url: r.url, ts: Date.now() });
-    setTimeout(() => setFocusResult(null), 30000);
+    setFocusResult({ ok: r.ok, label: r.ok ? `OK · HTTP ${r.status}` : `失敗 HTTP ${r.status}`, url: r.url, ts: Date.now() });
+    setTimeout(() => setFocusResult(null), 15_000);
   }
   async function handleSend() {
     const prompt = draft.trim();
     if (!prompt) return;
-    clog("click 送出", { cwd: s.cwd, session_uuid: s.session_uuid, project_name: s.project_name, mode: submitMode ? "submit" : "prefill", promptPreview: prompt.slice(0, 40), promptLength: prompt.length });
+    clog("click send", { cwd: s.cwd, uuid: sessionUuid, mode: submitMode ? "submit" : "prefill", len: prompt.length });
     setSendResult(null);
     setBusy(true);
     try {
@@ -141,119 +213,136 @@ function Card({ s, onFocus, onSend }: {
       const label = !r.ok
         ? `失敗 HTTP ${r.status}`
         : submitMode
-          ? `Claude 已回覆 (${r.duration_ms ?? "?"} ms)—訊息已寫入 transcript，VSCode 應該看到新對話`
-          : `已預填 (HTTP ${r.status})—請 Alt+Tab 到 VSCode 按 Enter 送出`;
+          ? `Claude 已回覆 (${r.duration_ms ?? "?"} ms)`
+          : `已預填 · 請在 VSCode 按 Enter`;
       setSendResult({ ok: r.ok, label, url: r.url, reply: r.reply, durationMs: r.duration_ms, ts: Date.now() });
       setDraft("");
+      // If we have transcript loaded and we just submitted, auto-refresh to show the new turn
+      if (r.ok && submitMode && transcript) void loadTranscript();
     } finally {
       setBusy(false);
     }
-    setTimeout(() => setSendResult(null), 120000);
+    setTimeout(() => setSendResult(null), 60_000);
   }
 
+  // ── Collapsed view (one line) ───────────────────────────────────────────
+  if (collapsed) {
+    return (
+      <div class="card" style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px" }}>
+        <span class={STATUS_DOT[s.status]} />
+        <span style={{ fontWeight: 500, minWidth: 120 }}>{s.project_name}</span>
+        <span style={{ color: "var(--fg-subtle)", fontSize: 11, fontFamily: "ui-monospace, monospace" }}>{s.cwd}</span>
+        <span style={{ color: "var(--fg-muted)", fontSize: 12, marginLeft: "auto" }}>{STATUS_LABEL[s.status]}</span>
+        <span style={{ color: "var(--fg-subtle)", fontSize: 11 }}>{fmtRelative(s.last_event_at)}</span>
+        <button class="btn-ghost" onClick={() => setCollapsed(false)} title="展開">▾</button>
+      </div>
+    );
+  }
+
+  // ── Expanded view ──────────────────────────────────────────────────────
   return (
-    <div class="rounded-lg border border-slate-800 p-4 bg-slate-900 flex flex-col gap-2">
-      <div class="flex items-center gap-2">
-        <span class={`w-3 h-3 rounded-full ${STATUS_COLOR[s.status]}`} />
+    <div class="card">
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
+        <span class={STATUS_DOT[s.status]} />
         <button
-          class="text-lg font-semibold text-left hover:underline"
+          class="btn-ghost"
+          style={{ fontWeight: 600, fontSize: 15, padding: "2px 6px" }}
           onClick={handleFocus}
+          title="叫起 VSCode 視窗（focus）"
         >{s.project_name}</button>
-        <span class="text-xs text-slate-500 ml-auto">{STATUS_LABEL[s.status]}</span>
+        <span style={{ color: "var(--fg-muted)", fontSize: 12 }}>{STATUS_LABEL[s.status]}</span>
+        <span style={{ color: "var(--fg-subtle)", fontSize: 11, marginLeft: 8 }}>{fmtRelative(s.last_event_at)}</span>
+        <button class="btn-ghost" style={{ marginLeft: "auto" }} onClick={() => setCollapsed(true)} title="收合">▴</button>
       </div>
-      <div class="text-xs text-slate-500 font-mono break-all">{s.cwd}</div>
-      <div class="text-[10px] text-slate-600 font-mono break-all">
-        session_uuid: {s.session_uuid ?? <span class="text-amber-400">null（沒抓到 uuid，叫起/送出可能會開錯 session）</span>}
+
+      {/* Meta */}
+      <div style={{ padding: "8px 14px", color: "var(--fg-subtle)", fontSize: 11, fontFamily: "ui-monospace, monospace" }}>
+        <div>{s.cwd}</div>
+        <div>session_uuid: {sessionUuid || <span style={{ color: "var(--warn)" }}>null</span>}</div>
       </div>
-      {s.last_message_preview && (
-        <div class="text-sm text-slate-300 line-clamp-2">{s.last_message_preview}</div>
-      )}
+
+      {/* Focus result */}
       {focusResult && (
-        <div class="text-xs">
-          <div class={focusResult.ok ? "text-emerald-400" : "text-red-400"}>叫起視窗：{focusResult.label}</div>
-          {focusResult.url && (
-            <div class="mt-1 text-slate-500 font-mono break-all">
-              URI：<a href={focusResult.url} class="text-indigo-300 hover:underline">{focusResult.url}</a>
-              <button class="ml-2 text-slate-400 hover:text-slate-200" onClick={() => navigator.clipboard?.writeText(focusResult.url!)}>📋 複製</button>
-              <button class="ml-2 text-slate-400 hover:text-slate-200" onClick={() => window.open(focusResult.url!, "_self")}>🔄 瀏覽器再開一次</button>
-            </div>
-          )}
-        </div>
-      )}
-      <div class="flex gap-2 mt-2">
-        <textarea
-          class="flex-1 bg-slate-800 rounded px-2 py-1 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-indigo-500"
-          rows={2}
-          placeholder={submitMode ? "輸入 prompt 真的送給這個 session（會花 API 費用）…" : "輸入 prompt 預填到 input box（不送出、零成本）…"}
-          value={draft}
-          onInput={(e) => setDraft((e.currentTarget as HTMLTextAreaElement).value)}
-          disabled={busy}
-        />
-        <button
-          class={`disabled:opacity-30 rounded px-3 text-sm ${submitMode ? "bg-rose-600 hover:bg-rose-500" : "bg-indigo-600 hover:bg-indigo-500"}`}
-          disabled={!draft.trim() || busy}
-          onClick={handleSend}
-          title={submitMode ? "headless 模式：真的 submit + Claude 回應（花費 API$）" : "prefill 模式：只塞進 input box，你按 Enter 才送"}
-        >{busy ? "⌛" : submitMode ? "真送出 💸" : "預填"}</button>
-      </div>
-      <label class="text-[11px] text-slate-500 select-none cursor-pointer">
-        <input type="checkbox" checked={submitMode} onChange={(e) => setSubmitMode((e.currentTarget as HTMLInputElement).checked)} class="mr-1 align-middle" />
-        真送出模式（headless `claude -r {sessionUuid.slice(0, 8)}... -p`，會花 API 錢）
-      </label>
-      {submitMode && (
-        <div class="text-[10px] text-amber-400/80">
-          ⚠️ Windows 已知限制：真送出模式 prompt 內若含中文/emoji 會被切碼（claude.exe stdin codepage 問題）。請暫時用英文 prompt，或切到「預填」模式。
-        </div>
-      )}
-      {sendResult && (
-        <div class="text-xs">
-          <div class={sendResult.ok ? "text-emerald-400" : "text-red-400"}>送 prompt：{sendResult.label}</div>
-          {sendResult.reply && (
-            <div class="mt-1 p-2 bg-slate-800/50 border border-slate-700 rounded">
-              <div class="text-[10px] text-slate-500 mb-1">Claude 回覆：</div>
-              <div class="text-slate-300 whitespace-pre-wrap">{sendResult.reply}</div>
-            </div>
-          )}
-          {sendResult.url && (
-            <div class="mt-1 text-slate-500 font-mono break-all">
-              URI：<a href={sendResult.url} class="text-indigo-300 hover:underline">{sendResult.url}</a>
-              <button class="ml-2 text-slate-400 hover:text-slate-200" onClick={() => navigator.clipboard?.writeText(sendResult.url!)}>📋 複製</button>
-              <button class="ml-2 text-slate-400 hover:text-slate-200" onClick={() => window.open(sendResult.url!, "_self")}>🔄 瀏覽器再開一次</button>
-            </div>
-          )}
+        <div style={{ padding: "0 14px 8px", fontSize: 12, color: focusResult.ok ? "var(--pass)" : "var(--accent)" }}>
+          叫起視窗：{focusResult.label}
         </div>
       )}
 
-      <div class="mt-2 pt-2 border-t border-slate-800/60">
-        <button
-          class="text-xs text-slate-400 hover:text-slate-200 select-none"
-          onClick={toggleExpand}
-        >
-          {expanded ? "▼ 收合上下文" : "▶ 展開上下文（讀 transcript）"}
+      {/* Send composer */}
+      <div style={{ padding: "8px 14px 12px", display: "flex", flexDirection: "column", gap: 6, borderTop: "1px solid var(--border)" }}>
+        <div style={{ display: "flex", gap: 8 }}>
+          <textarea
+            style={{ flex: 1, minHeight: 38, fontSize: 13 }}
+            rows={2}
+            placeholder={submitMode ? "輸入 prompt 真的送給這個 session（會花 API 費用）…" : "輸入 prompt 預填到 input box（不送出、零成本）…"}
+            value={draft}
+            onInput={(e) => setDraft((e.currentTarget as HTMLTextAreaElement).value)}
+            disabled={busy}
+          />
+          <button
+            class={submitMode ? "btn-warn" : "btn-primary"}
+            disabled={!draft.trim() || busy}
+            onClick={handleSend}
+            title={submitMode ? "headless 模式：真的 submit + Claude 回應（花費 API$）" : "prefill 模式：只塞進 input box"}
+          >
+            {busy ? "⌛" : submitMode ? "真送出" : "預填"}
+          </button>
+        </div>
+        <label style={{ fontSize: 11, color: "var(--fg-subtle)", cursor: "pointer", userSelect: "none" }}>
+          <input
+            type="checkbox"
+            checked={submitMode}
+            onChange={(e) => setSubmitMode((e.currentTarget as HTMLInputElement).checked)}
+            style={{ marginRight: 6, verticalAlign: "middle" }}
+          />
+          真送出模式（會花 API 費用）
+        </label>
+        {submitMode && (
+          <div style={{ fontSize: 10, color: "var(--warn)" }}>
+            ⚠️ Windows 已知限制：prompt 含中文/emoji 會被 codepage 切碼，請暫用英文 prompt 或切「預填」。
+          </div>
+        )}
+
+        {/* Send result */}
+        {sendResult && (
+          <div style={{ marginTop: 4 }}>
+            <div style={{ fontSize: 12, color: sendResult.ok ? "var(--pass)" : "var(--accent)" }}>
+              送 prompt：{sendResult.label}
+            </div>
+            {sendResult.reply && (
+              <div style={{ marginTop: 6, padding: 10, background: "var(--sl2)", border: "1px solid var(--border)", borderRadius: 6 }}>
+                <div class="section-label" style={{ marginBottom: 4 }}>Claude 回覆</div>
+                <MD text={sendResult.reply} />
+              </div>
+            )}
+            {sendResult.url && (
+              <div style={{ marginTop: 6, fontSize: 11, fontFamily: "ui-monospace, monospace", color: "var(--fg-subtle)", wordBreak: "break-all" }}>
+                URI：<a href={sendResult.url} style={{ color: "var(--neutral)" }}>{sendResult.url}</a>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Transcript */}
+      <div style={{ borderTop: "1px solid var(--border)" }}>
+        <button class="btn-ghost" style={{ width: "100%", justifyContent: "flex-start", padding: "8px 14px", borderRadius: 0 }} onClick={toggleTranscript}>
+          {showTranscript ? "▾" : "▸"} 上下文 transcript
+          {transcript && <span style={{ marginLeft: 8, color: "var(--fg-subtle)", fontSize: 11 }}>· {transcript.turn_count} 條 · {(transcript.file_size / 1024).toFixed(1)} KB</span>}
         </button>
-        {expanded && (
-          <div class="mt-2">
-            <div class="flex items-center gap-2 text-[11px] text-slate-500 mb-2">
+        {showTranscript && (
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", borderTop: "1px solid var(--border)" }}>
               {transcript && (
-                <>
-                  <span>📜 {transcript.transcript_path.split(/[\\/]/).pop()}</span>
-                  <span>· {(transcript.file_size / 1024).toFixed(1)} KB</span>
-                  <span>· 最後修改 {new Date(transcript.last_modified).toLocaleString("zh-TW", { hour12: false })}</span>
-                </>
+                <span style={{ color: "var(--fg-subtle)", fontSize: 11 }}>
+                  最後修改 {fmtDateTime(transcript.last_modified)}
+                </span>
               )}
-              <button
-                class="ml-auto px-2 py-0.5 bg-slate-800 hover:bg-slate-700 rounded text-slate-300"
-                onClick={() => loadTranscript(transcriptLimit)}
-                disabled={transcriptLoading}
-              >{transcriptLoading ? "讀取中…" : "🔄 重新讀取"}</button>
               <select
-                class="bg-slate-800 px-2 py-0.5 rounded text-slate-300"
                 value={transcriptLimit}
-                onChange={(e) => {
-                  const n = parseInt((e.currentTarget as HTMLSelectElement).value, 10);
-                  setTranscriptLimit(n);
-                  void loadTranscript(n);
-                }}
+                onChange={(e) => { const n = parseInt((e.currentTarget as HTMLSelectElement).value, 10); setTranscriptLimit(n); void loadTranscript(n); }}
+                style={{ marginLeft: "auto" }}
               >
                 <option value={10}>10 條</option>
                 <option value={20}>20 條</option>
@@ -261,30 +350,19 @@ function Card({ s, onFocus, onSend }: {
                 <option value={100}>100 條</option>
                 <option value={200}>200 條</option>
               </select>
+              <button class="btn-outline" style={{ height: 28, padding: "0 10px" }} onClick={() => loadTranscript(transcriptLimit)} disabled={transcriptLoading}>
+                {transcriptLoading ? "讀取中…" : "重新讀取"}
+              </button>
             </div>
             {transcriptError && (
-              <div class="text-xs text-red-400">{transcriptError}</div>
+              <div style={{ padding: "8px 14px", color: "var(--accent)", fontSize: 12 }}>{transcriptError}</div>
             )}
             {transcript && (
-              <div class="border border-slate-800 rounded bg-slate-950/50 max-h-96 overflow-y-auto">
+              <div style={{ maxHeight: 480, overflowY: "auto" }}>
                 {transcript.turns.length === 0 && (
-                  <div class="text-xs text-slate-600 p-3">(transcript 沒有可顯示的訊息)</div>
+                  <div style={{ padding: "12px 14px", color: "var(--fg-subtle)", fontSize: 12 }}>(transcript 沒有可顯示的訊息)</div>
                 )}
-                {transcript.turns.map((t, i) => (
-                  <div key={i} class={`px-3 py-2 text-xs border-b border-slate-800/40 ${
-                    t.role === "user" ? "bg-indigo-900/20" : "bg-slate-900/40"
-                  }`}>
-                    <div class="flex items-center gap-2 mb-1">
-                      <span class={`font-semibold ${
-                        t.role === "user" ? "text-indigo-300" : t.role === "assistant" ? "text-emerald-300" : "text-slate-400"
-                      }`}>{t.role === "user" ? "🧑 user" : t.role === "assistant" ? "🤖 assistant" : t.role}</span>
-                      <span class="text-[10px] text-slate-600">{t.ts ? new Date(t.ts).toLocaleString("zh-TW", { hour12: false }) : ""}</span>
-                      {t.tool_use && <span class="text-[10px] text-amber-400">🔧 {t.tool_use.name}</span>}
-                      {t.is_tool_result && <span class="text-[10px] text-slate-500">📤 tool_result</span>}
-                    </div>
-                    <div class="text-slate-300 whitespace-pre-wrap break-words">{t.text}</div>
-                  </div>
-                ))}
+                {transcript.turns.map((t, i) => <TurnView key={i} t={t} />)}
               </div>
             )}
           </div>
@@ -294,43 +372,76 @@ function Card({ s, onFocus, onSend }: {
   );
 }
 
-// ── Activity log panel ────────────────────────────────────────────────────
+// ── Summary banner ─────────────────────────────────────────────────────────
 
-function ActivityLog({ entries, onClear }: { entries: LogEntry[]; onClear: () => void }) {
+function SummaryBanner({ sessions }: { sessions: Session[] }) {
+  const counts = sessions.reduce(
+    (acc, s) => { acc[s.status] = (acc[s.status] ?? 0) + 1; return acc; },
+    {} as Record<Session["status"], number>,
+  );
+  const total = sessions.length;
   return (
-    <div class="mt-8 border border-slate-800 rounded-lg bg-slate-900/50">
-      <div class="flex items-center px-3 py-2 border-b border-slate-800">
-        <span class="text-xs font-semibold text-slate-400">活動紀錄（同步輸出到 F12 Console）</span>
-        <button class="ml-auto text-xs text-slate-500 hover:text-slate-300" onClick={onClear}>清空</button>
+    <section style={{ marginBottom: 16, padding: "16px 0", borderBottom: "1px solid var(--border)" }}>
+      <div class="section-label" style={{ marginBottom: 8 }}>目前正在運行</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 24, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 28, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{total}</div>
+          <div style={{ fontSize: 11, color: "var(--fg-subtle)", textTransform: "uppercase", letterSpacing: "0.08em" }}>total</div>
+        </div>
+        <Stat n={counts.active ?? 0} label="進行中" dot="dot-active" />
+        <Stat n={counts.waiting ?? 0} label="等回應" dot="dot-waiting" />
+        <Stat n={counts.idle ?? 0} label="閒置" dot="dot-idle" />
+        <Stat n={counts.stale ?? 0} label="已斷線" dot="dot-stale" />
       </div>
-      <div class="text-xs font-mono p-3 max-h-64 overflow-y-auto">
-        {entries.length === 0 && <div class="text-slate-600">尚無活動，按任何按鈕或等 hook 事件就會冒出來。</div>}
-        {entries.map((e, i) => (
-          <div key={i} class={
-            e.level === "error" ? "text-red-400" :
-            e.level === "warn" ? "text-amber-400" :
-            "text-slate-300"
-          }>
-            <span class="text-slate-600">{fmtTime(e.ts)}</span>{" "}
-            <span>{e.msg}</span>
-            {e.ctx && <span class="text-slate-500"> {JSON.stringify(e.ctx)}</span>}
-          </div>
-        ))}
+    </section>
+  );
+}
+
+function Stat({ n, label, dot }: { n: number; label: string; dot: string }) {
+  return (
+    <div>
+      <div style={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: "tabular-nums", color: n === 0 ? "var(--fg-subtle)" : "var(--fg)" }}>{n}</div>
+      <div style={{ fontSize: 11, color: "var(--fg-subtle)", display: "flex", alignItems: "center", gap: 4 }}>
+        <span class={`dot ${dot}`} style={{ width: 6, height: 6 }} /> {label}
       </div>
     </div>
   );
 }
 
-// ── App ───────────────────────────────────────────────────────────────────
+// ── Activity log ───────────────────────────────────────────────────────────
+
+function ActivityLog({ entries, onClear }: { entries: LogEntry[]; onClear: () => void }) {
+  return (
+    <section class="card" style={{ marginTop: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid var(--border)" }}>
+        <span class="section-label">活動紀錄</span>
+        <span style={{ marginLeft: 8, color: "var(--fg-subtle)", fontSize: 11 }}>同步輸出到 F12 Console</span>
+        <button class="btn-ghost" style={{ marginLeft: "auto" }} onClick={onClear}>清空</button>
+      </div>
+      <div style={{ maxHeight: 240, overflowY: "auto" }}>
+        {entries.length === 0 && (
+          <div style={{ padding: "12px 14px", color: "var(--fg-subtle)", fontSize: 12 }}>尚無活動，按任何按鈕或等 hook 事件就會冒出來。</div>
+        )}
+        {entries.map((e, i) => (
+          <div key={i} class={`log-entry log-entry-${e.level}`}>
+            <span class="log-time">{fmtTime(e.ts)}</span>{" "}
+            {e.msg}
+            {e.ctx && <span class="log-ctx"> {JSON.stringify(e.ctx)}</span>}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// ── App ────────────────────────────────────────────────────────────────────
 
 function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [wsConn, setWsConn] = useState<"connecting" | "open" | "closed">("connecting");
   const [log, setLog] = useState<LogEntry[]>([]);
-  const logRef = useRef(log);
-  logRef.current = log;
 
-  function addLog(level: "info" | "warn" | "error", msg: string, ctx?: Record<string, unknown>): void {
+  function addLog(level: LogEntry["level"], msg: string, ctx?: Record<string, unknown>): void {
     const entry: LogEntry = { ts: Date.now(), level, msg, ctx };
     setLog((prev) => [entry, ...prev].slice(0, ACT_LOG_MAX));
     (level === "error" ? cerr : level === "warn" ? cwarn : clog)(msg, ctx);
@@ -338,8 +449,7 @@ function App() {
 
   useEffect(() => {
     addLog("info", "啟動 — 抓 /sessions 初始狀態");
-    fetch("/sessions")
-      .then((r) => r.json().then((j) => ({ ok: r.ok, status: r.status, body: j })))
+    fetch("/sessions").then((r) => r.json().then((j) => ({ ok: r.ok, status: r.status, body: j })))
       .then((r) => {
         if (!r.ok) { addLog("error", `GET /sessions 失敗`, { status: r.status }); return; }
         const list = r.body as Session[];
@@ -349,96 +459,82 @@ function App() {
       .catch((e) => addLog("error", `GET /sessions throw`, { error: String(e) }));
 
     const wsUrl = `ws://${location.host}/ws`;
-    addLog("info", `WS 連線中`, { url: wsUrl });
+    addLog("info", "WS 連線中", { url: wsUrl });
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => { setWsConn("open"); addLog("info", "WS open"); };
-    ws.onclose = (ev) => { setWsConn("closed"); addLog("warn", `WS close`, { code: ev.code, reason: ev.reason || "(無)" }); };
+    ws.onclose = (ev) => { setWsConn("closed"); addLog("warn", "WS close", { code: ev.code, reason: ev.reason || "(無)" }); };
     ws.onerror = () => { addLog("error", "WS error"); };
     ws.onmessage = (ev) => {
       let msg: any;
       try { msg = JSON.parse(ev.data as string); } catch { addLog("error", "WS 收到非 JSON", { raw: String(ev.data).slice(0, 80) }); return; }
       if (msg.type === "session_changed") {
         const s = msg.session as Session;
-        addLog("info", `WS session_changed`, {
-          cwd: s.cwd,
-          project: s.project_name,
-          status: s.status,
-          session_uuid: s.session_uuid,
-        });
+        addLog("info", "WS session_changed", { cwd: s.cwd, project: s.project_name, status: s.status, uuid: s.session_uuid });
         setSessions((prev) => {
           const others = prev.filter((x) => x.session_uuid !== s.session_uuid);
           return [s, ...others].sort((a, b) => b.last_event_at - a.last_event_at);
         });
       } else {
-        addLog("warn", `WS 不認識的 type`, { type: msg.type });
+        addLog("warn", "WS 不認識的 type", { type: msg.type });
       }
     };
 
     return () => ws.close();
   }, []);
 
-  async function onFocus(session_uuid: string): Promise<{ ok: boolean; status: number; url?: string }> {
-    addLog("info", `POST /focus`, { session_uuid });
+  async function onFocus(uuid: string) {
+    addLog("info", "POST /focus", { uuid });
     try {
-      const r = await fetch("/focus", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_uuid }) });
-      let body: any = null;
-      try { body = await r.json(); } catch { /* may be empty */ }
-      const url: string | undefined = body?.url;
-      const ctx = { session_uuid, status: r.status, url, body };
-      if (r.ok) addLog("info", `/focus ${r.status} — daemon 已叫起 URI`, ctx);
-      else addLog("error", `/focus 失敗`, ctx);
-      return { ok: r.ok, status: r.status, url };
-    } catch (e) {
-      addLog("error", `/focus throw`, { session_uuid, error: String(e) });
-      return { ok: false, status: 0 };
-    }
+      const r = await fetch("/focus", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_uuid: uuid }) });
+      let body: any = null; try { body = await r.json(); } catch {}
+      addLog(r.ok ? "info" : "error", `/focus ${r.status}`, { uuid, url: body?.url, body });
+      return { ok: r.ok, status: r.status, url: body?.url };
+    } catch (e) { addLog("error", "/focus throw", { uuid, error: String(e) }); return { ok: false, status: 0 }; }
   }
-  async function onSend(session_uuid: string, prompt: string, submit: boolean): Promise<{ ok: boolean; status: number; url?: string; reply?: string; duration_ms?: number }> {
-    addLog("info", `POST /send (mode=${submit ? "submit" : "prefill"})`, { session_uuid, promptLength: prompt.length, promptPreview: prompt.slice(0, 40) });
+  async function onSend(uuid: string, prompt: string, submit: boolean) {
+    addLog("info", `POST /send (mode=${submit ? "submit" : "prefill"})`, { uuid, len: prompt.length, preview: prompt.slice(0, 40) });
     try {
-      const r = await fetch("/send", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ session_uuid, prompt, submit }),
-      });
-      let body: any = null;
-      try { body = await r.json(); } catch { /* may be empty */ }
-      const url: string | undefined = body?.url;
-      const reply: string | undefined = body?.reply;
-      const duration_ms: number | undefined = body?.duration_ms;
-      const ctx = { session_uuid, status: r.status, mode: body?.mode, url, replyPreview: reply?.slice(0, 80), duration_ms };
-      if (r.ok) {
-        if (submit) addLog("info", `/send ${r.status} — Claude 回覆（${duration_ms}ms）${reply?.slice(0, 60)}`, ctx);
-        else addLog("info", `/send ${r.status} — URI 已 prefill（未送出）`, ctx);
-      } else {
-        addLog("error", `/send 失敗`, { ...ctx, body });
-      }
-      return { ok: r.ok, status: r.status, url, reply, duration_ms };
-    } catch (e) {
-      addLog("error", `/send throw`, { session_uuid, error: String(e) });
-      return { ok: false, status: 0 };
-    }
+      const r = await fetch("/send", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_uuid: uuid, prompt, submit }) });
+      let body: any = null; try { body = await r.json(); } catch {}
+      addLog(r.ok ? "info" : "error", `/send ${r.status}`, { uuid, mode: body?.mode, url: body?.url, reply_preview: body?.reply?.slice(0, 60), duration_ms: body?.duration_ms });
+      return { ok: r.ok, status: r.status, url: body?.url, reply: body?.reply, duration_ms: body?.duration_ms };
+    } catch (e) { addLog("error", "/send throw", { uuid, error: String(e) }); return { ok: false, status: 0 }; }
   }
 
   return (
-    <div class="max-w-4xl mx-auto p-6">
-      <div class="flex items-center gap-2 mb-2">
-        <h1 class="text-2xl font-bold">cc-hub</h1>
-        <span class={`ml-2 w-2 h-2 rounded-full ${wsConn === "open" ? "bg-emerald-500" : wsConn === "connecting" ? "bg-amber-500" : "bg-red-500"}`} />
-        <span class="text-xs text-slate-500">{wsConn === "open" ? "WS 已連線" : wsConn === "connecting" ? "連線中…" : "WS 已斷"}</span>
-      </div>
-      <p class="text-xs text-slate-500 mb-6">本機儀表板 · 點專案名稱叫起 VSCode 視窗 · 按下按鈕後請 F12 看 Console / 看下方活動紀錄</p>
-      {sessions.length === 0 && (
-        <div class="text-slate-500 text-center py-10">
-          <p>目前沒有任何 session。</p>
-          <p class="text-xs mt-2">在 VSCode 開 Claude Code panel 就會冒出來。</p>
-          <p class="text-xs mt-1">沒反應的話可能還沒裝 hooks：<code class="bg-slate-800 px-1 rounded">pnpm install:hooks</code></p>
+    <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 24px 64px" }}>
+      {/* Top nav */}
+      <header style={{ display: "flex", alignItems: "center", gap: 12, paddingBottom: 16 }}>
+        <h1 style={{ margin: 0, fontSize: 17, fontWeight: 600, letterSpacing: "-0.01em" }}>cc-hub</h1>
+        <span style={{ color: "var(--fg-subtle)", fontSize: 12 }}>本機儀表板</span>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--fg-subtle)" }}>
+          <span class={`dot ${wsConn === "open" ? "dot-active" : wsConn === "connecting" ? "dot-waiting" : "dot-stale"}`} style={{ width: 6, height: 6 }} />
+          {wsConn === "open" ? "WS connected" : wsConn === "connecting" ? "connecting…" : "WS disconnected"}
         </div>
-      )}
-      <div class="grid gap-4">
-        {sessions.map((s) => <Card key={s.session_uuid ?? s.cwd} s={s} onFocus={onFocus} onSend={onSend} />)}
-      </div>
+      </header>
+
+      <SummaryBanner sessions={sessions} />
+
+      {/* Cards */}
+      <section>
+        <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+          <span class="section-label">Sessions</span>
+          <span style={{ marginLeft: 8, color: "var(--fg-subtle)", fontSize: 11 }}>{sessions.length} 筆</span>
+        </div>
+        {sessions.length === 0 ? (
+          <div class="card" style={{ padding: "24px 14px", textAlign: "center", color: "var(--fg-subtle)", fontSize: 13 }}>
+            <div>目前沒有 session。</div>
+            <div style={{ fontSize: 11, marginTop: 6 }}>在任何 VSCode 視窗開 Claude Code panel 就會冒出來。</div>
+            <div style={{ fontSize: 11 }}>沒反應的話：<code>pnpm install:hooks</code></div>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {sessions.map((s, i) => <Card key={s.session_uuid ?? s.cwd} s={s} defaultExpanded={i === 0} onFocus={onFocus} onSend={onSend} />)}
+          </div>
+        )}
+      </section>
+
       <ActivityLog entries={log} onClear={() => setLog([])} />
     </div>
   );

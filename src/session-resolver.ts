@@ -52,13 +52,54 @@ export class SessionResolver {
 
 // ── Transcript reading ────────────────────────────────────────────────────
 
+export interface ToolUseInfo {
+  id: string;
+  name: string;          // "Bash" / "Edit" / "Read" / etc.
+  description?: string;  // when tool_input.description exists (e.g. Bash)
+  input: unknown;        // raw input JSON
+  input_summary: string; // 1-line preview for collapsed view
+}
+
+export interface ToolResultInfo {
+  tool_use_id?: string;
+  content: string;       // truncated to a reasonable size (8 KB)
+  truncated: boolean;
+  is_error?: boolean;
+}
+
 export interface TranscriptTurn {
-  ts: string;                            // ISO timestamp from the entry
-  role: "user" | "assistant" | "system" | "tool" | "other";
-  text: string;                          // human-readable summary
-  tool_use?: { name: string; summary: string };
-  is_tool_result?: boolean;
-  raw_type?: string;                     // original entry type for debugging
+  ts: string;
+  role: "user" | "assistant";
+  text: string;                  // free-form markdown content
+  tool_use?: ToolUseInfo;
+  tool_result?: ToolResultInfo;
+  raw_type?: string;
+}
+
+const MAX_TOOL_RESULT_BYTES = 8 * 1024;
+
+function summarizeToolInput(name: string, input: unknown): string {
+  if (input == null || typeof input !== "object") return String(input ?? "");
+  const o = input as Record<string, unknown>;
+  // Pick a sensible one-line summary by tool
+  if (name === "Bash") return String(o.command ?? "").split("\n")[0]?.slice(0, 200) ?? "";
+  if (name === "Read") return String(o.file_path ?? "");
+  if (name === "Write") return `${o.file_path ?? ""} (${(o.content as string)?.length ?? 0} chars)`;
+  if (name === "Edit") return `${o.file_path ?? ""}`;
+  if (name === "Glob") return String(o.pattern ?? "");
+  if (name === "Grep") return String(o.pattern ?? "");
+  if (name === "WebFetch" || name === "WebSearch") return String(o.url ?? o.query ?? "");
+  if (name === "TodoWrite") return `${Array.isArray(o.todos) ? o.todos.length : "?"} todos`;
+  // Default: short JSON
+  return JSON.stringify(o).slice(0, 200);
+}
+
+function stringifyResult(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((c: any) => (c?.type === "text" ? c.text : JSON.stringify(c))).join("");
+  }
+  return JSON.stringify(content ?? "");
 }
 
 /** Read last `limit` "interesting" turns from a Claude Code JSONL transcript. */
@@ -70,7 +111,6 @@ export async function readTranscriptTail(
   const lines = raw.split(/\r?\n/).filter((l) => l.length > 0);
 
   const turns: TranscriptTurn[] = [];
-  // Walk from end backwards, collecting up to `limit` user+assistant turns
   for (let i = lines.length - 1; i >= 0 && turns.length < limit; i--) {
     const line = lines[i];
     if (!line) continue;
@@ -83,44 +123,59 @@ export async function readTranscriptTail(
     const role = msg.role;
     if (role !== "user" && role !== "assistant") continue;
 
-    const turn: TranscriptTurn = { ts, role, text: "", raw_type: entry.type };
-
-    // content can be string or array of blocks
     const content = msg.content;
     if (typeof content === "string") {
-      turn.text = content;
-    } else if (Array.isArray(content)) {
-      // Concat text blocks; if there are tool_use / tool_result, surface them too
-      const textParts: string[] = [];
-      for (const block of content) {
-        if (!block || typeof block !== "object") continue;
-        if (block.type === "text" && typeof block.text === "string") {
-          textParts.push(block.text);
-        } else if (block.type === "tool_use") {
-          const summary = typeof block.input === "object"
-            ? JSON.stringify(block.input).slice(0, 200)
-            : String(block.input ?? "");
-          turn.tool_use = { name: block.name ?? "?", summary };
-          textParts.push(`[tool_use: ${block.name}]`);
-        } else if (block.type === "tool_result") {
-          turn.is_tool_result = true;
-          const t = typeof block.content === "string"
-            ? block.content
-            : Array.isArray(block.content)
-              ? block.content.map((c: any) => c?.text ?? "").join("")
-              : JSON.stringify(block.content ?? "").slice(0, 200);
-          textParts.push(`[tool_result] ${t.slice(0, 300)}`);
-        }
-      }
-      turn.text = textParts.join("\n");
+      if (!content.trim()) continue;
+      turns.push({ ts, role, text: content, raw_type: entry.type });
+      continue;
     }
+    if (!Array.isArray(content)) continue;
 
-    // Skip empty turns
-    if (!turn.text.trim() && !turn.tool_use && !turn.is_tool_result) continue;
-
-    turns.push(turn);
+    // For multi-block messages: emit ONE turn per "interesting block" so the
+    // dashboard can render text vs tool_use vs tool_result distinctly.
+    // (Most messages have a single block anyway.)
+    let added = false;
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
+        turns.push({ ts, role, text: block.text, raw_type: entry.type });
+        added = true;
+      } else if (block.type === "tool_use") {
+        const name = block.name ?? "?";
+        const input = block.input ?? {};
+        const desc = typeof (input as any)?.description === "string"
+          ? (input as any).description
+          : undefined;
+        turns.push({
+          ts, role, text: "", raw_type: entry.type,
+          tool_use: {
+            id: block.id ?? "",
+            name,
+            description: desc,
+            input,
+            input_summary: summarizeToolInput(name, input),
+          },
+        });
+        added = true;
+      } else if (block.type === "tool_result") {
+        const full = stringifyResult(block.content);
+        const truncated = full.length > MAX_TOOL_RESULT_BYTES;
+        turns.push({
+          ts, role, text: "", raw_type: entry.type,
+          tool_result: {
+            tool_use_id: block.tool_use_id,
+            content: truncated ? full.slice(0, MAX_TOOL_RESULT_BYTES) + "\n…[truncated]" : full,
+            truncated,
+            is_error: block.is_error === true,
+          },
+        });
+        added = true;
+      }
+      if (turns.length >= limit) break;
+    }
+    // (no else — we already added at least one turn or skipped)
+    void added;
   }
 
-  // We walked backwards; reverse to chronological (oldest → newest)
   return turns.reverse();
 }

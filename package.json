@@ -24,6 +24,7 @@
   "dependencies": {
     "better-sqlite3": "^11.3.0",
     "express": "^5.0.0",
+    "marked": "^18.0.3",
     "node-notifier": "^10.0.1",
     "pino": "^9.4.0",
     "qrcode-terminal": "^0.12.0",
