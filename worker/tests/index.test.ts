@@ -105,3 +105,42 @@ describe("Worker fetch handler", () => {
     expect(phoneRes.status).toBe(101);
   });
 });
+
+import { describe as descQuery, it as itQuery, expect as expQuery } from "vitest";
+import workerModule2 from "../src/index.js";
+import { makeIntegrationEnv as makeEnv2 } from "./_do-mock.js";
+
+const ctx2 = {} as ExecutionContext;
+
+descQuery("Worker /v1/phone URL-query auth fallback", () => {
+  itQuery("accepts X-Pairing-Token via ?token= query param", async () => {
+    const { env } = makeEnv2();
+    // Pre-seed coordinator with a token
+    await env.PAIRING.get(env.PAIRING.idFromName("coordinator")).fetch(
+      new Request("https://x/register", {
+        method: "POST",
+        body: JSON.stringify({ token: "QUERYTESTTOKEN012", daemon_id: "test-id-1" }),
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const res = await workerModule2.fetch(
+      new Request("https://x/v1/phone?token=QUERYTESTTOKEN012", {
+        headers: { "Upgrade": "websocket" },
+      }),
+      env, ctx2,
+    );
+    expQuery(res.status).toBe(101);
+  });
+
+  itQuery("accepts X-Daemon-Id via ?daemon_id= query param", async () => {
+    const { env } = makeEnv2();
+    const res = await workerModule2.fetch(
+      new Request("https://x/v1/phone?daemon_id=some-daemon-id", {
+        headers: { "Upgrade": "websocket" },
+      }),
+      env, ctx2,
+    );
+    // 101 returned even if downstream DO closes — the router accepts because daemon_id is present
+    expQuery(res.status).toBe(101);
+  });
+});

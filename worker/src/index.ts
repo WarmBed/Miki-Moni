@@ -45,8 +45,9 @@ export default {
       if (req.headers.get("Upgrade") !== "websocket") {
         return new Response("expected websocket", { status: 426 });
       }
-      const pairing_token = req.headers.get("X-Pairing-Token");
-      const daemon_id_hdr = req.headers.get("X-Daemon-Id");
+      // Browsers can't set custom headers on WebSocket; accept URL-query fallback.
+      const pairing_token = req.headers.get("X-Pairing-Token") ?? url.searchParams.get("token");
+      const daemon_id_hdr = req.headers.get("X-Daemon-Id") ?? url.searchParams.get("daemon_id");
 
       let target_daemon_id: string | null = null;
       if (pairing_token) {
@@ -68,6 +69,8 @@ export default {
         return new Response("missing X-Pairing-Token or X-Daemon-Id", { status: 400 });
       }
 
+      // Forward the request to the DO. The DO also reads from query/header for downstream
+      // X-Phone-Pubkey / X-Sig in reconnect mode (modified in daemon-relay.ts).
       const id = env.RELAY.idFromName(target_daemon_id);
       const stub = env.RELAY.get(id);
       return stub.fetch(req);

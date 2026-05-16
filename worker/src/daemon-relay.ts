@@ -71,16 +71,18 @@ export class DaemonRelay implements DurableObject {
   }
 
   private async acceptPhone(req: Request): Promise<Response> {
-    const pairing_token = req.headers.get("X-Pairing-Token");
-    const phone_pubkey_hdr = req.headers.get("X-Phone-Pubkey");
-    const sig_hdr = req.headers.get("X-Sig");
-
-    if (!pairing_token && !phone_pubkey_hdr) {
-      return new Response("missing pairing_token or phone_pubkey", { status: 400 });
-    }
+    const url = new URL(req.url);
+    const pairing_token = req.headers.get("X-Pairing-Token") ?? url.searchParams.get("token");
+    const phone_pubkey_hdr = req.headers.get("X-Phone-Pubkey") ?? url.searchParams.get("phone_pubkey");
+    const sig_hdr = req.headers.get("X-Sig") ?? url.searchParams.get("sig");
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
+
+    if (!pairing_token && !phone_pubkey_hdr) {
+      server.close(4000, "missing_pairing_token_or_phone_pubkey");
+      return new Response(null, { status: 101, webSocket: client });
+    }
 
     if (pairing_token) {
       const phone_id = pairing_token;
