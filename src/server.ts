@@ -220,23 +220,58 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     if (!session) { deps.log?.warn({ route: "/send", via, key, submit: submitFlag }, "session not found"); res.status(404).json({ error: "session not found", lookup: { via, key } }); return; }
 
     if (!submitFlag) {
-      // PREFILL mode — vscode:// URI handler. Optionally auto-press Enter.
+      // PREFILL+ENTER mode — route via helper extension. The legacy direct-SendKeys
+      // path (prefillAndSubmitLegacy) does NOT reliably deliver prompts (verified
+      // end-to-end: see 2026-05-16 spec). Opt in to legacy explicitly with ?legacy=1
+      // for debugging the Win32 focus mechanism in isolation.
       const url = buildSendUrl(session.session_uuid, prompt);
-      const mode = autoEnter ? "prefill+enter" : "prefill";
-      try {
-        let diag: string | null = null;
-        if (autoEnter) {
+      const legacyMode = req.query.legacy === "1";
+
+      if (legacyMode) {
+        try {
           const r = await deps.bridge.prefillAndSubmitLegacy(session.session_uuid, prompt, { cwd: session.cwd });
-          diag = r.diag;
-        } else {
-          await deps.bridge.send(session.session_uuid, prompt);
+          deps.log?.info({ route: "/send", mode: "legacy", session_uuid: session.session_uuid, diag: r.diag }, "legacy path used");
+          res.status(200).json({ ok: true, mode: "legacy", url, session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name, diag: r.diag });
+        } catch (err) {
+          deps.log?.error({ route: "/send", mode: "legacy", error: String(err) }, "legacy path threw");
+          res.status(500).json({ error: String(err), url });
         }
-        deps.log?.info({ route: "/send", mode, via, key, cwd: session.cwd, session_uuid: session.session_uuid, project: session.project_name, promptLength: prompt.length, url, diag }, autoEnter ? "URI prefilled + Enter sent to foreground" : "URI prefilled (not submitted)");
-        res.status(200).json({ ok: true, mode, url, session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name, diag });
-      } catch (err) {
-        deps.log?.error({ route: "/send", mode, via, key, url, error: String(err) }, "bridge prefill threw");
-        res.status(500).json({ error: String(err), url });
+        return;
       }
+
+      if (!autoEnter) {
+        // prefill-only (no Enter): still use legacy send (just URI open, no keystroke)
+        try {
+          await deps.bridge.send(session.session_uuid, prompt);
+          deps.log?.info({ route: "/send", mode: "prefill", session_uuid: session.session_uuid }, "URI prefilled (not submitted)");
+          res.status(200).json({ ok: true, mode: "prefill", url, session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name });
+        } catch (err) {
+          deps.log?.error({ route: "/send", mode: "prefill", error: String(err) }, "bridge.send threw");
+          res.status(500).json({ error: String(err), url });
+        }
+        return;
+      }
+
+      // Default: helper path (auto_enter=true, no ?legacy=1)
+      const result = await deps.bridge.submitViaHelper({
+        sessionUuid: session.session_uuid!,
+        prompt,
+        cwd: session.cwd,
+        registry,
+        timeoutMs: 10_000,
+      });
+      if (!result.ok && result.error?.includes("no cc-hub-helper")) {
+        deps.log?.warn({ route: "/send", mode: "helper", cwd: session.cwd }, "no helper for cwd");
+        res.status(503).json({ ok: false, error: result.error, mode: "helper", url, cwd: session.cwd });
+        return;
+      }
+      deps.log?.info({ route: "/send", mode: "helper", session_uuid: session.session_uuid, ok: result.ok, error: result.error, diag: result.diag }, "helper path");
+      res.status(200).json({
+        ok: result.ok, mode: "helper",
+        ...(result.error !== undefined ? { error: result.error } : {}),
+        ...(result.diag !== undefined ? { diag: result.diag } : {}),
+        url, session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name,
+      });
       return;
     }
 

@@ -342,3 +342,102 @@ describe("VscodeBridge.submitViaHelper", () => {
     store.close();
   });
 });
+
+describe("server POST /send routing (helper path)", () => {
+  it("returns 503 with helpful message when no helper registered for cwd", async () => {
+    const store = new SessionStore(":memory:");
+    store.upsert({
+      cwd: "d:\\code\\xianyu-assistant", session_uuid: "uuid-y", project_name: "xianyu",
+      status: "waiting", last_event_at: 1, last_message_preview: "",
+      tokens_in: 0, tokens_out: 0, vscode_pid: null,
+    });
+    const bridge = new VscodeBridge(async () => {});
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    const { app } = createApp({ store, handler, bridge, notifier: null as any, webDir: "/tmp/none" });
+
+    const res = await request(app).post("/send").send({
+      session_uuid: "uuid-y", prompt: "hi",  // auto_enter:true (default), submit:false (default)
+    });
+    expect(res.status).toBe(503);
+    expect(res.body.error).toMatch(/no cc-hub-helper.*registered/i);
+    expect(res.body.error).toMatch(/install the VSIX/i);
+    store.close();
+  });
+
+  it("returns 200 with ok=true when helper acks success", async () => {
+    const store = new SessionStore(":memory:");
+    store.upsert({
+      cwd: "d:\\code", session_uuid: "uuid-z", project_name: "code",
+      status: "waiting", last_event_at: 1, last_message_preview: "",
+      tokens_in: 0, tokens_out: 0, vscode_pid: null,
+    });
+    const bridge = new VscodeBridge(async () => {});
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    const { app, server, registry } = createApp({
+      store, handler, bridge, notifier: null as any, webDir: "/tmp/none",
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as any).port;
+
+    const extWs = new WebSocket(`ws://127.0.0.1:${port}/ws_ext`);
+    await new Promise<void>((r) => extWs.on("open", () => r()));
+    extWs.send(JSON.stringify({ type: "register", workspace_root: "d:/code", helper_version: "test" }));
+    extWs.on("message", (raw) => {
+      const m = JSON.parse(String(raw));
+      if (m.type === "submit") {
+        extWs.send(JSON.stringify({
+          type: "submit_ack", request_id: m.request_id, ok: true, diag: "all-good",
+        }));
+      }
+    });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const res = await request(app).post("/send").send({ session_uuid: "uuid-z", prompt: "hi" });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.mode).toBe("helper");
+    expect(res.body.diag).toBe("all-good");
+
+    extWs.close();
+    await new Promise<void>((r) => server.close(() => r()));
+    store.close();
+  });
+
+  it("returns 200 with ok=false when helper acks error (propagates message)", async () => {
+    const store = new SessionStore(":memory:");
+    store.upsert({
+      cwd: "d:\\code", session_uuid: "uuid-w", project_name: "code",
+      status: "waiting", last_event_at: 1, last_message_preview: "",
+      tokens_in: 0, tokens_out: 0, vscode_pid: null,
+    });
+    const bridge = new VscodeBridge(async () => {});
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    const { app, server } = createApp({
+      store, handler, bridge, notifier: null as any, webDir: "/tmp/none",
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as any).port;
+
+    const extWs = new WebSocket(`ws://127.0.0.1:${port}/ws_ext`);
+    await new Promise<void>((r) => extWs.on("open", () => r()));
+    extWs.send(JSON.stringify({ type: "register", workspace_root: "d:/code", helper_version: "test" }));
+    extWs.on("message", (raw) => {
+      const m = JSON.parse(String(raw));
+      if (m.type === "submit") {
+        extWs.send(JSON.stringify({
+          type: "submit_ack", request_id: m.request_id, ok: false, error: "claude-vscode.focus not found",
+        }));
+      }
+    });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const res = await request(app).post("/send").send({ session_uuid: "uuid-w", prompt: "hi" });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toMatch(/claude-vscode.focus not found/);
+
+    extWs.close();
+    await new Promise<void>((r) => server.close(() => r()));
+    store.close();
+  });
+});

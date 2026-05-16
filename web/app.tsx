@@ -293,7 +293,7 @@ function TwoColumnTranscript({ turns }: { turns: TranscriptTurn[] }) {
 
 // ── Session card ───────────────────────────────────────────────────────────
 
-type ActionResult = { ok: boolean; label: string; url?: string; reply?: string; durationMs?: number; diag?: string; ts: number } | null;
+type ActionResult = { ok: boolean; label: string; url?: string; reply?: string; durationMs?: number; diag?: string; error?: string; ts: number } | null;
 
 function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend }: {
   s: Session;
@@ -301,7 +301,7 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
   clientType: ClientType;
   onSetClientType: (uuid: string, type: ClientType) => void;
   onFocus: (uuid: string) => Promise<{ ok: boolean; status: number; url?: string }>;
-  onSend: (uuid: string, prompt: string, submit: boolean) => Promise<{ ok: boolean; status: number; url?: string; reply?: string; duration_ms?: number; diag?: string }>;
+  onSend: (uuid: string, prompt: string, submit: boolean) => Promise<{ ok: boolean; status: number; url?: string; reply?: string; duration_ms?: number; diag?: string; error?: string }>;
 }) {
   const isCli = clientType === "cli";
   const [collapsed, setCollapsed] = useState(!defaultExpanded);
@@ -441,7 +441,7 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
         : submitMode
           ? `Claude 已回覆 (${r.duration_ms ?? "?"} ms)`
           : `已送出到 VSCode panel（Enter 已自動按）`;
-      setSendResult({ ok: r.ok, label, url: r.url, reply: r.reply, durationMs: r.duration_ms, diag: r.diag, ts: Date.now() });
+      setSendResult({ ok: r.ok, label, url: r.url, reply: r.reply, durationMs: r.duration_ms, diag: r.diag, error: r.error, ts: Date.now() });
       setDraft("");
       if (r.ok && submitMode && transcript) void loadTranscript();
     } finally {
@@ -481,11 +481,15 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
           title={isCli ? "🚫 CLI session 不支援 focus（URI handler 只開 VSCode）" : "叫起 VSCode 視窗（focus）"}
           disabled={isCli}
         >{s.project_name}</button>
-        <ClientTypeBadge
-          type={clientType}
-          onToggle={() => onSetClientType(sessionUuid, isCli ? "vscode" : "cli")}
-          size="md"
-        />
+        {s.wrapped ? (
+          <span class="client-badge client-badge-wrap client-badge-md" title="wrapper 接管中（CLI session）">🔌 wrapped</span>
+        ) : (
+          <ClientTypeBadge
+            type={clientType}
+            onToggle={() => onSetClientType(sessionUuid, isCli ? "vscode" : "cli")}
+            size="md"
+          />
+        )}
         <span style={{ color: "var(--fg-muted)", fontSize: 12 }}>{STATUS_LABEL[s.status]}</span>
         <span style={{ color: "var(--fg-subtle)", fontSize: 11, marginLeft: 8 }}>{fmtRelative(s.last_event_at)}</span>
         <button
@@ -635,6 +639,11 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
               <div style={{ fontSize: 12, color: sendResult.ok ? "var(--pass)" : "var(--accent)" }}>
                 送 prompt：{sendResult.label}
               </div>
+              {sendResult.error && (
+                <div style={{ marginTop: 6, fontSize: 12, color: "var(--accent)", padding: 8, background: "var(--bg-subtle)", borderRadius: 4 }}>
+                  ⚠️ {sendResult.error}
+                </div>
+              )}
               {sendResult.reply && (
                 <div style={{ marginTop: 6, padding: 10, background: "var(--sl2)", border: "1px solid var(--border)", borderRadius: 6 }}>
                   <div class="section-label" style={{ marginBottom: 4 }}>Claude 回覆</div>
@@ -825,12 +834,14 @@ function Cell({ s, preview, clientType, onSetClientType, onQuickSend, onOpenTab,
       </div>
       <div class="cell-cwd" style={{ color: c.label, display: "flex", alignItems: "center", gap: 6 }} title={s.cwd}>
         <strong style={{ fontWeight: 600 }}>{s.project_name}</strong>
-        <ClientTypeBadge
-          type={clientType}
-          onToggle={() => onSetClientType(s.session_uuid ?? "", clientType === "cli" ? "vscode" : "cli")}
-        />
-        {s.wrapped && (
-          <span class="client-badge client-badge-wrap" title="這個 session 被 `cch claude` wrapper 接管 — 送出走 push、不再 spawn / 不花 $$">🔌 wrapped</span>
+        {s.wrapped ? (
+          // Wrapped session: it's inherently CLI + we own it. One badge says it all.
+          <span class="client-badge client-badge-wrap" title="這個 session 被 `cch claude` wrapper 接管（CLI session）— 送出走 push、不再 spawn / 不花 $$">🔌 wrapped</span>
+        ) : (
+          <ClientTypeBadge
+            type={clientType}
+            onToggle={() => onSetClientType(s.session_uuid ?? "", clientType === "cli" ? "vscode" : "cli")}
+          />
         )}
       </div>
       <div class="cell-preview cell-convo">
@@ -927,7 +938,7 @@ function Popover({ s, x, y, clientType, onSetClientType, onClose, onSend, onOpen
   clientType: ClientType;
   onSetClientType: (uuid: string, type: ClientType) => void;
   onClose: () => void;
-  onSend: (uuid: string, prompt: string, submit: boolean) => Promise<{ ok: boolean; status: number; reply?: string; duration_ms?: number }>;
+  onSend: (uuid: string, prompt: string, submit: boolean) => Promise<{ ok: boolean; status: number; reply?: string; duration_ms?: number; error?: string }>;
   onOpenTab: (uuid: string) => void;
   onSync: (uuid: string) => void;
 }) {
@@ -980,10 +991,14 @@ function Popover({ s, x, y, clientType, onSetClientType, onClose, onSend, onOpen
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
           <span class={STATUS_DOT[s.status]} />
           <strong style={{ fontSize: 13 }}>{s.project_name}</strong>
-          <ClientTypeBadge
-            type={clientType}
-            onToggle={() => onSetClientType(s.session_uuid ?? "", isCli ? "vscode" : "cli")}
-          />
+          {s.wrapped ? (
+            <span class="client-badge client-badge-wrap" title="wrapper 接管中（CLI session）">🔌 wrapped</span>
+          ) : (
+            <ClientTypeBadge
+              type={clientType}
+              onToggle={() => onSetClientType(s.session_uuid ?? "", isCli ? "vscode" : "cli")}
+            />
+          )}
           <button
             class="btn-ghost"
             style={{ marginLeft: "auto", padding: "2px 6px" }}
@@ -1116,6 +1131,11 @@ function App() {
   }
   function getClientType(uuid: string | null | undefined): ClientType {
     if (!uuid) return "vscode";
+    // Wrapped sessions are always CLI by definition (the wrapper is the CLI host).
+    // The manual toggle becomes irrelevant — we hard-override to "cli" so the
+    // prefill-send / focus disabling kicks in automatically.
+    const s = sessions.find((x) => x.session_uuid === uuid);
+    if (s?.wrapped) return "cli";
     return clientTypes[uuid] ?? "vscode";
   }
 
@@ -1177,6 +1197,13 @@ function App() {
         });
         // Debounced previews refresh: on every WS event, schedule a single refresh
         scheduleRefresh();
+      } else if (msg.type === "session_removed") {
+        const uuid = msg.session_uuid as string;
+        addLog("info", "WS session_removed", { uuid: uuid.slice(0, 8) });
+        setSessions((prev) => prev.filter((x) => x.session_uuid !== uuid));
+        // Also close the tab if it was open
+        setOpenTabs((prev) => prev.filter((t) => t !== uuid));
+        setCurrentTab((cur) => (cur === uuid ? "overview" : cur));
       }
     };
 
@@ -1207,7 +1234,7 @@ function App() {
       addLog(r.ok ? "info" : "error", `/send ${r.status}`, { mode: body?.mode, reply_preview: body?.reply?.slice(0, 60), duration_ms: body?.duration_ms, diag: body?.diag });
       // refresh previews so the cell shows the new reply
       if (r.ok && submit) scheduleRefresh();
-      return { ok: r.ok, status: r.status, url: body?.url, reply: body?.reply, duration_ms: body?.duration_ms, diag: body?.diag };
+      return { ok: r.ok, status: r.status, url: body?.url, reply: body?.reply, duration_ms: body?.duration_ms, diag: body?.diag, error: body?.error };
     } catch (e) { addLog("error", "/send throw", { error: String(e) }); return { ok: false, status: 0 }; }
   }
 
