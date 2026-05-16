@@ -75,8 +75,10 @@ async function cmdNew(cfg: Config, workerUrlArg?: string, tokenArg?: string): Pr
     device_name: cfg.device.name,
   });
 
-  console.log("\nScan this QR with your phone (Happy app / cc-hub phone web client):\n");
+  console.log("\nScan this QR with your phone (or copy/paste the JSON below into the phone web client):\n");
   qrcode.generate(qrPayload, { small: true });
+  console.log("\nPairing JSON (copy for browser-based pairing):");
+  console.log(qrPayload);
   console.log(`\nPairing token expires in ${PAIRING_TOKEN_TTL_MS / 60000} minutes.`);
   console.log(`Connecting to ${workerUrl} ...`);
 

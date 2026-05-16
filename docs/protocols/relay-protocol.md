@@ -25,6 +25,8 @@ Headers on WS upgrade:
 - `X-Daemon-Id: <16-char>` — which daemon this phone wants to pair with / talk to.
 - `X-Pairing-Token: <base64>` (only during pairing mode)
 
+**Note for browser clients:** Browser-native `WebSocket` does not support custom request headers. Phone clients running in a browser MUST instead pass `daemon_id` and/or `pairing_token` as **URL query parameters** on the WS upgrade URL (e.g. `wss://worker/v1/phone?daemon_id=<id>`). Server implementations MUST accept either headers OR query parameters and prefer headers when both are present.
+
 ## Routing (Worker logic)
 
 ```

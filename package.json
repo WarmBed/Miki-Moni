@@ -10,6 +10,8 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "build:web": "vite build",
+    "build:phone": "vite build --config vite-phone.config.ts",
+    "build:all": "pnpm build:web && pnpm build:phone",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",

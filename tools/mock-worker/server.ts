@@ -155,8 +155,9 @@ server.on("upgrade", (req, socket, head) => {
   }
 
   const daemonAuth = req.headers["x-daemon-auth"] as string | undefined;
-  const pairingToken = req.headers["x-pairing-token"] as string | undefined;
-  const daemonId = req.headers["x-daemon-id"] as string | undefined;
+  const urlObj = new URL(req.url ?? "/", `http://127.0.0.1:${PORT}`);
+  const pairingToken = (req.headers["x-pairing-token"] as string | undefined) ?? urlObj.searchParams.get("pairing_token") ?? undefined;
+  const daemonId = (req.headers["x-daemon-id"] as string | undefined) ?? urlObj.searchParams.get("daemon_id") ?? undefined;
 
   // Daemon connections require X-Daemon-Auth
   if (isDaemon && daemonAuth !== DAEMON_TOKEN) {
