@@ -2,6 +2,10 @@ import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { randomUUID } from "node:crypto";
+import type { WebSocket } from "ws";
+import type { ExtRegistry } from "./ext-registry.js";
+import type { MsgSubmit, MsgSubmitAck, ExtMessage } from "./protocol-ext.js";
 
 /**
  * Hook-reported cwd ≠ where the session's transcript actually lives.
@@ -298,7 +302,7 @@ export class VscodeBridge {
    *                                 though this PowerShell process is not fg
    *   5. SendKeys {ENTER}        → submitted to the now-focused VSCode panel
    */
-  async prefillAndSubmit(
+  async prefillAndSubmitLegacy(
     sessionUuid: string | null,
     prompt: string,
     opts: { cwd?: string; delayMs?: number } = {},
@@ -342,5 +346,62 @@ export class VscodeBridge {
    */
   async submit(args: { sessionUuid: string; cwd: string; prompt: string; maxBudgetUsd?: number; timeoutMs?: number }): Promise<{ reply: string; exitCode: number; durationMs: number }> {
     return this.headless(args);
+  }
+
+  /**
+   * Send a submit request to the helper extension that owns the given cwd's
+   * workspace, and await its ack. Returns {ok, error?, diag?}.
+   */
+  async submitViaHelper(args: {
+    sessionUuid: string;
+    prompt: string;
+    cwd: string;
+    registry: ExtRegistry;
+    timeoutMs?: number;
+  }): Promise<{ ok: boolean; error?: string; diag?: string }> {
+    const ws = args.registry.findForCwd(args.cwd) as WebSocket | null;
+    if (!ws) {
+      return {
+        ok: false,
+        error: `no cc-hub-helper extension registered for workspace covering ${args.cwd}; install the VSIX into that VSCode window: npm run install-helper`,
+      };
+    }
+    const requestId = randomUUID();
+    const submitMsg: MsgSubmit = {
+      type: "submit",
+      request_id: requestId,
+      session_uuid: args.sessionUuid,
+      prompt: args.prompt,
+    };
+    const timeoutMs = args.timeoutMs ?? 10_000;
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        ws.off("message", onMessage);
+        resolve({ ok: false, error: `submit_ack timeout after ${timeoutMs}ms` });
+      }, timeoutMs);
+
+      const onMessage = (raw: any) => {
+        let msg: ExtMessage;
+        try { msg = JSON.parse(String(raw)); } catch { return; }
+        if (msg.type !== "submit_ack") return;
+        if ((msg as MsgSubmitAck).request_id !== requestId) return;
+        clearTimeout(timer);
+        ws.off("message", onMessage);
+        const ack = msg as MsgSubmitAck;
+        resolve({
+          ok: ack.ok,
+          ...(ack.error !== undefined ? { error: ack.error } : {}),
+          ...(ack.diag !== undefined ? { diag: ack.diag } : {}),
+        });
+      };
+      ws.on("message", onMessage);
+      try { ws.send(JSON.stringify(submitMsg)); }
+      catch (err) {
+        clearTimeout(timer);
+        ws.off("message", onMessage);
+        resolve({ ok: false, error: `ws send failed: ${String(err)}` });
+      }
+    });
   }
 }

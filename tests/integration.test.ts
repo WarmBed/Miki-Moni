@@ -6,6 +6,7 @@ import { SessionStore } from "../src/session-store.js";
 import { HookHandler } from "../src/hook-handler.js";
 import { SessionResolver } from "../src/session-resolver.js";
 import { VscodeBridge } from "../src/vscode-bridge.js";
+import { ExtRegistry } from "../src/ext-registry.js";
 import path from "node:path";
 
 const fixturesRoot = path.join(__dirname, "fixtures", "projects");
@@ -231,6 +232,112 @@ describe("daemon /ws_ext heartbeat", () => {
     expect(registry.list()).toHaveLength(0);
 
     ws.close();
+    await new Promise<void>((r) => server.close(() => r()));
+    store.close();
+  });
+});
+
+describe("VscodeBridge.submitViaHelper", () => {
+  it("sends submit message over ws and resolves on matching submit_ack", async () => {
+    const store = new SessionStore(":memory:");
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    const { server, registry } = createApp({
+      store, handler, bridge: new VscodeBridge(async () => {}), notifier: null as any, webDir: "/tmp/none",
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as any).port;
+
+    // Fake extension connects, registers, echoes a successful ack for any submit
+    const extWs = new WebSocket(`ws://127.0.0.1:${port}/ws_ext`);
+    await new Promise<void>((r) => extWs.on("open", () => r()));
+    extWs.send(JSON.stringify({ type: "register", workspace_root: "d:/code", helper_version: "test" }));
+    extWs.on("message", (raw) => {
+      const m = JSON.parse(String(raw));
+      if (m.type === "submit") {
+        extWs.send(JSON.stringify({
+          type: "submit_ack", request_id: m.request_id, ok: true, diag: "test-ok",
+        }));
+      }
+    });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const bridge = new VscodeBridge(async () => {});
+    const result = await bridge.submitViaHelper({
+      sessionUuid: "uuid-1", prompt: "hi", cwd: "d:/code", registry, timeoutMs: 2000,
+    });
+    expect(result).toEqual({ ok: true, diag: "test-ok" });
+
+    extWs.close();
+    await new Promise<void>((r) => server.close(() => r()));
+    store.close();
+  });
+
+  it("returns {ok:false} when no extension registered for cwd", async () => {
+    const registry = new ExtRegistry();
+    const bridge = new VscodeBridge(async () => {});
+    const result = await bridge.submitViaHelper({
+      sessionUuid: "u", prompt: "p", cwd: "d:/code", registry, timeoutMs: 100,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/no cc-hub-helper.*registered/i);
+  });
+
+  it("returns {ok:false} after timeoutMs when extension doesn't ack", async () => {
+    const store = new SessionStore(":memory:");
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    const { server, registry } = createApp({
+      store, handler, bridge: new VscodeBridge(async () => {}), notifier: null as any, webDir: "/tmp/none",
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as any).port;
+
+    const extWs = new WebSocket(`ws://127.0.0.1:${port}/ws_ext`);
+    await new Promise<void>((r) => extWs.on("open", () => r()));
+    extWs.send(JSON.stringify({ type: "register", workspace_root: "d:/code", helper_version: "test" }));
+    // Deliberately don't ack
+    await new Promise((r) => setTimeout(r, 50));
+
+    const bridge = new VscodeBridge(async () => {});
+    const result = await bridge.submitViaHelper({
+      sessionUuid: "u", prompt: "p", cwd: "d:/code", registry, timeoutMs: 100,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/timeout/i);
+
+    extWs.close();
+    await new Promise<void>((r) => server.close(() => r()));
+    store.close();
+  });
+
+  it("propagates {ok:false, error} from submit_ack to caller", async () => {
+    const store = new SessionStore(":memory:");
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    const { server, registry } = createApp({
+      store, handler, bridge: new VscodeBridge(async () => {}), notifier: null as any, webDir: "/tmp/none",
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as any).port;
+
+    const extWs = new WebSocket(`ws://127.0.0.1:${port}/ws_ext`);
+    await new Promise<void>((r) => extWs.on("open", () => r()));
+    extWs.send(JSON.stringify({ type: "register", workspace_root: "d:/code", helper_version: "test" }));
+    extWs.on("message", (raw) => {
+      const m = JSON.parse(String(raw));
+      if (m.type === "submit") {
+        extWs.send(JSON.stringify({
+          type: "submit_ack", request_id: m.request_id, ok: false, error: "URI dispatch refused", diag: "x",
+        }));
+      }
+    });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const bridge = new VscodeBridge(async () => {});
+    const result = await bridge.submitViaHelper({
+      sessionUuid: "u", prompt: "p", cwd: "d:/code", registry, timeoutMs: 2000,
+    });
+    expect(result).toEqual({ ok: false, error: "URI dispatch refused", diag: "x" });
+
+    extWs.close();
     await new Promise<void>((r) => server.close(() => r()));
     store.close();
   });

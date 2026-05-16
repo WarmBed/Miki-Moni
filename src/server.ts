@@ -226,7 +226,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       try {
         let diag: string | null = null;
         if (autoEnter) {
-          const r = await deps.bridge.prefillAndSubmit(session.session_uuid, prompt, { cwd: session.cwd });
+          const r = await deps.bridge.prefillAndSubmitLegacy(session.session_uuid, prompt, { cwd: session.cwd });
           diag = r.diag;
         } else {
           await deps.bridge.send(session.session_uuid, prompt);
@@ -346,7 +346,16 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       if (uuid && wrapConnections.get(uuid) === ws) {
         wrapConnections.delete(uuid);
         deps.log?.info({ route: "/wrap", session_uuid: uuid }, "wrap disconnected");
-        rebroadcastSession(uuid);
+        // Wrapped sessions are "owned" by cc-hub for their lifetime. When the
+        // wrapper exits (Ctrl+C / crash), the session is logically over —
+        // drop it from the store so the dashboard card disappears instead of
+        // hanging around stale. Re-opening via `cch claude -r <uuid>` will
+        // repopulate from hooks instantly.
+        deps.store.remove(uuid);
+        const removeMsg = JSON.stringify({ type: "session_removed", session_uuid: uuid });
+        for (const client of wss.clients) {
+          if (client.readyState === client.OPEN) client.send(removeMsg, () => { /* noop */ });
+        }
       }
     });
     ws.on("error", () => { /* swallow — close handler does cleanup */ });
