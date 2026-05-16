@@ -14,5 +14,5 @@
     "jsx": "preserve",
     "jsxImportSource": "preact"
   },
-  "include": ["src/**/*", "tests/**/*", "web/**/*", "web-phone/**/*", "vite-phone.config.ts"]
+  "include": ["src/**/*", "tests/**/*", "tools/**/*", "web/**/*", "web-phone/**/*", "vite-phone.config.ts"]
 }

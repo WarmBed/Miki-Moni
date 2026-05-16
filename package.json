@@ -17,7 +17,9 @@
     "typecheck": "tsc --noEmit",
     "install:hooks": "tsx src/install-hooks.ts",
     "pair": "tsx src/cli/pair.ts",
-    "mock-worker": "tsx tools/mock-worker/server.ts"
+    "mock-worker": "tsx tools/mock-worker/server.ts",
+    "dev:all": "tsx tools/dev/start-all.ts",
+    "verify": "tsx tools/dev/verify-relay.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
