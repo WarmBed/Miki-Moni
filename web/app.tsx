@@ -19,6 +19,13 @@ const STATUS_COLOR: Record<Session["status"], string> = {
   stale: "bg-red-500",
 };
 
+const STATUS_LABEL: Record<Session["status"], string> = {
+  active: "進行中",
+  waiting: "等你回應",
+  idle: "閒置",
+  stale: "已斷線",
+};
+
 function Card({ s, onFocus, onSend }: {
   s: Session;
   onFocus: (cwd: string) => void;
@@ -33,7 +40,7 @@ function Card({ s, onFocus, onSend }: {
           class="text-lg font-semibold text-left hover:underline"
           onClick={() => onFocus(s.cwd)}
         >{s.project_name}</button>
-        <span class="text-xs text-slate-500 ml-auto">{s.status}</span>
+        <span class="text-xs text-slate-500 ml-auto">{STATUS_LABEL[s.status]}</span>
       </div>
       <div class="text-xs text-slate-500 font-mono">{s.cwd}</div>
       {s.last_message_preview && (
@@ -43,7 +50,7 @@ function Card({ s, onFocus, onSend }: {
         <textarea
           class="flex-1 bg-slate-800 rounded px-2 py-1 text-sm resize-none"
           rows={2}
-          placeholder="Send a prompt to this session..."
+          placeholder="輸入 prompt 送給這個 session…"
           value={draft}
           onInput={(e) => setDraft((e.currentTarget as HTMLTextAreaElement).value)}
         />
@@ -51,7 +58,7 @@ function Card({ s, onFocus, onSend }: {
           class="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-30 rounded px-3 text-sm"
           disabled={!draft.trim()}
           onClick={() => { onSend(s.cwd, draft); setDraft(""); }}
-        >Send</button>
+        >送出</button>
       </div>
     </div>
   );
@@ -82,9 +89,14 @@ function App() {
 
   return (
     <div class="max-w-4xl mx-auto p-6">
-      <h1 class="text-2xl font-bold mb-6">cc-hub</h1>
+      <h1 class="text-2xl font-bold mb-2">cc-hub</h1>
+      <p class="text-xs text-slate-500 mb-6">本機儀表板 · 多個 VSCode Claude session 集中監控 · 點專案名稱可叫起對應視窗</p>
       {sessions.length === 0 && (
-        <div class="text-slate-500 text-center py-10">No sessions yet. Open a Claude Code panel in any VSCode window.</div>
+        <div class="text-slate-500 text-center py-10">
+          <p>目前沒有任何 session。</p>
+          <p class="text-xs mt-2">在任何 VSCode 視窗開 Claude Code panel，這裡就會冒出來。</p>
+          <p class="text-xs mt-1">如果沒反應，可能還沒裝 hooks，請執行 <code class="bg-slate-800 px-1 rounded">pnpm install:hooks</code></p>
+        </div>
       )}
       <div class="grid gap-4">
         {sessions.map((s) => <Card key={s.cwd} s={s} onFocus={onFocus} onSend={onSend} />)}

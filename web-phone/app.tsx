@@ -31,6 +31,13 @@ const STATUS_COLOR: Record<Session["status"], string> = {
   stale: "bg-red-500",
 };
 
+const STATUS_LABEL: Record<Session["status"], string> = {
+  active: "進行中",
+  waiting: "等你回應",
+  idle: "閒置",
+  stale: "已斷線",
+};
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /**
@@ -74,14 +81,14 @@ function PairScreen({ onPaired }: PairScreenProps) {
     try {
       parsed = JSON.parse(jsonText.trim());
     } catch {
-      setErrorMsg("Invalid JSON — paste the exact JSON from the terminal.");
+      setErrorMsg("JSON 格式錯了——請貼上終端機印出來的那一整段 JSON。");
       setStatus("error");
       return;
     }
 
     const { worker_url, pairing_token, daemon_pk, name: daemonName } = parsed;
     if (!worker_url || !pairing_token || !daemon_pk || !daemonName) {
-      setErrorMsg("JSON must have: worker_url, pairing_token, daemon_pk, name.");
+      setErrorMsg("JSON 必須有這幾個欄位：worker_url、pairing_token、daemon_pk、name");
       setStatus("error");
       return;
     }
@@ -100,7 +107,7 @@ function PairScreen({ onPaired }: PairScreenProps) {
         const ws = new WebSocket(wsUrl);
         const timer = setTimeout(() => {
           ws.close();
-          reject(new Error("Pairing timed out after 30s"));
+          reject(new Error("配對逾時（30 秒沒收到 daemon 回應）"));
         }, 30_000);
 
         ws.onopen = () => {
@@ -121,7 +128,7 @@ function PairScreen({ onPaired }: PairScreenProps) {
             const plain = decodeEnvelope(env, sharedSecret) as { kind?: string; ok?: boolean } | null;
             if (!plain || plain.kind !== "pair_ack" || !plain.ok) {
               ws.close();
-              reject(new Error("pair_ack not received or rejected by daemon"));
+              reject(new Error("daemon 沒回傳 pair_ack 或拒絕了配對"));
               return;
             }
             ws.close();
@@ -148,13 +155,13 @@ function PairScreen({ onPaired }: PairScreenProps) {
 
         ws.onerror = () => {
           clearTimeout(timer);
-          reject(new Error("WebSocket connection failed. Is the mock-worker running?"));
+          reject(new Error("WebSocket 連線失敗——確認 mock-worker 有跑（pnpm dev:all）"));
         };
 
         ws.onclose = (ev) => {
           clearTimeout(timer);
           if (!ev.wasClean) {
-            reject(new Error(`Connection closed unexpectedly (code ${ev.code})`));
+            reject(new Error(`連線被中斷（code ${ev.code}）`));
           }
         };
       });
@@ -167,22 +174,22 @@ function PairScreen({ onPaired }: PairScreenProps) {
   return (
     <div class="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
       <div class="w-full max-w-md">
-        <h1 class="text-2xl font-bold mb-2">cc-hub</h1>
-        <p class="text-slate-400 mb-6 text-sm">Pair your phone browser with the cc-hub daemon.</p>
+        <h1 class="text-2xl font-bold mb-2">cc-hub 配對</h1>
+        <p class="text-slate-400 mb-6 text-sm">把這台瀏覽器跟你電腦上的 cc-hub daemon 配對</p>
 
         <div class="bg-slate-900 rounded-lg border border-slate-800 p-5 flex flex-col gap-4">
           <div class="flex flex-col gap-1">
-            <label class="text-sm text-slate-300 font-medium">Pairing JSON</label>
+            <label class="text-sm text-slate-300 font-medium">配對 JSON</label>
             <textarea
               class="bg-slate-800 rounded px-3 py-2 text-sm font-mono resize-y min-h-[8rem] focus:outline-none focus:ring-1 focus:ring-indigo-500"
-              placeholder={'Paste the JSON printed by: pnpm pair --new\n\n{"worker_url":"ws://...","pairing_token":"...","daemon_pk":"...","name":"..."}'}
+              placeholder={'貼上終端機 pnpm pair --new 印出來的 JSON\n\n{"worker_url":"ws://...","pairing_token":"...","daemon_pk":"...","name":"..."}'}
               value={jsonText}
               onInput={(e) => setJsonText((e.currentTarget as HTMLTextAreaElement).value)}
             />
           </div>
 
           <div class="flex flex-col gap-1">
-            <label class="text-sm text-slate-300 font-medium">Phone name</label>
+            <label class="text-sm text-slate-300 font-medium">這台裝置的名稱</label>
             <input
               class="bg-slate-800 rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
               type="text"
@@ -203,12 +210,12 @@ function PairScreen({ onPaired }: PairScreenProps) {
             disabled={status === "connecting" || !jsonText.trim()}
             onClick={handlePair}
           >
-            {status === "connecting" ? "Pairing…" : "Pair"}
+            {status === "connecting" ? "配對中…" : "開始配對"}
           </button>
         </div>
 
         <p class="text-xs text-slate-600 mt-4 text-center">
-          Run <code class="font-mono">pnpm pair --new</code> in the daemon terminal, then copy the JSON here.
+          在電腦終端機跑 <code class="font-mono">pnpm pair --new</code>，把印出來的 JSON 整段複製貼到上面那欄。
         </p>
       </div>
     </div>
@@ -232,7 +239,7 @@ function SessionCard({
       <div class="flex items-center gap-2">
         <span class={`w-3 h-3 rounded-full flex-shrink-0 ${STATUS_COLOR[s.status]}`} />
         <span class="text-base font-semibold truncate">{s.project_name}</span>
-        <span class="text-xs text-slate-500 ml-auto flex-shrink-0">{s.status}</span>
+        <span class="text-xs text-slate-500 ml-auto flex-shrink-0">{STATUS_LABEL[s.status]}</span>
       </div>
       <div class="text-xs text-slate-500 font-mono break-all">{s.cwd}</div>
       {s.last_message_preview && (
@@ -243,14 +250,14 @@ function SessionCard({
           class="bg-slate-700 hover:bg-slate-600 rounded px-3 py-1 text-sm transition-colors"
           onClick={() => onFocus(s.cwd)}
         >
-          Focus
+          叫起視窗
         </button>
       </div>
       <div class="flex gap-2 mt-1">
         <textarea
           class="flex-1 bg-slate-800 rounded px-2 py-1 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-indigo-500"
           rows={2}
-          placeholder="Send a prompt to this session…"
+          placeholder="輸入 prompt 送給這個 session…"
           value={draft}
           onInput={(e) => setDraft((e.currentTarget as HTMLTextAreaElement).value)}
         />
@@ -259,7 +266,7 @@ function SessionCard({
           disabled={!draft.trim()}
           onClick={() => { onSend(s.cwd, draft); setDraft(""); }}
         >
-          Send
+          送出
         </button>
       </div>
     </div>
@@ -278,10 +285,10 @@ const CONN_DOT: Record<ConnStatus, string> = {
 };
 
 const CONN_LABEL: Record<ConnStatus, string> = {
-  connected: "Connected",
-  connecting: "Connecting…",
-  reconnecting: "Reconnecting…",
-  error: "Error",
+  connected: "已連線",
+  connecting: "連線中…",
+  reconnecting: "重新連線中…",
+  error: "連線錯誤",
 };
 
 function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () => void }) {
@@ -378,19 +385,21 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
           class="bg-slate-700 hover:bg-slate-600 rounded px-3 py-1 text-sm ml-3 transition-colors"
           onClick={onUnpair}
         >
-          Unpair
+          解除配對
         </button>
       </header>
 
       <main class="max-w-2xl mx-auto p-4 flex flex-col gap-4">
         {sessions.length === 0 && connStatus === "connected" && (
           <div class="text-slate-500 text-center py-10 text-sm">
-            No sessions yet. Open a Claude Code panel in any VSCode window.
+            <p>目前沒有任何 session。</p>
+            <p class="text-xs mt-2">在 VSCode 開 Claude Code panel 就會冒出來。</p>
+            <p class="text-xs mt-1">若 daemon 還沒裝 hooks，請在電腦執行 <code class="bg-slate-800 px-1 rounded">pnpm install:hooks</code></p>
           </div>
         )}
         {sessions.length === 0 && connStatus !== "connected" && (
           <div class="text-slate-600 text-center py-10 text-sm">
-            Waiting for connection…
+            等待連線…
           </div>
         )}
         {sessions.map((s) => (
