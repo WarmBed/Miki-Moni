@@ -13,13 +13,17 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "install:hooks": "tsx src/install-hooks.ts"
+    "install:hooks": "tsx src/install-hooks.ts",
+    "pair": "tsx src/cli/pair.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
     "express": "^5.0.0",
     "node-notifier": "^10.0.1",
     "pino": "^9.4.0",
+    "qrcode-terminal": "^0.12.0",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {
@@ -27,6 +31,7 @@
     "@types/express": "^5.0.0",
     "@types/node": "^20.16.0",
     "@types/node-notifier": "^8.0.5",
+    "@types/qrcode-terminal": "^0.12.2",
     "@types/supertest": "^6.0.2",
     "@types/ws": "^8.5.12",
     "autoprefixer": "^10.5.0",
