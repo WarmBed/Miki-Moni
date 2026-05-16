@@ -84,8 +84,19 @@ export const defaultHeadless: HeadlessFn = async ({ sessionUuid, cwd, prompt, ma
     child.on("exit", (code) => {
       clearTimeout(timer);
       const durationMs = Date.now() - start;
-      if (code === 0) resolve({ reply: stdout.trim(), exitCode: code, durationMs });
-      else reject(new Error(`headless claude exited ${code} (cwd=${actualCwd}): ${stderr.trim().slice(0, 500)}`));
+      const reply = stdout.trim();
+      // Tolerate non-zero exit when the response was actually generated. Claude
+      // Code's community lifecycle hook (session-lifecycle-hook.mjs SessionEnd)
+      // sometimes fails AFTER the model already produced a response, causing
+      // claude.exe to exit 1 with empty stderr — but the reply IS on stdout
+      // and IS in the transcript. Treat that as success.
+      if (reply) {
+        resolve({ reply, exitCode: code ?? 0, durationMs });
+        return;
+      }
+      reject(new Error(
+        `headless claude exited ${code} (cwd=${actualCwd}, empty stdout): ${stderr.trim().slice(0, 500) || "(empty stderr too — likely SessionEnd hook failure with no response generated)"}`,
+      ));
     });
     child.on("error", (err) => { clearTimeout(timer); reject(err); });
   });
