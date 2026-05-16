@@ -127,6 +127,51 @@ export class VscodeBridge {
   }
 
   /**
+   * Prefill + auto-press Enter in the focused window. Uses Win32 SendKeys.
+   * Workflow: vscode:// URI prefills → VSCode comes forward and focuses input
+   * box → after a short delay we send {ENTER} to whatever is foreground.
+   *
+   * The user's live VSCode panel session handles the prompt (cache hot, cheap).
+   *
+   * Risk: if foreground-lock prevents VSCode from coming forward, Enter goes
+   * to whatever app IS foreground (e.g. browser → could submit a form).
+   * Caller should be aware. We mitigate by raising VSCode via the URI handler
+   * which Explorer dispatches (Explorer has SetForegroundWindow permission).
+   */
+  async prefillAndSubmit(sessionUuid: string | null, prompt: string, delayMs = 800): Promise<void> {
+    if (process.platform !== "win32") {
+      // POSIX: no equivalent reliable SendKeys; just prefill.
+      await this.send(sessionUuid, prompt);
+      return;
+    }
+    const parts: string[] = [];
+    if (sessionUuid) parts.push(`session=${encodeURIComponent(sessionUuid)}`);
+    parts.push(`prompt=${encodeURIComponent(prompt)}`);
+    const url = `vscode://anthropic.claude-code/open?${parts.join("&")}`;
+    // Build a single PowerShell command that:
+    //   1. Start-Process the URI (Windows dispatches to VSCode handler)
+    //   2. Sleep delayMs (let VSCode raise + focus prompt input)
+    //   3. Add-Type System.Windows.Forms; SendKeys ENTER
+    // We use the call operator (&) and chain with semicolons. SendWait blocks
+    // until input is processed.
+    const ps = [
+      `Start-Process -FilePath '${url.replace(/'/g, "''")}'`,
+      `Start-Sleep -Milliseconds ${delayMs}`,
+      `Add-Type -AssemblyName System.Windows.Forms`,
+      `[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')`,
+    ].join("; ");
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(
+        "powershell",
+        ["-NoProfile", "-Command", ps],
+        { stdio: "ignore", windowsHide: true },
+      );
+      child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`prefillAndSubmit exit ${code}`))));
+      child.on("error", reject);
+    });
+  }
+
+  /**
    * Headless submit: actually run Claude with the prompt against the given session.
    * Transcript is appended on disk → VSCode picks up the new user msg + Claude reply.
    * Costs real API money. Caller chooses this vs prefill.

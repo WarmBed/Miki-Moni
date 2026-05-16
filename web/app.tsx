@@ -101,16 +101,30 @@ function mdToPlainText(md: string): string {
   try {
     const html = marked.parse(md, { async: false }) as string;
     const text = html
-      .replace(/<\/(p|div|li|tr|h[1-6]|br)>/gi, " ")
+      // Drop code blocks and HR entirely — they add noise in a 240-char preview.
+      .replace(/<pre[^>]*>[\s\S]*?<\/pre>/gi, " ")
+      .replace(/<hr\s*\/?\s*>/gi, " ")
+      // Table cells and list items: insert " · " separator so columns don't smush together.
+      .replace(/<\/(td|th|li)>/gi, " · ")
+      // Block tags: replace closing tag with a space.
+      .replace(/<\/(p|div|tr|thead|tbody|h[1-6]|blockquote)>/gi, " ")
       .replace(/<br\s*\/?\s*>/gi, " ")
+      // Strip remaining tags.
       .replace(/<[^>]+>/g, "")
+      // HTML entities.
       .replace(/&nbsp;/g, " ")
       .replace(/&amp;/g, "&")
       .replace(/&lt;/g, "<")
       .replace(/&gt;/g, ">")
       .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'");
-    return text.replace(/\s+/g, " ").trim();
+      .replace(/&#39;/g, "'")
+      // Clean up: trim and collapse, drop trailing/repeated separators.
+      .replace(/(\s*·\s*){2,}/g, " · ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^·\s*/, "")
+      .replace(/\s*·\s*$/, "");
+    return text;
   } catch {
     return md.replace(/\s+/g, " ").trim();
   }
@@ -202,6 +216,53 @@ function TurnView({ t }: { t: TranscriptTurn }) {
   );
 }
 
+// Split transcript into two columns:
+//   left  — conversation (user/assistant text, no tool activity)
+//   right — tool activity (assistant tool_use + user tool_result)
+// A turn that has BOTH text and tool_use shows the text on the left and the tool box on the right.
+function TwoColumnTranscript({ turns }: { turns: TranscriptTurn[] }) {
+  if (turns.length === 0) {
+    return <div style={{ padding: "12px 14px", color: "var(--fg-subtle)", fontSize: 12 }}>(transcript 沒有可顯示的訊息)</div>;
+  }
+  const leftTurns: TranscriptTurn[] = [];
+  const rightTurns: TranscriptTurn[] = [];
+  for (const t of turns) {
+    const hasTool = !!(t.tool_use || t.tool_result);
+    if (t.text) {
+      // text → conversation column (strip tool fields so TurnView doesn't render them on the left)
+      leftTurns.push({ ...t, tool_use: undefined, tool_result: undefined });
+    }
+    if (hasTool) {
+      // tool activity → right column (strip text so TurnView doesn't render it on the right)
+      rightTurns.push({ ...t, text: "" });
+    }
+  }
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", maxHeight: 600, overflow: "hidden" }}>
+      <div style={{ overflowY: "auto", borderRight: "1px solid var(--border)" }}>
+        <div style={{ padding: "6px 14px", fontSize: 10, fontWeight: 600, color: "var(--fg-subtle)", textTransform: "uppercase", letterSpacing: "0.08em", background: "var(--sl2)", borderTop: "1px solid var(--border)" }}>
+          對話 · {leftTurns.length}
+        </div>
+        {leftTurns.length === 0 ? (
+          <div style={{ padding: "12px 14px", color: "var(--fg-subtle)", fontSize: 12 }}>(無對話訊息)</div>
+        ) : (
+          leftTurns.map((t, i) => <TurnView key={`L${i}`} t={t} />)
+        )}
+      </div>
+      <div style={{ overflowY: "auto" }}>
+        <div style={{ padding: "6px 14px", fontSize: 10, fontWeight: 600, color: "var(--fg-subtle)", textTransform: "uppercase", letterSpacing: "0.08em", background: "var(--sl2)", borderTop: "1px solid var(--border)" }}>
+          工具 · {rightTurns.length}
+        </div>
+        {rightTurns.length === 0 ? (
+          <div style={{ padding: "12px 14px", color: "var(--fg-subtle)", fontSize: 12 }}>(無工具呼叫)</div>
+        ) : (
+          rightTurns.map((t, i) => <TurnView key={`R${i}`} t={t} />)
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Session card ───────────────────────────────────────────────────────────
 
 type ActionResult = { ok: boolean; label: string; url?: string; reply?: string; durationMs?: number; ts: number } | null;
@@ -267,7 +328,7 @@ function Card({ s, defaultExpanded, onFocus, onSend }: {
   async function handleSend() {
     const prompt = draft.trim();
     if (!prompt) return;
-    clog("click send", { cwd: s.cwd, uuid: sessionUuid, mode: submitMode ? "submit" : "prefill", len: prompt.length });
+    clog("click send", { cwd: s.cwd, uuid: sessionUuid, mode: submitMode ? "submit" : "prefill+enter", len: prompt.length });
     setSendResult(null);
     setBusy(true);
     try {
@@ -276,10 +337,9 @@ function Card({ s, defaultExpanded, onFocus, onSend }: {
         ? `失敗 HTTP ${r.status}`
         : submitMode
           ? `Claude 已回覆 (${r.duration_ms ?? "?"} ms)`
-          : `已預填 · 請在 VSCode 按 Enter`;
+          : `已送出到 VSCode panel（Enter 已自動按）`;
       setSendResult({ ok: r.ok, label, url: r.url, reply: r.reply, durationMs: r.duration_ms, ts: Date.now() });
       setDraft("");
-      // If we have transcript loaded and we just submitted, auto-refresh to show the new turn
       if (r.ok && submitMode && transcript) void loadTranscript();
     } finally {
       setBusy(false);
@@ -343,7 +403,7 @@ function Card({ s, defaultExpanded, onFocus, onSend }: {
           <textarea
             style={{ flex: 1, minHeight: 38, fontSize: 13 }}
             rows={2}
-            placeholder={submitMode ? "輸入 prompt 真的送給這個 session（會花 API 費用）…" : "輸入 prompt 預填到 input box（不送出、零成本）…"}
+            placeholder={submitMode ? "輸入 prompt 真的送給這個 session（會花 API 費用）…" : "輸入 prompt 一鍵送給這個 session（透過你 VSCode panel）…"}
             value={draft}
             onInput={(e) => setDraft((e.currentTarget as HTMLTextAreaElement).value)}
             disabled={busy}
@@ -352,9 +412,9 @@ function Card({ s, defaultExpanded, onFocus, onSend }: {
             class={submitMode ? "btn-warn" : "btn-primary"}
             disabled={!draft.trim() || busy}
             onClick={handleSend}
-            title={submitMode ? "headless 模式：真的 submit + Claude 回應（花費 API$）" : "prefill 模式：只塞進 input box"}
+            title={submitMode ? "headless `claude -p`（新 process、重 load cache、花 API$）" : "vscode:// URI prefill + 自動按 Enter（用 panel 既有 session、cache 熱、~free）"}
           >
-            {busy ? "⌛" : submitMode ? "真送出" : "預填"}
+            {busy ? "⌛" : submitMode ? "真送出 💸" : "送出"}
           </button>
         </div>
         <div style={{ fontSize: 10, color: "var(--fg-subtle)", lineHeight: 1.5 }}>
@@ -365,7 +425,7 @@ function Card({ s, defaultExpanded, onFocus, onSend }: {
             </>
           ) : (
             <>
-              📥 <strong style={{ color: "var(--pass)" }}>預填</strong>：vscode:// URI 把 prompt 塞進你現有 VSCode panel 的 input box，<strong>你按 Enter</strong> → 走你 panel 已 loaded 的 session（cache 全熱、不重 load、近乎零成本）。
+              🚀 <strong style={{ color: "var(--pass)" }}>送出</strong>：vscode:// URI 把 prompt 塞進你現有 VSCode panel 的 input box，自動按 Enter → 走你 panel 已 loaded 的 session（cache 全熱、不重 load、近乎零成本）。⚠️ 按下後別動鍵盤/滑鼠 800ms，避免 Enter 落到別的視窗。
             </>
           )}
         </div>
@@ -441,14 +501,7 @@ function Card({ s, defaultExpanded, onFocus, onSend }: {
             {transcriptError && (
               <div style={{ padding: "8px 14px", color: "var(--accent)", fontSize: 12 }}>{transcriptError}</div>
             )}
-            {transcript && (
-              <div style={{ maxHeight: 480, overflowY: "auto" }}>
-                {transcript.turns.length === 0 && (
-                  <div style={{ padding: "12px 14px", color: "var(--fg-subtle)", fontSize: 12 }}>(transcript 沒有可顯示的訊息)</div>
-                )}
-                {transcript.turns.map((t, i) => <TurnView key={i} t={t} />)}
-              </div>
-            )}
+            {transcript && <TwoColumnTranscript turns={transcript.turns} />}
           </div>
         )}
       </div>
@@ -630,7 +683,7 @@ function Popover({ s, x, y, onClose, onSend, onOpenTab, onSync }: {
         ? `失敗 HTTP ${r.status}`
         : submitMode
           ? `Claude 已回覆 (${r.duration_ms ?? "?"} ms)`
-          : `已預填，請在 VSCode 按 Enter`;
+          : `已送出到 VSCode panel`;
       setResult({ ok: r.ok, label, reply: r.reply });
       if (r.ok) setPrompt("");
     } finally { setBusy(false); }
@@ -685,7 +738,7 @@ function Popover({ s, x, y, onClose, onSend, onOpenTab, onSync }: {
             onClick={handleSend}
             style={{ marginLeft: "auto" }}
           >
-            {busy ? "⌛" : submitMode ? "真送出 💸" : "預填"}
+            {busy ? "⌛" : submitMode ? "真送出 💸" : "送出"}
           </button>
         </div>
         {showAdvanced && (
@@ -697,7 +750,7 @@ function Popover({ s, x, y, onClose, onSend, onOpenTab, onSync }: {
         <div style={{ marginTop: 4, fontSize: 10, color: "var(--fg-subtle)" }}>
           {submitMode
             ? "💸 真送出：新 process、重 load cache、call API"
-            : "📥 預填：餵進你 VSCode panel input box，按 Enter 由 panel 既有 session 處理（cache 熱、~free）"}
+            : "🚀 送出：餵進你 VSCode panel input box + 自動按 Enter（cache 熱、~free）·別動鍵盤 800ms"}
           <br />⌘/Ctrl+Enter 送出 · Esc 關閉
         </div>
         {result && (

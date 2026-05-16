@@ -176,21 +176,32 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
 
   app.post("/send", async (req: Request, res: Response) => {
     const prompt = typeof req.body?.prompt === "string" ? req.body.prompt : null;
-    const submitFlag = req.body?.submit === true;  // default false (prefill via URI)
+    const submitFlag = req.body?.submit === true;  // false (default) = prefill via URI
+    // auto_enter (only meaningful with submit=false): after prefilling via URI,
+    // send {ENTER} keystroke to foreground window so the panel's live session
+    // submits — no -p spawn, no cache rebuild, uses panel's hot context.
+    // Default true (= zero-friction one-click). Set false to leave prompt in
+    // input box for manual review/edit before Enter.
+    const autoEnter = req.body?.auto_enter !== false;
     const maxBudgetUsd = typeof req.body?.max_budget_usd === "number" ? req.body.max_budget_usd : 5;
     const { session, key, via } = resolveSession(req.body);
     if (!via || !prompt) { deps.log?.warn({ route: "/send", hasKey: !!via, hasPrompt: !!prompt, submit: submitFlag }, "missing session_uuid/cwd or prompt"); res.status(400).json({ error: "missing session_uuid or cwd, or missing prompt" }); return; }
     if (!session) { deps.log?.warn({ route: "/send", via, key, submit: submitFlag }, "session not found"); res.status(404).json({ error: "session not found", lookup: { via, key } }); return; }
 
     if (!submitFlag) {
-      // PREFILL mode (cheap, no API cost) — vscode:// URI handler
+      // PREFILL mode — vscode:// URI handler. Optionally auto-press Enter.
       const url = buildSendUrl(session.session_uuid, prompt);
+      const mode = autoEnter ? "prefill+enter" : "prefill";
       try {
-        await deps.bridge.send(session.session_uuid, prompt);
-        deps.log?.info({ route: "/send", mode: "prefill", via, key, cwd: session.cwd, session_uuid: session.session_uuid, project: session.project_name, promptLength: prompt.length, url }, "URI launched (prompt prefilled, NOT submitted)");
-        res.status(200).json({ ok: true, mode: "prefill", url, session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name });
+        if (autoEnter) {
+          await deps.bridge.prefillAndSubmit(session.session_uuid, prompt);
+        } else {
+          await deps.bridge.send(session.session_uuid, prompt);
+        }
+        deps.log?.info({ route: "/send", mode, via, key, cwd: session.cwd, session_uuid: session.session_uuid, project: session.project_name, promptLength: prompt.length, url }, autoEnter ? "URI prefilled + Enter sent to foreground" : "URI prefilled (not submitted)");
+        res.status(200).json({ ok: true, mode, url, session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name });
       } catch (err) {
-        deps.log?.error({ route: "/send", mode: "prefill", via, key, url, error: String(err) }, "bridge.send threw");
+        deps.log?.error({ route: "/send", mode, via, key, url, error: String(err) }, "bridge prefill threw");
         res.status(500).json({ error: String(err), url });
       }
       return;

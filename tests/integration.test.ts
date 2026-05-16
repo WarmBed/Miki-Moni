@@ -130,7 +130,8 @@ describe("server POST /focus + /send", () => {
     const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
     const { app } = createApp({ store, handler, bridge, notifier: null as any, webDir: "/tmp/none" });
 
-    const res = await request(app).post("/send").send({ cwd: "d:\\code\\x", prompt: "run tests" });
+    // auto_enter:false → bare prefill path (vscode-bridge.send) so we can assert on launches[]
+    const res = await request(app).post("/send").send({ cwd: "d:\\code\\x", prompt: "run tests", auto_enter: false });
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.url).toMatch(/session=uuid-xyz/);
