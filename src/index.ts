@@ -15,8 +15,6 @@ const DB_FILE = path.join(HUB_HOME, "state.db");
 const PROJECTS_ROOT = path.join(os.homedir(), ".claude", "projects");
 const DEFAULT_PORT = 8765;
 
-const log = pino({ transport: { target: "pino/file", options: { destination: path.join(HUB_HOME, "cc-hub.log") } } });
-
 async function findFreePort(start: number, maxTries = 10): Promise<number> {
   const net = await import("node:net");
   for (let i = 0; i < maxTries; i++) {
@@ -34,6 +32,8 @@ async function findFreePort(start: number, maxTries = 10): Promise<number> {
 
 async function main(): Promise<void> {
   await fs.mkdir(HUB_HOME, { recursive: true });
+
+  const log = pino({ transport: { target: "pino/file", options: { destination: path.join(HUB_HOME, "cc-hub.log") } } });
 
   const port = await findFreePort(DEFAULT_PORT);
   await fs.writeFile(PORT_FILE, String(port));

@@ -15,16 +15,24 @@ const TARGETS: Array<{ key: string; matcher?: string }> = [
 ];
 
 function commandFor(eventName: string): string {
-  return `powershell -NoProfile -File ${HOOK_SCRIPT_ABS} ${eventName}`;
+  return `powershell -NoProfile -File "${HOOK_SCRIPT_ABS}" ${eventName}`;
 }
 
 async function readSettings(): Promise<Record<string, any>> {
+  let raw: string;
   try {
-    const raw = await fs.readFile(SETTINGS_PATH, "utf8");
-    return JSON.parse(raw);
+    raw = await fs.readFile(SETTINGS_PATH, "utf8");
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
     throw err;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error(`Could not parse ${SETTINGS_PATH} — file is not valid JSON.`);
+    console.error(`Original error: ${(err as Error).message}`);
+    console.error(`Fix the file by hand (or restore from a backup), then re-run install:hooks.`);
+    process.exit(1);
   }
 }
 

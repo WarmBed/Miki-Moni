@@ -78,7 +78,9 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   deps.store.on("session_changed", (session) => {
     const msg = JSON.stringify({ type: "session_changed", session });
     for (const client of wss.clients) {
-      if (client.readyState === client.OPEN) client.send(msg);
+      if (client.readyState === client.OPEN) {
+        client.send(msg, (_err) => { /* client may have raced disconnect; ignore */ });
+      }
     }
   });
 
