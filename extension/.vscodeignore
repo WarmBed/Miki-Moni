@@ -9,3 +9,4 @@ node_modules/**
 !node_modules/ws/**
 vitest.config.ts
 tsconfig.json
+!README.md
