@@ -1,15 +1,16 @@
 import { render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import {
-  generateKeypair,
-  deriveSharedSecret,
-  toBase64,
   fromBase64,
   encodeEnvelope,
   decodeEnvelope,
+  normalizePairingCode,
+  isValidPairingCode,
+  performPairing,
+  connectAuthed,
   type Envelope,
 } from "./relay";
-import { loadState, saveState, clearState, type PhoneState } from "./store";
+import { loadState, saveState, clearState, loadOrCreateIdentity, type PhoneState } from "./store";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -54,134 +55,58 @@ function cerr(label: string, ctx?: Record<string, unknown>): void {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-/**
- * Convert daemon's /v1/daemon URL to /v1/phone URL on the same host.
- * e.g. ws://127.0.0.1:8787/v1/daemon → ws://127.0.0.1:8787/v1/phone
- */
-function daemonUrlToPhoneUrl(workerUrl: string): string {
-  return workerUrl.replace(/\/v1\/daemon($|\?)/, "/v1/phone$1");
-}
-
-/**
- * Compute daemon_id from daemon_pk_b64 the same way the daemon does.
- * strips non-alphanumeric chars from base64 and takes first 16 chars.
- */
-function computeDaemonId(daemonPkB64: string): string {
-  return daemonPkB64.replace(/[+/=]/g, "").slice(0, 16);
-}
-
 function appendQueryParam(url: string, key: string, value: string): string {
   const sep = url.includes("?") ? "&" : "?";
   return `${url}${sep}${key}=${encodeURIComponent(value)}`;
 }
 
-// ── Pair Screen ────────────────────────────────────────────────────────────
+/** Read relay URL from query param ?relay=... or fall back to production default. */
+function getRelayUrl(): string {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("relay") ?? "https://relay.f1telemetrystationpro.org";
+  } catch {
+    return "https://relay.f1telemetrystationpro.org";
+  }
+}
 
-interface PairScreenProps {
+// ── Pair Form ──────────────────────────────────────────────────────────────
+
+interface PairFormProps {
+  relayUrl: string;
   onPaired: (state: PhoneState) => void;
 }
 
-function PairScreen({ onPaired }: PairScreenProps) {
-  const [jsonText, setJsonText] = useState("");
-  const [phoneName, setPhoneName] = useState("browser");
-  const [status, setStatus] = useState<"idle" | "connecting" | "error">("idle");
-  const [errorMsg, setErrorMsg] = useState("");
+function PairForm({ relayUrl, onPaired }: PairFormProps) {
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  async function handlePair() {
-    setStatus("connecting");
-    setErrorMsg("");
+  const normalized = normalizePairingCode(input);
+  const valid = isValidPairingCode(normalized);
 
-    let parsed: { worker_url?: string; pairing_token?: string; daemon_pk?: string; name?: string };
+  async function handleSubmit() {
+    if (!valid) { setError("Code must be 16 chars from the Crockford base32 alphabet"); return; }
+    setBusy(true); setError(null);
     try {
-      parsed = JSON.parse(jsonText.trim());
-    } catch {
-      setErrorMsg("JSON 格式錯了——請貼上終端機印出來的那一整段 JSON。");
-      setStatus("error");
-      return;
-    }
-
-    const { worker_url, pairing_token, daemon_pk, name: daemonName } = parsed;
-    if (!worker_url || !pairing_token || !daemon_pk || !daemonName) {
-      setErrorMsg("JSON 必須有這幾個欄位：worker_url、pairing_token、daemon_pk、name");
-      setStatus("error");
-      return;
-    }
-
-    // Generate phone keypair
-    const { pubkey: phonePub, privkey: phonePriv } = generateKeypair();
-    const phonePkB64 = toBase64(phonePub);
-    const phonePrivB64 = toBase64(phonePriv);
-
-    // Build phone WebSocket URL
-    const phoneWsBase = daemonUrlToPhoneUrl(worker_url);
-    const wsUrl = appendQueryParam(phoneWsBase, "pairing_token", pairing_token);
-
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const ws = new WebSocket(wsUrl);
-        const timer = setTimeout(() => {
-          ws.close();
-          reject(new Error("配對逾時（30 秒沒收到 daemon 回應）"));
-        }, 30_000);
-
-        ws.onopen = () => {
-          // Send pair_offer as raw JSON (pre-shared-secret)
-          ws.send(JSON.stringify({
-            kind: "pair_offer",
-            phone_pk: phonePkB64,
-            phone_name: phoneName || "browser",
-          }));
-        };
-
-        ws.onmessage = (ev) => {
-          clearTimeout(timer);
-          try {
-            const env: Envelope = JSON.parse(ev.data as string);
-            const daemonPubBytes = fromBase64(daemon_pk);
-            const sharedSecret = deriveSharedSecret(phonePriv, daemonPubBytes);
-            const plain = decodeEnvelope(env, sharedSecret) as { kind?: string; ok?: boolean } | null;
-            if (!plain || plain.kind !== "pair_ack" || !plain.ok) {
-              ws.close();
-              reject(new Error("daemon 沒回傳 pair_ack 或拒絕了配對"));
-              return;
-            }
-            ws.close();
-
-            const daemonId = computeDaemonId(daemon_pk);
-            const state: PhoneState = {
-              worker_url,
-              daemon_id: daemonId,
-              daemon_name: daemonName,
-              daemon_pk_b64: daemon_pk,
-              shared_secret_b64: toBase64(sharedSecret),
-              phone_pk_b64: phonePkB64,
-              phone_privkey_b64: phonePrivB64,
-              paired_at: Date.now(),
-            };
-            saveState(state);
-            resolve();
-            onPaired(state);
-          } catch (e) {
-            ws.close();
-            reject(e);
-          }
-        };
-
-        ws.onerror = () => {
-          clearTimeout(timer);
-          reject(new Error("WebSocket 連線失敗——確認 mock-worker 有跑（pnpm dev:all）"));
-        };
-
-        ws.onclose = (ev) => {
-          clearTimeout(timer);
-          if (!ev.wasClean) {
-            reject(new Error(`連線被中斷（code ${ev.code}）`));
-          }
-        };
-      });
+      const identity = await loadOrCreateIdentity();
+      const peer = await performPairing(relayUrl, normalized, identity);
+      const state: PhoneState = {
+        relay_url: relayUrl,
+        daemon_id: peer.daemon_id,
+        daemon_name: peer.daemon_id,          // display the daemon_id until we get a name
+        daemon_pk_b64: peer.daemon_pubkey_b64,
+        shared_secret_b64: peer.shared_secret_b64,
+        phone_pk_b64: identity.encryption_pubkey,
+        phone_privkey_b64: identity.encryption_privkey,
+        paired_at: Date.now(),
+      };
+      saveState(state);
+      onPaired(state);
     } catch (e: unknown) {
-      setErrorMsg(e instanceof Error ? e.message : String(e));
-      setStatus("error");
+      setError(e instanceof Error ? (e.message || "pairing_failed") : "pairing_failed");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -189,47 +114,55 @@ function PairScreen({ onPaired }: PairScreenProps) {
     <div class="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
       <div class="w-full max-w-md">
         <h1 class="text-2xl font-bold mb-2">cc-hub 配對</h1>
-        <p class="text-slate-400 mb-6 text-sm">把這台瀏覽器跟你電腦上的 cc-hub daemon 配對</p>
+        <p class="text-slate-400 mb-6 text-sm">把這台裝置跟你電腦上的 cc-hub daemon 配對</p>
 
         <div class="bg-slate-900 rounded-lg border border-slate-800 p-5 flex flex-col gap-4">
-          <div class="flex flex-col gap-1">
-            <label class="text-sm text-slate-300 font-medium">配對 JSON</label>
-            <textarea
-              class="bg-slate-800 rounded px-3 py-2 text-sm font-mono resize-y min-h-[8rem] focus:outline-none focus:ring-1 focus:ring-indigo-500"
-              placeholder={'貼上終端機 pnpm pair --new 印出來的 JSON\n\n{"worker_url":"ws://...","pairing_token":"...","daemon_pk":"...","name":"..."}'}
-              value={jsonText}
-              onInput={(e) => setJsonText((e.currentTarget as HTMLTextAreaElement).value)}
-            />
-          </div>
+          <p class="text-sm text-slate-400">
+            在電腦終端機跑 <code class="bg-slate-800 px-1 rounded font-mono">cch pair</code>，輸入它顯示的 16 碼配對碼。
+          </p>
 
           <div class="flex flex-col gap-1">
-            <label class="text-sm text-slate-300 font-medium">這台裝置的名稱</label>
+            <label class="text-sm text-slate-300 font-medium">配對碼</label>
             <input
-              class="bg-slate-800 rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
               type="text"
-              value={phoneName}
-              onInput={(e) => setPhoneName((e.currentTarget as HTMLInputElement).value)}
-              placeholder="browser"
+              placeholder="XXXX-XXXX-XXXX-XXXX"
+              value={input}
+              onInput={(e) => setInput((e.currentTarget as HTMLInputElement).value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && valid && !busy) void handleSubmit();
+                if (e.key === "Escape") { setInput(""); setError(null); }
+              }}
+              disabled={busy}
+              autoFocus
+              class="bg-slate-800 rounded px-3 py-3 text-lg font-mono tracking-widest uppercase focus:outline-none focus:ring-2 transition-all"
+              style={{
+                border: `2px solid ${valid ? "#2db75a" : "#374151"}`,
+              }}
             />
           </div>
 
-          {errorMsg && (
+          {error && (
             <div class="bg-red-950 border border-red-800 rounded px-3 py-2 text-sm text-red-300">
-              {errorMsg}
+              {error}
             </div>
           )}
 
           <button
-            class="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 rounded px-4 py-2 font-medium text-sm transition-colors"
-            disabled={status === "connecting" || !jsonText.trim()}
-            onClick={handlePair}
+            class="rounded px-4 py-2 font-medium text-sm transition-colors text-white"
+            style={{
+              background: valid && !busy ? "#3b82f6" : "#374151",
+              cursor: valid && !busy ? "pointer" : "not-allowed",
+              opacity: valid && !busy ? 1 : 0.6,
+            }}
+            disabled={!valid || busy}
+            onClick={() => void handleSubmit()}
           >
-            {status === "connecting" ? "配對中…" : "開始配對"}
+            {busy ? "配對中…" : "開始配對"}
           </button>
         </div>
 
         <p class="text-xs text-slate-600 mt-4 text-center">
-          在電腦終端機跑 <code class="font-mono">pnpm pair --new</code>，把印出來的 JSON 整段複製貼到上面那欄。
+          relay: <code class="font-mono">{relayUrl}</code>
         </p>
       </div>
     </div>
@@ -347,11 +280,33 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
     if (!mountedRef.current) return;
     setConnStatus("connecting");
 
-    const phoneWsBase = daemonUrlToPhoneUrl(state.worker_url);
+    let ws: WebSocket;
+    if (state.relay_url) {
+      // New relay-based connection: use signed auth token
+      addLog("info", `WS 連線中 (relay)`, { relay: state.relay_url, daemon_id: state.daemon_id, daemon_name: state.daemon_name });
+      // We need identity for connectAuthed — load async then connect
+      void loadOrCreateIdentity().then((identity) => {
+        if (!mountedRef.current) return;
+        const w = connectAuthed(state.relay_url!, state.daemon_id, identity);
+        wsRef.current = w;
+        attachWsHandlers(w);
+      }).catch((e) => {
+        addLog("error", "無法載入 identity", { err: String(e) });
+        setConnStatus("error");
+      });
+      return;
+    }
+    // Legacy direct-worker connection
+    const workerUrl = state.worker_url ?? "";
+    const phoneWsBase = workerUrl.replace(/\/v1\/daemon($|\?)/, "/v1/phone$1");
     const wsUrl = appendQueryParam(phoneWsBase, "daemon_id", state.daemon_id);
-    addLog("info", `WS 連線中`, { url: wsUrl, daemon_id: state.daemon_id, daemon_name: state.daemon_name });
-    const ws = new WebSocket(wsUrl);
+    addLog("info", `WS 連線中 (legacy)`, { url: wsUrl, daemon_id: state.daemon_id, daemon_name: state.daemon_name });
+    ws = new WebSocket(wsUrl);
     wsRef.current = ws;
+    attachWsHandlers(ws);
+  }
+
+  function attachWsHandlers(ws: WebSocket) {
 
     ws.onopen = () => {
       if (!mountedRef.current) { ws.close(); return; }
@@ -487,6 +442,7 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
 
 function App() {
   const [state, setState] = useState<PhoneState | null>(() => loadState());
+  const relayUrl = getRelayUrl();
 
   function handlePaired(s: PhoneState) {
     setState(s);
@@ -498,7 +454,7 @@ function App() {
   }
 
   if (!state) {
-    return <PairScreen onPaired={handlePaired} />;
+    return <PairForm relayUrl={relayUrl} onPaired={handlePaired} />;
   }
   return <DashboardScreen state={state} onUnpair={handleUnpair} />;
 }

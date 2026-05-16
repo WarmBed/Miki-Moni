@@ -11,7 +11,10 @@ import naclUtil from "tweetnacl-util";
 const STORAGE_KEY = "cc-hub-phone-state";
 
 export interface PhoneState {
-  worker_url: string;        // ws:// or wss://
+  /** Legacy field: direct worker WebSocket URL (ws:// or wss://) */
+  worker_url?: string;
+  /** Relay HTTPS URL used for new-style pairing (e.g. https://relay.f1telemetrystationpro.org) */
+  relay_url?: string;
   daemon_id: string;
   daemon_name: string;
   daemon_pk_b64: string;
