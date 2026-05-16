@@ -206,3 +206,32 @@ describe("daemon /ws_ext extension registry", () => {
     store.close();
   });
 });
+
+describe("daemon /ws_ext heartbeat", () => {
+  it("drops connection when no pong arrives within timeout", async () => {
+    const store = new SessionStore(":memory:");
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    // Fast intervals for tests: pingMs=50, pongTimeoutMs=30
+    const { server, registry } = createApp({
+      store, handler, bridge: null as any, notifier: null as any, webDir: "/tmp/none",
+      heartbeat: { pingMs: 50, pongTimeoutMs: 30 },
+    } as any);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as any).port;
+
+    // Connect a deliberately-silent client (never responds to ping)
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws_ext`);
+    await new Promise<void>((r) => ws.on("open", () => r()));
+    ws.send(JSON.stringify({ type: "register", workspace_root: "d:/code", helper_version: "test" }));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(registry.list()).toHaveLength(1);
+
+    // Wait: 50ms ping fires, 30ms pong timeout → connection dropped by daemon
+    await new Promise((r) => setTimeout(r, 200));
+    expect(registry.list()).toHaveLength(0);
+
+    ws.close();
+    await new Promise<void>((r) => server.close(() => r()));
+    store.close();
+  });
+});

@@ -13,6 +13,7 @@ import os from "node:os";
 import { promises as fs } from "node:fs";
 import { ExtRegistry } from "./ext-registry.js";
 import type { ExtMessage } from "./protocol-ext.js";
+import { randomUUID } from "node:crypto";
 
 type Log = { info: (obj: Record<string, unknown>, msg?: string) => void; warn: (obj: Record<string, unknown>, msg?: string) => void; error: (obj: Record<string, unknown>, msg?: string) => void };
 
@@ -23,6 +24,7 @@ export interface ServerDeps {
   notifier: Notifier;
   webDir: string;
   log?: Log;
+  heartbeat?: { pingMs: number; pongTimeoutMs: number };  // default: { 30_000, 10_000 }
 }
 
 function parseHookEvent(body: unknown): HookEvent | null {
@@ -369,8 +371,12 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       socket.destroy();
     }
   });
+  const hb = deps.heartbeat ?? { pingMs: 30_000, pongTimeoutMs: 10_000 };
+  const pendingPong = new WeakMap<any, { request_id: string; deadline: number }>();
+
   wssExt.on("connection", (ws) => {
     deps.log?.info({ route: "/ws_ext" }, "extension ws connected");
+
     ws.on("message", (raw) => {
       let msg: ExtMessage;
       try { msg = JSON.parse(String(raw)); } catch {
@@ -386,10 +392,35 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
         deps.log?.info({ route: "/ws_ext", workspace_root: msg.workspace_root, version: msg.helper_version }, "extension registered");
         return;
       }
-      // submit_ack and pong are handled by per-request listeners attached in
-      // VscodeBridge.submitViaHelper (Task 8). Nothing to do here.
+      if (msg.type === "pong") {
+        const pending = pendingPong.get(ws);
+        if (pending && pending.request_id === msg.request_id) {
+          pendingPong.delete(ws);
+        }
+        return;
+      }
+      // submit_ack handled by per-request listener in submitViaHelper.
     });
+
+    // Heartbeat: fire ping every pingMs; if pendingPong unresolved past deadline, terminate.
+    const pingTimer = setInterval(() => {
+      const existing = pendingPong.get(ws);
+      if (existing && Date.now() > existing.deadline) {
+        deps.log?.warn({ route: "/ws_ext", request_id: existing.request_id }, "pong timeout, closing");
+        try { ws.terminate(); } catch { /* ignore */ }
+        clearInterval(pingTimer);
+        return;
+      }
+      if (!existing) {
+        const request_id = randomUUID();
+        pendingPong.set(ws, { request_id, deadline: Date.now() + hb.pongTimeoutMs });
+        try { ws.send(JSON.stringify({ type: "ping", request_id })); }
+        catch { /* ws may be closing; let close handler clean up */ }
+      }
+    }, hb.pingMs);
+
     ws.on("close", () => {
+      clearInterval(pingTimer);
       registry.remove(ws);
       deps.log?.info({ route: "/ws_ext" }, "extension ws disconnected");
     });
