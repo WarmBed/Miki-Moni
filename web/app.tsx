@@ -58,14 +58,16 @@ function fmtTime(ts: number): string {
 
 // ── Card ──────────────────────────────────────────────────────────────────
 
-type ActionResult = { ok: boolean; label: string; url?: string; ts: number } | null;
+type ActionResult = { ok: boolean; label: string; url?: string; reply?: string; durationMs?: number; ts: number } | null;
 
 function Card({ s, onFocus, onSend }: {
   s: Session;
   onFocus: (session_uuid: string) => Promise<{ ok: boolean; status: number; url?: string }>;
-  onSend: (session_uuid: string, prompt: string) => Promise<{ ok: boolean; status: number; url?: string }>;
+  onSend: (session_uuid: string, prompt: string, submit: boolean) => Promise<{ ok: boolean; status: number; url?: string; reply?: string; duration_ms?: number }>;
 }) {
   const [draft, setDraft] = useState("");
+  const [submitMode, setSubmitMode] = useState(true);  // default = real submit (headless), users opt out for prefill
+  const [busy, setBusy] = useState(false);
   const [focusResult, setFocusResult] = useState<ActionResult>(null);
   const [sendResult, setSendResult] = useState<ActionResult>(null);
   const sessionUuid = s.session_uuid ?? "";
@@ -80,12 +82,22 @@ function Card({ s, onFocus, onSend }: {
   async function handleSend() {
     const prompt = draft.trim();
     if (!prompt) return;
-    clog("click 送出", { cwd: s.cwd, session_uuid: s.session_uuid, project_name: s.project_name, promptPreview: prompt.slice(0, 40), promptLength: prompt.length });
+    clog("click 送出", { cwd: s.cwd, session_uuid: s.session_uuid, project_name: s.project_name, mode: submitMode ? "submit" : "prefill", promptPreview: prompt.slice(0, 40), promptLength: prompt.length });
     setSendResult(null);
-    const r = await onSend(sessionUuid, prompt);
-    setSendResult({ ok: r.ok, label: r.ok ? `daemon OK (HTTP ${r.status})—現在 Alt+Tab 去看 VSCode 的 Claude panel` : `失敗 HTTP ${r.status}`, url: r.url, ts: Date.now() });
-    setDraft("");
-    setTimeout(() => setSendResult(null), 60000);
+    setBusy(true);
+    try {
+      const r = await onSend(sessionUuid, prompt, submitMode);
+      const label = !r.ok
+        ? `失敗 HTTP ${r.status}`
+        : submitMode
+          ? `Claude 已回覆 (${r.duration_ms ?? "?"} ms)—訊息已寫入 transcript，VSCode 應該看到新對話`
+          : `已預填 (HTTP ${r.status})—請 Alt+Tab 到 VSCode 按 Enter 送出`;
+      setSendResult({ ok: r.ok, label, url: r.url, reply: r.reply, durationMs: r.duration_ms, ts: Date.now() });
+      setDraft("");
+    } finally {
+      setBusy(false);
+    }
+    setTimeout(() => setSendResult(null), 120000);
   }
 
   return (
@@ -121,19 +133,36 @@ function Card({ s, onFocus, onSend }: {
         <textarea
           class="flex-1 bg-slate-800 rounded px-2 py-1 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-indigo-500"
           rows={2}
-          placeholder="輸入 prompt 送給這個 session…"
+          placeholder={submitMode ? "輸入 prompt 真的送給這個 session（會花 API 費用）…" : "輸入 prompt 預填到 input box（不送出、零成本）…"}
           value={draft}
           onInput={(e) => setDraft((e.currentTarget as HTMLTextAreaElement).value)}
+          disabled={busy}
         />
         <button
-          class="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-30 rounded px-3 text-sm"
-          disabled={!draft.trim()}
+          class={`disabled:opacity-30 rounded px-3 text-sm ${submitMode ? "bg-rose-600 hover:bg-rose-500" : "bg-indigo-600 hover:bg-indigo-500"}`}
+          disabled={!draft.trim() || busy}
           onClick={handleSend}
-        >送出</button>
+          title={submitMode ? "headless 模式：真的 submit + Claude 回應（花費 API$）" : "prefill 模式：只塞進 input box，你按 Enter 才送"}
+        >{busy ? "⌛" : submitMode ? "真送出 💸" : "預填"}</button>
       </div>
+      <label class="text-[11px] text-slate-500 select-none cursor-pointer">
+        <input type="checkbox" checked={submitMode} onChange={(e) => setSubmitMode((e.currentTarget as HTMLInputElement).checked)} class="mr-1 align-middle" />
+        真送出模式（headless `claude -r {sessionUuid.slice(0, 8)}... -p`，會花 API 錢）
+      </label>
+      {submitMode && (
+        <div class="text-[10px] text-amber-400/80">
+          ⚠️ Windows 已知限制：真送出模式 prompt 內若含中文/emoji 會被切碼（claude.exe stdin codepage 問題）。請暫時用英文 prompt，或切到「預填」模式。
+        </div>
+      )}
       {sendResult && (
         <div class="text-xs">
           <div class={sendResult.ok ? "text-emerald-400" : "text-red-400"}>送 prompt：{sendResult.label}</div>
+          {sendResult.reply && (
+            <div class="mt-1 p-2 bg-slate-800/50 border border-slate-700 rounded">
+              <div class="text-[10px] text-slate-500 mb-1">Claude 回覆：</div>
+              <div class="text-slate-300 whitespace-pre-wrap">{sendResult.reply}</div>
+            </div>
+          )}
           {sendResult.url && (
             <div class="mt-1 text-slate-500 font-mono break-all">
               URI：<a href={sendResult.url} class="text-indigo-300 hover:underline">{sendResult.url}</a>
@@ -247,21 +276,27 @@ function App() {
       return { ok: false, status: 0 };
     }
   }
-  async function onSend(session_uuid: string, prompt: string): Promise<{ ok: boolean; status: number; url?: string }> {
-    addLog("info", `POST /send`, { session_uuid, promptLength: prompt.length, promptPreview: prompt.slice(0, 40) });
+  async function onSend(session_uuid: string, prompt: string, submit: boolean): Promise<{ ok: boolean; status: number; url?: string; reply?: string; duration_ms?: number }> {
+    addLog("info", `POST /send (mode=${submit ? "submit" : "prefill"})`, { session_uuid, promptLength: prompt.length, promptPreview: prompt.slice(0, 40) });
     try {
       const r = await fetch("/send", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ session_uuid, prompt }),
+        body: JSON.stringify({ session_uuid, prompt, submit }),
       });
       let body: any = null;
       try { body = await r.json(); } catch { /* may be empty */ }
       const url: string | undefined = body?.url;
-      const ctx = { session_uuid, status: r.status, url, body };
-      if (r.ok) addLog("info", `/send ${r.status} — daemon 已叫起 URI（VSCode 應該 raise 到前面 + prompt 預填）`, ctx);
-      else addLog("error", `/send 失敗`, ctx);
-      return { ok: r.ok, status: r.status, url };
+      const reply: string | undefined = body?.reply;
+      const duration_ms: number | undefined = body?.duration_ms;
+      const ctx = { session_uuid, status: r.status, mode: body?.mode, url, replyPreview: reply?.slice(0, 80), duration_ms };
+      if (r.ok) {
+        if (submit) addLog("info", `/send ${r.status} — Claude 回覆（${duration_ms}ms）${reply?.slice(0, 60)}`, ctx);
+        else addLog("info", `/send ${r.status} — URI 已 prefill（未送出）`, ctx);
+      } else {
+        addLog("error", `/send 失敗`, { ...ctx, body });
+      }
+      return { ok: r.ok, status: r.status, url, reply, duration_ms };
     } catch (e) {
       addLog("error", `/send throw`, { session_uuid, error: String(e) });
       return { ok: false, status: 0 };

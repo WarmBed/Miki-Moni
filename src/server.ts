@@ -102,17 +102,54 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
 
   app.post("/send", async (req: Request, res: Response) => {
     const prompt = typeof req.body?.prompt === "string" ? req.body.prompt : null;
+    const submitFlag = req.body?.submit === true;  // default false (prefill via URI)
+    const maxBudgetUsd = typeof req.body?.max_budget_usd === "number" ? req.body.max_budget_usd : 5;
     const { session, key, via } = resolveSession(req.body);
-    if (!via || !prompt) { deps.log?.warn({ route: "/send", hasKey: !!via, hasPrompt: !!prompt }, "missing session_uuid/cwd or prompt"); res.status(400).json({ error: "missing session_uuid or cwd, or missing prompt" }); return; }
-    if (!session) { deps.log?.warn({ route: "/send", via, key }, "session not found"); res.status(404).json({ error: "session not found", lookup: { via, key } }); return; }
-    const url = buildSendUrl(session.session_uuid, prompt);
+    if (!via || !prompt) { deps.log?.warn({ route: "/send", hasKey: !!via, hasPrompt: !!prompt, submit: submitFlag }, "missing session_uuid/cwd or prompt"); res.status(400).json({ error: "missing session_uuid or cwd, or missing prompt" }); return; }
+    if (!session) { deps.log?.warn({ route: "/send", via, key, submit: submitFlag }, "session not found"); res.status(404).json({ error: "session not found", lookup: { via, key } }); return; }
+
+    if (!submitFlag) {
+      // PREFILL mode (cheap, no API cost) — vscode:// URI handler
+      const url = buildSendUrl(session.session_uuid, prompt);
+      try {
+        await deps.bridge.send(session.session_uuid, prompt);
+        deps.log?.info({ route: "/send", mode: "prefill", via, key, cwd: session.cwd, session_uuid: session.session_uuid, project: session.project_name, promptLength: prompt.length, url }, "URI launched (prompt prefilled, NOT submitted)");
+        res.status(200).json({ ok: true, mode: "prefill", url, session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name });
+      } catch (err) {
+        deps.log?.error({ route: "/send", mode: "prefill", via, key, url, error: String(err) }, "bridge.send threw");
+        res.status(500).json({ error: String(err), url });
+      }
+      return;
+    }
+
+    // SUBMIT mode (real API cost) — spawn `claude -r <uuid> -p "..."`
+    if (!session.session_uuid) {
+      res.status(400).json({ error: "submit mode requires session_uuid (got null)" });
+      return;
+    }
+    deps.log?.info({ route: "/send", mode: "submit", session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name, promptLength: prompt.length, maxBudgetUsd }, "spawning headless claude...");
+    const start = Date.now();
     try {
-      await deps.bridge.send(session.session_uuid, prompt);
-      deps.log?.info({ route: "/send", via, key, cwd: session.cwd, session_uuid: session.session_uuid, project: session.project_name, promptLength: prompt.length, url }, "URI launched (prompt prefilled)");
-      res.status(200).json({ ok: true, url, session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name });
+      const result = await deps.bridge.submit({
+        sessionUuid: session.session_uuid,
+        cwd: session.cwd,
+        prompt,
+        maxBudgetUsd,
+      });
+      deps.log?.info({ route: "/send", mode: "submit", session_uuid: session.session_uuid, project: session.project_name, replyLength: result.reply.length, durationMs: result.durationMs }, "headless claude OK");
+      res.status(200).json({
+        ok: true,
+        mode: "submit",
+        session_uuid: session.session_uuid,
+        cwd: session.cwd,
+        project: session.project_name,
+        reply: result.reply,
+        duration_ms: result.durationMs,
+      });
     } catch (err) {
-      deps.log?.error({ route: "/send", via, key, url, error: String(err) }, "bridge.send threw");
-      res.status(500).json({ error: String(err), url });
+      const durationMs = Date.now() - start;
+      deps.log?.error({ route: "/send", mode: "submit", session_uuid: session.session_uuid, durationMs, error: String(err) }, "headless claude failed");
+      res.status(500).json({ error: String(err), mode: "submit", duration_ms: durationMs });
     }
   });
 

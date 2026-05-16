@@ -5,7 +5,7 @@ import { Notifier } from "../src/notifier.js";
 import type { HookEvent } from "../src/types.js";
 
 class StubResolver {
-  resolveLatest = vi.fn(async (_cwd: string) => "stub-uuid-1234");
+  resolveLatest = vi.fn<(cwd: string) => Promise<string | null>>(async (_cwd: string) => "stub-uuid-1234");
 }
 
 describe("HookHandler", () => {
