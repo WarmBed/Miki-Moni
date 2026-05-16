@@ -262,7 +262,13 @@ function Card({ s, defaultExpanded, onFocus, onSend }: {
         >{s.project_name}</button>
         <span style={{ color: "var(--fg-muted)", fontSize: 12 }}>{STATUS_LABEL[s.status]}</span>
         <span style={{ color: "var(--fg-subtle)", fontSize: 11, marginLeft: 8 }}>{fmtRelative(s.last_event_at)}</span>
-        <button class="btn-ghost" style={{ marginLeft: "auto" }} onClick={() => setCollapsed(true)} title="收合">▴</button>
+        <button
+          class="btn-ghost"
+          style={{ marginLeft: "auto", fontSize: 11 }}
+          onClick={handleFocus}
+          title="同步 VSCode panel — 觸發 vscode:// URI handler 強制 extension 重新從 JSONL 讀 session（已開的 tab 可能只 refocus，請配合 Cmd/Ctrl+Shift+P → Developer: Reload Window 確保 hot-reload）"
+        >🔄 同步</button>
+        <button class="btn-ghost" onClick={() => setCollapsed(true)} title="收合">▴</button>
       </div>
 
       {/* Meta */}
@@ -438,11 +444,12 @@ function colorForCwd(cwd: string) {
 
 // ── Grid overview cell ────────────────────────────────────────────────────
 
-function Cell({ s, preview, onQuickSend, onOpenTab }: {
+function Cell({ s, preview, onQuickSend, onOpenTab, onSync }: {
   s: Session;
   preview?: SessionPreview;
   onQuickSend: (s: Session, x: number, y: number) => void;
   onOpenTab: (uuid: string) => void;
+  onSync: (uuid: string) => void;
 }) {
   const title = preview?.ai_title ?? s.project_name;
   const lastReply = preview?.last_assistant_text;
@@ -457,6 +464,11 @@ function Cell({ s, preview, onQuickSend, onOpenTab }: {
       <div class="cell-head">
         <span class={STATUS_DOT[s.status]} />
         <span class="cell-title" title={title}>{title}</span>
+        <button
+          class="cell-open-tab"
+          onClick={(e) => { e.stopPropagation(); onSync(s.session_uuid ?? ""); }}
+          title="同步 VSCode panel（觸發 vscode:// URI handler 重讀 session）"
+        >🔄</button>
         <button
           class="cell-open-tab"
           onClick={(e) => { e.stopPropagation(); onOpenTab(s.session_uuid ?? ""); }}
@@ -483,11 +495,12 @@ function Cell({ s, preview, onQuickSend, onOpenTab }: {
 
 // ── Grid overview (sessions grouped by cwd) ──────────────────────────
 
-function GridOverview({ sessions, previews, onQuickSend, onOpenTab }: {
+function GridOverview({ sessions, previews, onQuickSend, onOpenTab, onSync }: {
   sessions: Session[];
   previews: Record<string, SessionPreview>;
   onQuickSend: (s: Session, x: number, y: number) => void;
   onOpenTab: (uuid: string) => void;
+  onSync: (uuid: string) => void;
 }) {
   // Flat list, newest first. No grouping.
   const ordered = [...sessions].sort((a, b) => b.last_event_at - a.last_event_at);
@@ -500,6 +513,7 @@ function GridOverview({ sessions, previews, onQuickSend, onOpenTab }: {
           preview={s.session_uuid ? previews[s.session_uuid] : undefined}
           onQuickSend={onQuickSend}
           onOpenTab={onOpenTab}
+          onSync={onSync}
         />
       ))}
     </div>
@@ -508,13 +522,14 @@ function GridOverview({ sessions, previews, onQuickSend, onOpenTab }: {
 
 // ── Popover (quick-send at mouse position) ───────────────────────────
 
-function Popover({ s, x, y, onClose, onSend, onOpenTab }: {
+function Popover({ s, x, y, onClose, onSend, onOpenTab, onSync }: {
   s: Session;
   x: number;
   y: number;
   onClose: () => void;
   onSend: (uuid: string, prompt: string, submit: boolean) => Promise<{ ok: boolean; status: number; reply?: string; duration_ms?: number }>;
   onOpenTab: (uuid: string) => void;
+  onSync: (uuid: string) => void;
 }) {
   const [prompt, setPrompt] = useState("");
   const [submitMode, setSubmitMode] = useState(true);
@@ -562,7 +577,13 @@ function Popover({ s, x, y, onClose, onSend, onOpenTab }: {
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
           <span class={STATUS_DOT[s.status]} />
           <strong style={{ fontSize: 13 }}>{s.project_name}</strong>
-          <button class="btn-ghost" style={{ marginLeft: "auto", padding: "2px 6px" }} onClick={() => { onOpenTab(s.session_uuid ?? ""); onClose(); }}>
+          <button
+            class="btn-ghost"
+            style={{ marginLeft: "auto", padding: "2px 6px" }}
+            onClick={() => onSync(s.session_uuid ?? "")}
+            title="同步 VSCode panel"
+          >🔄</button>
+          <button class="btn-ghost" style={{ padding: "2px 6px" }} onClick={() => { onOpenTab(s.session_uuid ?? ""); onClose(); }}>
             開到 tab ↗
           </button>
           <button class="btn-ghost" style={{ padding: "2px 6px" }} onClick={onClose}>×</button>
@@ -825,6 +846,7 @@ function App() {
               previews={previews}
               onQuickSend={openQuickSend}
               onOpenTab={openTab}
+              onSync={(uuid) => { void onFocus(uuid); }}
             />
           )}
         </>
@@ -847,6 +869,7 @@ function App() {
           onClose={() => setPopoverFor(null)}
           onSend={onSend}
           onOpenTab={openTab}
+          onSync={(uuid) => { void onFocus(uuid); }}
         />
       )}
     </div>
