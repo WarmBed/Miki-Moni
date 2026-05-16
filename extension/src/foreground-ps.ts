@@ -32,6 +32,7 @@ public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, IntPtr dwExtraInfo);
 [DllImport("user32.dll")] public static extern void SwitchToThisWindow(IntPtr hWnd, bool fAltTab);
 [DllImport("user32.dll")] public static extern bool LockSetForegroundWindow(uint uLockCode);
+[DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(uint dwProcessId);
 '@
 Add-Type -MemberDefinition $sig -Name 'U' -Namespace 'CcHubHelper'
 

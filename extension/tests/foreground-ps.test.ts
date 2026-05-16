@@ -2,12 +2,18 @@ import { describe, it, expect } from "vitest";
 import { buildFocusAndEnterPS } from "../src/foreground-ps.js";
 
 describe("buildFocusAndEnterPS", () => {
-  it("contains the Win32 P/Invoke signature block", () => {
+  it("contains all required Win32 P/Invoke methods", () => {
     const ps = buildFocusAndEnterPS({ folderHint: "code" });
-    expect(ps).toContain("SetForegroundWindow");
-    expect(ps).toContain("AttachThreadInput");
-    expect(ps).toContain("SwitchToThisWindow");
-    expect(ps).toContain("keybd_event");
+    const required = [
+      "SetForegroundWindow", "BringWindowToTop", "ShowWindow", "IsIconic",
+      "IsWindowVisible", "AttachThreadInput", "GetWindowThreadProcessId",
+      "GetForegroundWindow", "GetCurrentThreadId", "GetWindowText", "EnumWindowsProc",
+      "EnumWindows", "keybd_event", "SwitchToThisWindow", "LockSetForegroundWindow",
+      "AllowSetForegroundWindow",
+    ];
+    for (const method of required) {
+      expect(ps).toContain(method);
+    }
   });
 
   it("does NOT fire a vscode:// URI — that's the extension's job", () => {
