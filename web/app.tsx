@@ -96,37 +96,85 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
 
+// Convert markdown to clean plain text for preview cells: drop syntax, tables, links → just words.
+function mdToPlainText(md: string): string {
+  try {
+    const html = marked.parse(md, { async: false }) as string;
+    const text = html
+      .replace(/<\/(p|div|li|tr|h[1-6]|br)>/gi, " ")
+      .replace(/<br\s*\/?\s*>/gi, " ")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'");
+    return text.replace(/\s+/g, " ").trim();
+  } catch {
+    return md.replace(/\s+/g, " ").trim();
+  }
+}
+
 // ── Tool box (IN/OUT) ──────────────────────────────────────────────────────
 
 function ToolUseBox({ t }: { t: TranscriptTurn }) {
   const u = t.tool_use!;
+  const [expanded, setExpanded] = useState(false);
   const inputStr = typeof u.input === "string" ? u.input : JSON.stringify(u.input, null, 2);
   return (
     <div class="toolbox" style={{ marginTop: 4 }}>
-      <div class="toolbox-head">
+      <div
+        class="toolbox-head"
+        style={{ cursor: "pointer", userSelect: "none" }}
+        onClick={() => setExpanded((v) => !v)}
+        title={expanded ? "收合" : "展開 IN"}
+      >
+        <span style={{ color: "var(--fg-subtle)", fontSize: 10, width: 10, display: "inline-block" }}>{expanded ? "▾" : "▸"}</span>
         <span class="dot dot-active" style={{ width: 6, height: 6 }} />
         <span>{u.name}</span>
         {u.description && <span style={{ color: "var(--fg-subtle)" }}>{u.description}</span>}
       </div>
-      <div class="toolbox-row">
-        <div class="toolbox-label">IN</div>
-        <pre class="toolbox-content" style={{ margin: 0 }}>{inputStr}</pre>
-      </div>
+      {expanded && (
+        <div class="toolbox-row">
+          <div class="toolbox-label">IN</div>
+          <pre class="toolbox-content" style={{ margin: 0 }}>{inputStr}</pre>
+        </div>
+      )}
     </div>
   );
 }
 
 function ToolResultBox({ t }: { t: TranscriptTurn }) {
   const r = t.tool_result!;
+  const [expanded, setExpanded] = useState(false);
+  const content = r.content || "(empty)";
+  const preview = content.replace(/\s+/g, " ").slice(0, 120);
   return (
     <div class="toolbox" style={{ marginTop: 4 }}>
-      <div class="toolbox-row">
-        <div class="toolbox-label">OUT</div>
-        <pre class={"toolbox-content" + (r.is_error ? " is-error" : "")} style={{ margin: 0 }}>
-          {r.content || "(empty)"}
-          {r.truncated && <div style={{ color: "var(--fg-subtle)", fontSize: 10, marginTop: 4 }}>…[truncated]</div>}
-        </pre>
+      <div
+        class="toolbox-head"
+        style={{ cursor: "pointer", userSelect: "none" }}
+        onClick={() => setExpanded((v) => !v)}
+        title={expanded ? "收合" : "展開 OUT"}
+      >
+        <span style={{ color: "var(--fg-subtle)", fontSize: 10, width: 10, display: "inline-block" }}>{expanded ? "▾" : "▸"}</span>
+        <span class={"toolbox-label" + (r.is_error ? " is-error" : "")} style={{ margin: 0 }}>OUT</span>
+        {!expanded && (
+          <span style={{ color: "var(--fg-subtle)", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+            {preview}{content.length > 120 ? "…" : ""}
+          </span>
+        )}
       </div>
+      {expanded && (
+        <div class="toolbox-row">
+          <div class="toolbox-label">&nbsp;</div>
+          <pre class={"toolbox-content" + (r.is_error ? " is-error" : "")} style={{ margin: 0 }}>
+            {content}
+            {r.truncated && <div style={{ color: "var(--fg-subtle)", fontSize: 10, marginTop: 4 }}>…[truncated]</div>}
+          </pre>
+        </div>
+      )}
     </div>
   );
 }
@@ -166,7 +214,12 @@ function Card({ s, defaultExpanded, onFocus, onSend }: {
 }) {
   const [collapsed, setCollapsed] = useState(!defaultExpanded);
   const [draft, setDraft] = useState("");
-  const [submitMode, setSubmitMode] = useState(true);
+  // Default = prefill (free, uses your already-running VSCode panel session).
+  // 真送出 (-p headless) is OPT-IN — it spawns a NEW claude.exe that re-loads
+  // the whole session context through cache → burns real $ for large sessions
+  // BEFORE generating any token.
+  const [submitMode, setSubmitMode] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [focusResult, setFocusResult] = useState<ActionResult>(null);
   const [sendResult, setSendResult] = useState<ActionResult>(null);
@@ -304,19 +357,35 @@ function Card({ s, defaultExpanded, onFocus, onSend }: {
             {busy ? "⌛" : submitMode ? "真送出" : "預填"}
           </button>
         </div>
-        <label style={{ fontSize: 11, color: "var(--fg-subtle)", cursor: "pointer", userSelect: "none" }}>
-          <input
-            type="checkbox"
-            checked={submitMode}
-            onChange={(e) => setSubmitMode((e.currentTarget as HTMLInputElement).checked)}
-            style={{ marginRight: 6, verticalAlign: "middle" }}
-          />
-          真送出模式（會花 API 費用）
-        </label>
-        {submitMode && (
-          <div style={{ fontSize: 10, color: "var(--warn)" }}>
-            ⚠️ Windows 已知限制：prompt 含中文/emoji 會被 codepage 切碼，請暫用英文 prompt 或切「預填」。
-          </div>
+        <div style={{ fontSize: 10, color: "var(--fg-subtle)", lineHeight: 1.5 }}>
+          {submitMode ? (
+            <>
+              💸 <strong style={{ color: "var(--accent)" }}>真送出</strong>：spawn `claude -p` 新 process、重 load 整個 session cache、call API → 大 session 可能花 $2-5+。<br />
+              <span style={{ color: "var(--warn)" }}>⚠️ Windows 限制：prompt 含中文/emoji 會被切碼，請用英文。</span>
+            </>
+          ) : (
+            <>
+              📥 <strong style={{ color: "var(--pass)" }}>預填</strong>：vscode:// URI 把 prompt 塞進你現有 VSCode panel 的 input box，<strong>你按 Enter</strong> → 走你 panel 已 loaded 的 session（cache 全熱、不重 load、近乎零成本）。
+            </>
+          )}
+        </div>
+        <button
+          class="btn-ghost"
+          style={{ fontSize: 10, alignSelf: "flex-start", padding: "2px 6px" }}
+          onClick={() => setShowAdvanced((v) => !v)}
+        >
+          {showAdvanced ? "▾" : "▸"} advanced：切換送出模式
+        </button>
+        {showAdvanced && (
+          <label style={{ fontSize: 11, color: "var(--fg-subtle)", cursor: "pointer", userSelect: "none", paddingLeft: 16 }}>
+            <input
+              type="checkbox"
+              checked={submitMode}
+              onChange={(e) => setSubmitMode((e.currentTarget as HTMLInputElement).checked)}
+              style={{ marginRight: 6, verticalAlign: "middle" }}
+            />
+            真送出模式（headless `claude -r -p`，會花 API 費用、不走你 panel session）
+          </label>
         )}
 
         {/* Send result */}
@@ -452,7 +521,8 @@ function Cell({ s, preview, onQuickSend, onOpenTab, onSync }: {
   onSync: (uuid: string) => void;
 }) {
   const title = preview?.ai_title ?? s.project_name;
-  const lastReply = preview?.last_assistant_text;
+  const lastReplyRaw = preview?.last_assistant_text;
+  const lastReply = useMemo(() => (lastReplyRaw ? mdToPlainText(lastReplyRaw) : ""), [lastReplyRaw]);
   const c = colorForCwd(s.cwd);
 
   function handleClick(ev: MouseEvent) {
@@ -532,7 +602,8 @@ function Popover({ s, x, y, onClose, onSend, onOpenTab, onSync }: {
   onSync: (uuid: string) => void;
 }) {
   const [prompt, setPrompt] = useState("");
-  const [submitMode, setSubmitMode] = useState(true);
+  const [submitMode, setSubmitMode] = useState(false);  // default = prefill (free)
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; label: string; reply?: string } | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
@@ -602,21 +673,32 @@ function Popover({ s, x, y, onClose, onSend, onOpenTab, onSync }: {
           style={{ width: "100%", minHeight: 80, fontSize: 13, fontFamily: "inherit", marginBottom: 8 }}
         />
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <label style={{ fontSize: 11, color: "var(--fg-subtle)", cursor: "pointer" }}>
-            <input type="checkbox" checked={submitMode} onChange={(e) => setSubmitMode((e.currentTarget as HTMLInputElement).checked)} style={{ marginRight: 4, verticalAlign: "middle" }} />
-            真送出（花 API$）
-          </label>
+          <button
+            class="btn-ghost"
+            style={{ fontSize: 10, padding: "2px 6px" }}
+            onClick={() => setShowAdvanced((v) => !v)}
+            title="切換到 -p headless 模式（會花錢）"
+          >{showAdvanced ? "▾ adv" : "▸ adv"}</button>
           <button
             class={submitMode ? "btn-warn" : "btn-primary"}
             disabled={!prompt.trim() || busy}
             onClick={handleSend}
             style={{ marginLeft: "auto" }}
           >
-            {busy ? "⌛" : submitMode ? "真送出" : "預填"}
+            {busy ? "⌛" : submitMode ? "真送出 💸" : "預填"}
           </button>
         </div>
+        {showAdvanced && (
+          <label style={{ fontSize: 10, color: "var(--fg-subtle)", cursor: "pointer", marginTop: 4, display: "block" }}>
+            <input type="checkbox" checked={submitMode} onChange={(e) => setSubmitMode((e.currentTarget as HTMLInputElement).checked)} style={{ marginRight: 4, verticalAlign: "middle" }} />
+            真送出（spawn `claude -p`，重 load context 會花 $$）
+          </label>
+        )}
         <div style={{ marginTop: 4, fontSize: 10, color: "var(--fg-subtle)" }}>
-          ⌘/Ctrl+Enter 送出 · Esc 關閉
+          {submitMode
+            ? "💸 真送出：新 process、重 load cache、call API"
+            : "📥 預填：餵進你 VSCode panel input box，按 Enter 由 panel 既有 session 處理（cache 熱、~free）"}
+          <br />⌘/Ctrl+Enter 送出 · Esc 關閉
         </div>
         {result && (
           <div style={{ marginTop: 8, padding: 8, background: "var(--sl2)", border: "1px solid var(--border)", borderRadius: 6 }}>
