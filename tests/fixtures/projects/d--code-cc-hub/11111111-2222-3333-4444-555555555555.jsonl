@@ -1,0 +1,3 @@
+{"type":"summary","sessionId":"11111111-2222-3333-4444-555555555555","cwd":"d:\\code\\cc-hub","ts":1715760000000}
+{"type":"user","content":"list files in this folder","ts":1715760001000}
+{"type":"assistant","content":"Here are the files in the current folder...","ts":1715760002000}

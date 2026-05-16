@@ -1,0 +1,8 @@
+{
+  "session_id": "11111111-2222-3333-4444-555555555555",
+  "transcript_path": "C:\\Users\\mike2\\.claude\\projects\\d--code-cc-hub\\11111111-2222-3333-4444-555555555555.jsonl",
+  "cwd": "d:\\code\\cc-hub",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-opus-4-7"
+}
