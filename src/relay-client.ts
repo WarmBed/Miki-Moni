@@ -1,10 +1,11 @@
 import WebSocket from "ws";
-import { fromBase64 } from "./crypto.js";
+import { fromBase64, toBase64, sign as signMsg } from "./crypto.js";
 import { encodeEnvelope, decodeEnvelope, type Envelope, type Plaintext } from "./relay-protocol.js";
 import type { Config, PairedPeer } from "./config.js";
 import type { SessionStore } from "./session-store.js";
 import type { VscodeBridge } from "./vscode-bridge.js";
 import type { Session } from "./types.js";
+import { createHash } from "node:crypto";
 
 const RECONNECT_INITIAL_MS = 1000;
 const RECONNECT_MAX_MS = 60_000;
@@ -22,12 +23,20 @@ interface PeerSecrets {
   recentNonces: Map<string, number>;  // nonce → seen-at ms
 }
 
+function buildChallengeMessage(nonce: Uint8Array, issued_at_ms: number): Uint8Array {
+  const out = new Uint8Array(nonce.length + 8);
+  out.set(nonce, 0);
+  new DataView(out.buffer, nonce.length, 8).setBigUint64(0, BigInt(issued_at_ms), false);
+  return out;
+}
+
 export class RelayClient {
   private ws: WebSocket | null = null;
   private stopRequested = false;
   private reconnectMs = RECONNECT_INITIAL_MS;
   private storeListener: ((s: Session) => void) | null = null;
   private peers: PeerSecrets[] = [];
+  private ready = false;
 
   constructor(private deps: RelayClientDeps) {
     this.peers = deps.config.paired_peers.map((p) => ({
@@ -57,25 +66,65 @@ export class RelayClient {
     }
   }
 
+  private daemonIdHex(): string {
+    const pub = fromBase64(this.deps.config.device.signing_pubkey);
+    return createHash("sha256").update(pub).digest("hex").slice(0, 32);
+  }
+
   private connect(): void {
     const remote = this.deps.config.remote!;
+    // Use worker_url AS-IS (test passes ws://localhost:N, prod passes wss://relay.f1telemetrystationpro.org)
+    // Append /v1/daemon if not already in the URL.
+    const baseUrl = remote.worker_url.replace(/\/$/, "");
+    const url = baseUrl.includes("/v1/") ? baseUrl : `${baseUrl}/v1/daemon`;
     const headers: Record<string, string> = {
-      "X-Daemon-Auth": remote.x_daemon_auth_token,
-      "X-Daemon-Id": this.peerSelfId(),
+      "X-Daemon-Pubkey": this.deps.config.device.signing_pubkey,
+      "X-Daemon-Id": this.daemonIdHex(),
     };
-    const ws = new WebSocket(remote.worker_url, { headers });
+    const ws = new WebSocket(url, { headers });
     this.ws = ws;
+    this.ready = false;
 
-    ws.on("open", () => {
-      this.reconnectMs = RECONNECT_INITIAL_MS;
-      // Subscribe to store changes after we're connected
-      this.storeListener = (session: Session) => this.broadcastEvent(session);
-      this.deps.store.on("session_changed", this.storeListener);
-    });
-
+    ws.on("open", () => { /* wait for challenge from server */ });
     ws.on("message", (raw) => this.handleMessage(raw.toString()));
     ws.on("close", () => this.handleClose());
     ws.on("error", () => { /* swallow; close handler reconnects */ });
+  }
+
+  private handleMessage(text: string): void {
+    let msg: any;
+    try { msg = JSON.parse(text); } catch { return; }
+
+    if (!this.ready) {
+      if (msg.type === "challenge") {
+        const nonce = fromBase64(msg.nonce);
+        const sigMsg = buildChallengeMessage(nonce, msg.issued_at_ms);
+        const priv = fromBase64(this.deps.config.device.signing_privkey);
+        const sig = signMsg(sigMsg, priv);
+        this.ws!.send(JSON.stringify({ type: "challenge_response", sig: toBase64(sig) }));
+        return;
+      }
+      if (msg.type === "ready") {
+        this.ready = true;
+        this.reconnectMs = RECONNECT_INITIAL_MS;
+        this.storeListener = (session: Session) => this.broadcastEvent(session);
+        this.deps.store.on("session_changed", this.storeListener);
+        return;
+      }
+      // Drop any other messages received before ready
+      return;
+    }
+
+    // Post-ready: envelope routing
+    if (msg.type === "envelope") {
+      this.handleEnvelope(msg as Envelope);
+      return;
+    }
+
+    // Legacy: envelopes sent without a wrapper type field (current relay sends plain Envelope objects)
+    if (typeof msg.ts === "number" && typeof msg.nonce === "string") {
+      this.handleEnvelope(msg as Envelope);
+    }
   }
 
   private handleClose(): void {
@@ -84,17 +133,14 @@ export class RelayClient {
       this.storeListener = null;
     }
     this.ws = null;
+    this.ready = false;
     if (this.stopRequested) return;
     const wait = this.reconnectMs;
     this.reconnectMs = Math.min(this.reconnectMs * 2, RECONNECT_MAX_MS);
     setTimeout(() => this.connect(), wait);
   }
 
-  private handleMessage(raw: string): void {
-    let env: Envelope;
-    try { env = JSON.parse(raw); } catch { return; }
-    if (typeof env !== "object" || env === null) return;
-
+  private handleEnvelope(env: Envelope): void {
     // Freshness check
     if (typeof env.ts !== "number" || Math.abs(Date.now() - env.ts) > NONCE_FRESHNESS_MS) return;
 
@@ -162,10 +208,5 @@ export class RelayClient {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     const env = encodeEnvelope(msg, p.sharedSecret, `phone:${p.peer.peer_id}`);
     this.ws.send(JSON.stringify(env), (_err) => { /* swallow */ });
-  }
-
-  private peerSelfId(): string {
-    // Stable derivation from daemon pubkey
-    return this.deps.config.device.pubkey.replace(/[+/=]/g, "").slice(0, 16);
   }
 }

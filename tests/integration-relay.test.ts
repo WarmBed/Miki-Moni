@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { WebSocketServer, WebSocket } from "ws";
-import { generateKeypair, deriveSharedSecret, toBase64 } from "../src/crypto.js";
+import nacl from "tweetnacl";
+import { generateKeypair, generateSigningKeypair, deriveSharedSecret, toBase64 } from "../src/crypto.js";
 import { encodeEnvelope, decodeEnvelope, type Envelope } from "../src/relay-protocol.js";
 import { SessionStore } from "../src/session-store.js";
 import { VscodeBridge } from "../src/vscode-bridge.js";
@@ -23,7 +24,18 @@ describe("daemon <-> mock-Worker <-> phone integration", () => {
       const url = req.url || "";
       if (url.startsWith("/v1/daemon")) {
         daemonConn = ws;
-        ws.on("message", (raw) => phoneConn?.send(raw));
+        // Perform challenge-response handshake before relaying
+        const nonce = nacl.randomBytes(32);
+        const issued_at_ms = Date.now();
+        ws.send(JSON.stringify({ type: "challenge", nonce: toBase64(nonce), issued_at_ms }));
+        ws.once("message", (raw: any) => {
+          const msg = JSON.parse(raw.toString());
+          if (msg.type === "challenge_response") {
+            ws.send(JSON.stringify({ type: "ready", daemon_id: "test-id" }));
+          }
+          // After handshake, relay subsequent messages to phone
+          ws.on("message", (data) => phoneConn?.send(data));
+        });
       } else if (url.startsWith("/v1/phone")) {
         phoneConn = ws;
         ws.on("message", (raw) => daemonConn?.send(raw));
@@ -37,6 +49,7 @@ describe("daemon <-> mock-Worker <-> phone integration", () => {
 
   it("daemon broadcasts session_changed; phone decrypts; phone sends cmd_focus; daemon executes", async () => {
     const daemonKp = generateKeypair();
+    const daemonSign = generateSigningKeypair();
     const phoneKp = generateKeypair();
     const shared = deriveSharedSecret(daemonKp.privkey, phoneKp.pubkey);
 
@@ -53,11 +66,12 @@ describe("daemon <-> mock-Worker <-> phone integration", () => {
         name: "test",
         pubkey: toBase64(daemonKp.pubkey),
         privkey: toBase64(daemonKp.privkey),
+        signing_pubkey: toBase64(daemonSign.pubkey),
+        signing_privkey: toBase64(daemonSign.privkey),
         created_at: 0,
       },
       remote: {
         worker_url: `ws://127.0.0.1:${port}/v1/daemon`,
-        x_daemon_auth_token: "abc",
       },
       paired_peers: [peer],
     };
@@ -82,7 +96,7 @@ describe("daemon <-> mock-Worker <-> phone integration", () => {
 
     const client = new RelayClient({ config: cfg, store, bridge });
     await client.start();
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise((r) => setTimeout(r, 150));  // allow time for challenge-response handshake
 
     // Phone connects and listens for events
     const phoneEvents: any[] = [];

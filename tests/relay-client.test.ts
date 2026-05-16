@@ -1,18 +1,40 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { WebSocketServer } from "ws";
-import { generateKeypair, deriveSharedSecret, toBase64, fromBase64 } from "../src/crypto.js";
+import nacl from "tweetnacl";
+import { generateKeypair, generateSigningKeypair, deriveSharedSecret, toBase64, fromBase64 } from "../src/crypto.js";
 import { encodeEnvelope, decodeEnvelope, type Envelope, type Plaintext } from "../src/relay-protocol.js";
 import { SessionStore } from "../src/session-store.js";
 import { VscodeBridge } from "../src/vscode-bridge.js";
 import { RelayClient } from "../src/relay-client.js";
 import type { Config, PairedPeer } from "../src/config.js";
 
-function makeConfig(daemonPubkey: string, daemonPrivkey: string, peer: PairedPeer, workerUrl: string): Config {
+function makeConfig(daemonPubkey: string, daemonPrivkey: string, peer: PairedPeer, workerUrl: string, signingKeypair?: { pubkey: Uint8Array; privkey: Uint8Array }): Config {
+  const sign = signingKeypair ?? generateSigningKeypair();
   return {
-    device: { name: "test", pubkey: daemonPubkey, privkey: daemonPrivkey, created_at: 0 },
-    remote: { worker_url: workerUrl, x_daemon_auth_token: "anti-abuse" },
+    device: {
+      name: "test",
+      pubkey: daemonPubkey,
+      privkey: daemonPrivkey,
+      signing_pubkey: toBase64(sign.pubkey),
+      signing_privkey: toBase64(sign.privkey),
+      created_at: 0,
+    },
+    remote: { worker_url: workerUrl },
     paired_peers: [peer],
   };
+}
+
+/** Helper: attach a challenge-response handshake to a WebSocket server connection. */
+function attachHandshake(ws: import("ws").WebSocket): void {
+  const nonce = nacl.randomBytes(32);
+  const issued_at_ms = Date.now();
+  ws.send(JSON.stringify({ type: "challenge", nonce: toBase64(nonce), issued_at_ms }));
+  ws.once("message", (raw: any) => {
+    const msg = JSON.parse(raw.toString());
+    if (msg.type === "challenge_response") {
+      ws.send(JSON.stringify({ type: "ready", daemon_id: "test-id" }));
+    }
+  });
 }
 
 describe("RelayClient", () => {
@@ -29,8 +51,12 @@ describe("RelayClient", () => {
     port = (wss.address() as any).port;
     wss.on("connection", (ws) => {
       serverConn = ws;
+      attachHandshake(ws);
       ws.on("message", (raw) => {
-        serverReceived.push(JSON.parse(raw.toString()));
+        const msg = JSON.parse(raw.toString());
+        // Skip handshake messages from the recording
+        if (msg.type === "challenge_response") return;
+        serverReceived.push(msg as Envelope);
       });
     });
   });
@@ -141,5 +167,94 @@ describe("RelayClient", () => {
     expect(launches).toEqual([]);  // unaffected
     await client.stop();
     store.close();
+  });
+});
+
+describe("RelayClient new challenge-response handshake", () => {
+  it("completes challenge-response and reaches ready state", async () => {
+    const sign = generateSigningKeypair();
+    const wss = new WebSocketServer({ port: 0 });
+    const port = (wss.address() as any).port;
+
+    let readyReached = false;
+    wss.on("connection", (ws, req) => {
+      const pubkeyHdr = req.headers["x-daemon-pubkey"] as string;
+      expect(pubkeyHdr).toBe(toBase64(sign.pubkey));
+
+      // Send challenge
+      const nonce = nacl.randomBytes(32);
+      const issued_at_ms = Date.now();
+      ws.send(JSON.stringify({ type: "challenge", nonce: toBase64(nonce), issued_at_ms }));
+
+      ws.on("message", (raw) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === "challenge_response") {
+          const sig = fromBase64(msg.sig);
+          // Build the signed message: nonce (32B) ++ issued_at_ms (8B big-endian)
+          const sigMsg = new Uint8Array(40);
+          sigMsg.set(nonce, 0);
+          new DataView(sigMsg.buffer, 32, 8).setBigUint64(0, BigInt(issued_at_ms), false);
+          const ok = nacl.sign.detached.verify(sigMsg, sig, sign.pubkey);
+          expect(ok).toBe(true);
+          ws.send(JSON.stringify({ type: "ready", daemon_id: "test-id" }));
+          readyReached = true;
+        }
+      });
+    });
+
+    const config: any = {
+      device: {
+        name: "t",
+        pubkey: "x", privkey: "x",
+        signing_pubkey: toBase64(sign.pubkey),
+        signing_privkey: toBase64(sign.privkey),
+        created_at: 1,
+      },
+      remote: { worker_url: `ws://127.0.0.1:${port}` },
+      paired_peers: [],
+    };
+    const client = new RelayClient({
+      config,
+      store: { on: () => {}, off: () => {} } as any,
+      bridge: {} as any,
+    });
+    await client.start();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(readyReached).toBe(true);
+    await client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+  });
+
+  it("does NOT send X-Daemon-Auth header", async () => {
+    const sign = generateSigningKeypair();
+    const wss = new WebSocketServer({ port: 0 });
+    const port = (wss.address() as any).port;
+
+    let authHeaderSeen: string | undefined;
+    wss.on("connection", (_ws, req) => {
+      authHeaderSeen = req.headers["x-daemon-auth"] as string | undefined;
+      // Don't bother completing handshake — just check headers
+    });
+
+    const config: any = {
+      device: {
+        name: "t", pubkey: "x", privkey: "x",
+        signing_pubkey: toBase64(sign.pubkey),
+        signing_privkey: toBase64(sign.privkey),
+        created_at: 1,
+      },
+      remote: { worker_url: `ws://127.0.0.1:${port}` },
+      paired_peers: [],
+    };
+    const client = new RelayClient({
+      config,
+      store: { on: () => {}, off: () => {} } as any,
+      bridge: {} as any,
+    });
+    await client.start();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(authHeaderSeen).toBeUndefined();
+    await client.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
   });
 });
