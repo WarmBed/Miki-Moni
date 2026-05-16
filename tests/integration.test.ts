@@ -152,3 +152,57 @@ describe("server POST /focus + /send", () => {
     store.close();
   });
 });
+
+describe("daemon /ws_ext extension registry", () => {
+  it("accepts ws connection, processes register, adds to registry", async () => {
+    const store = new SessionStore(":memory:");
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    const { server, registry } = createApp({
+      store, handler, bridge: null as any, notifier: null as any, webDir: "/tmp/none",
+    }) as any;  // registry is a new exported property — Task 7 adds it
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const addr = server.address();
+    if (!addr || typeof addr === "string") throw new Error("no addr");
+    const port = addr.port;
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws_ext`);
+    await new Promise<void>((r) => ws.on("open", () => r()));
+    ws.send(JSON.stringify({
+      type: "register", workspace_root: "d:/code", helper_version: "0.1.0",
+    }));
+    // Give server a tick to process
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(registry.list()).toHaveLength(1);
+    expect(registry.list()[0].info.workspace_root).toBe("d:/code");
+
+    ws.close();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(registry.list()).toHaveLength(0);
+
+    await new Promise<void>((r) => server.close(() => r()));
+    store.close();
+  });
+
+  it("ignores non-register messages on a not-yet-registered ws (graceful)", async () => {
+    const store = new SessionStore(":memory:");
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    const { server, registry } = createApp({
+      store, handler, bridge: null as any, notifier: null as any, webDir: "/tmp/none",
+    }) as any;
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as any).port;
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws_ext`);
+    await new Promise<void>((r) => ws.on("open", () => r()));
+    ws.send(JSON.stringify({ type: "submit_ack", request_id: "x", ok: true }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Server should not crash, registry should remain empty
+    expect(registry.list()).toHaveLength(0);
+
+    ws.close();
+    await new Promise<void>((r) => server.close(() => r()));
+    store.close();
+  });
+});

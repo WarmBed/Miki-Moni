@@ -11,6 +11,8 @@ import { readTranscriptTail, readSessionPreview, type SessionPreview } from "./s
 import path from "node:path";
 import os from "node:os";
 import { promises as fs } from "node:fs";
+import { ExtRegistry } from "./ext-registry.js";
+import type { ExtMessage } from "./protocol-ext.js";
 
 type Log = { info: (obj: Record<string, unknown>, msg?: string) => void; warn: (obj: Record<string, unknown>, msg?: string) => void; error: (obj: Record<string, unknown>, msg?: string) => void };
 
@@ -40,7 +42,7 @@ function parseHookEvent(body: unknown): HookEvent | null {
   };
 }
 
-export function createApp(deps: ServerDeps): { app: Express; server: http.Server } {
+export function createApp(deps: ServerDeps): { app: Express; server: http.Server; registry: ExtRegistry } {
   const app = express();
   app.use(express.json({ limit: "1mb" }));
 
@@ -294,12 +296,15 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   });
 
   const server = http.createServer(app);
-  const wss = new WebSocketServer({ server, path: "/ws" });
+  // IMPORTANT: multiple WebSocketServer instances on the same http.Server fight
+  // for the 'upgrade' event — the first one wins and 400's everything else.
+  // Workaround: noServer mode + one manual upgrade router below.
+  const wss = new WebSocketServer({ noServer: true });
 
   // Wrap WS endpoint — each `cch claude` wrapper connects here and registers
   // its session. /send for a wrapped session goes through this socket instead
   // of spawning `claude -p`.
-  const wrapWss = new WebSocketServer({ server, path: "/wrap" });
+  const wrapWss = new WebSocketServer({ noServer: true });
   const wrapConnections = new Map<string, import("ws").WebSocket>(); // uuid → ws
   // Re-broadcast a session's row with the updated `wrapped` flag so dashboard
   // can repaint the badge live. Cheap (one JSON.stringify per client).
@@ -348,6 +353,51 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   // Expose check for /send to route through wrap when available
   (deps as any).__wrapConnections = wrapConnections;
 
+  const registry = new ExtRegistry();
+  const wssExt = new WebSocketServer({ noServer: true });
+
+  // Single upgrade router — dispatch by URL path so all three WSS get their share.
+  server.on("upgrade", (req, socket, head) => {
+    const url = req.url || "/";
+    if (url === "/ws") {
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+    } else if (url === "/wrap") {
+      wrapWss.handleUpgrade(req, socket, head, (ws) => wrapWss.emit("connection", ws, req));
+    } else if (url === "/ws_ext") {
+      wssExt.handleUpgrade(req, socket, head, (ws) => wssExt.emit("connection", ws, req));
+    } else {
+      socket.destroy();
+    }
+  });
+  wssExt.on("connection", (ws) => {
+    deps.log?.info({ route: "/ws_ext" }, "extension ws connected");
+    ws.on("message", (raw) => {
+      let msg: ExtMessage;
+      try { msg = JSON.parse(String(raw)); } catch {
+        deps.log?.warn({ route: "/ws_ext", raw: String(raw).slice(0, 200) }, "malformed json, ignoring");
+        return;
+      }
+      if (msg.type === "register") {
+        registry.add(ws, {
+          workspace_root: msg.workspace_root,
+          version: msg.helper_version,
+          registered_at: Date.now(),
+        });
+        deps.log?.info({ route: "/ws_ext", workspace_root: msg.workspace_root, version: msg.helper_version }, "extension registered");
+        return;
+      }
+      // submit_ack and pong are handled by per-request listeners attached in
+      // VscodeBridge.submitViaHelper (Task 8). Nothing to do here.
+    });
+    ws.on("close", () => {
+      registry.remove(ws);
+      deps.log?.info({ route: "/ws_ext" }, "extension ws disconnected");
+    });
+    ws.on("error", (err) => {
+      deps.log?.warn({ route: "/ws_ext", error: String(err) }, "extension ws error");
+    });
+  });
+
   deps.store.on("session_changed", (session) => {
     const enriched = { ...session, wrapped: wrapConnections.has(session.session_uuid ?? "") };
     const msg = JSON.stringify({ type: "session_changed", session: enriched });
@@ -358,5 +408,5 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     }
   });
 
-  return { app, server };
+  return { app, server, registry };
 }
