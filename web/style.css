@@ -334,6 +334,14 @@ textarea { resize: vertical; }
 .cell-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
 .cell-title { font-weight: 500; font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cell-status { font-size: 10px; color: var(--fg-subtle); text-transform: uppercase; letter-spacing: 0.06em; }
+.cell-cwd {
+  font-size: 10px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .cell-preview {
   flex: 1;
   margin-top: 4px;

@@ -446,14 +446,14 @@ function Cell({ s, preview, onQuickSend, onOpenTab }: {
 }) {
   const title = preview?.ai_title ?? s.project_name;
   const lastReply = preview?.last_assistant_text;
+  const c = colorForCwd(s.cwd);
 
   function handleClick(ev: MouseEvent) {
-    // Open popover near the click position
     onQuickSend(s, ev.clientX, ev.clientY);
   }
 
   return (
-    <div class="cell" onClick={handleClick}>
+    <div class="cell" onClick={handleClick} style={{ borderTop: `3px solid ${c.border}` }}>
       <div class="cell-head">
         <span class={STATUS_DOT[s.status]} />
         <span class="cell-title" title={title}>{title}</span>
@@ -462,6 +462,10 @@ function Cell({ s, preview, onQuickSend, onOpenTab }: {
           onClick={(e) => { e.stopPropagation(); onOpenTab(s.session_uuid ?? ""); }}
           title="開到 tab"
         >開 tab ↗</button>
+      </div>
+      <div class="cell-cwd" style={{ color: c.label }} title={s.cwd}>
+        <strong style={{ fontWeight: 600 }}>{s.project_name}</strong>
+        <span style={{ opacity: 0.7 }}> · {s.cwd}</span>
       </div>
       <div class="cell-preview">
         {lastReply
@@ -485,47 +489,19 @@ function GridOverview({ sessions, previews, onQuickSend, onOpenTab }: {
   onQuickSend: (s: Session, x: number, y: number) => void;
   onOpenTab: (uuid: string) => void;
 }) {
-  // Group by normalized cwd
-  const groups = new Map<string, Session[]>();
-  for (const s of sessions) {
-    const list = groups.get(s.cwd) ?? [];
-    list.push(s);
-    groups.set(s.cwd, list);
-  }
-  const groupArr = Array.from(groups.entries()).sort((a, b) => {
-    // Sort by most-recent activity in each group
-    const maxA = Math.max(...a[1].map((x) => x.last_event_at));
-    const maxB = Math.max(...b[1].map((x) => x.last_event_at));
-    return maxB - maxA;
-  });
-
+  // Flat list, newest first. No grouping.
+  const ordered = [...sessions].sort((a, b) => b.last_event_at - a.last_event_at);
   return (
-    <div>
-      {groupArr.map(([cwd, group]) => {
-        const c = colorForCwd(cwd);
-        return (
-          <div key={cwd} class="cwd-group" style={{ background: c.bg, borderColor: c.border }}>
-            <div class="cwd-group-header" style={{ color: c.label }}>
-              <span style={{ fontWeight: 600, fontSize: 13, fontFamily: "Inter, sans-serif" }}>
-                {group[0]?.project_name}
-              </span>
-              <span style={{ opacity: 0.7 }}>{cwd}</span>
-              <span style={{ marginLeft: "auto", fontSize: 11, opacity: 0.7 }}>{group.length} session{group.length > 1 ? "s" : ""}</span>
-            </div>
-            <div class="cwd-group-grid">
-              {group.sort((a, b) => b.last_event_at - a.last_event_at).map((s) => (
-                <Cell
-                  key={s.session_uuid ?? s.cwd}
-                  s={s}
-                  preview={s.session_uuid ? previews[s.session_uuid] : undefined}
-                  onQuickSend={onQuickSend}
-                  onOpenTab={onOpenTab}
-                />
-              ))}
-            </div>
-          </div>
-        );
-      })}
+    <div class="cwd-group-grid">
+      {ordered.map((s) => (
+        <Cell
+          key={s.session_uuid ?? s.cwd}
+          s={s}
+          preview={s.session_uuid ? previews[s.session_uuid] : undefined}
+          onQuickSend={onQuickSend}
+          onOpenTab={onOpenTab}
+        />
+      ))}
     </div>
   );
 }
