@@ -45,3 +45,86 @@ export function makeMockEnv(): Env {
     RATE_LIMITER: { limit: async () => ({ success: true }) },
   } as Env;
 }
+
+// ── WebSocket mock helpers ─────────────────────────────────────────────────
+
+export interface FakeWebSocket {
+  readyState: number;
+  sent: string[];
+  closed: { code: number; reason: string } | null;
+  attachment: unknown;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+  serializeAttachment(value: unknown): void;
+  deserializeAttachment(): unknown;
+  addEventListener(): void;
+}
+
+export function makeFakeWs(): FakeWebSocket {
+  return {
+    readyState: 1,
+    sent: [],
+    closed: null,
+    attachment: undefined,
+    send(data: string) { this.sent.push(data); },
+    close(code = 1000, reason = "") { this.closed = { code, reason }; this.readyState = 3; },
+    serializeAttachment(v: unknown) { this.attachment = v; },
+    deserializeAttachment() { return this.attachment; },
+    addEventListener() {},
+  };
+}
+
+/**
+ * Augment a DurableObjectState mock with a tagged WS registry that satisfies
+ * acceptWebSocket / getWebSockets / getTags.
+ */
+export function makeMockStateWithWs(name: string = "test"): DurableObjectState & {
+  _wsRegistry: Map<FakeWebSocket, string[]>;
+} {
+  const base = makeMockState(name);
+  const registry = new Map<FakeWebSocket, string[]>();
+
+  (base as any).acceptWebSocket = (ws: FakeWebSocket, tags: string[] = []) => {
+    registry.set(ws, tags);
+  };
+  (base as any).getWebSockets = (tag?: string): FakeWebSocket[] => {
+    if (!tag) return Array.from(registry.keys());
+    return Array.from(registry.entries())
+      .filter(([_, tags]) => tags.includes(tag))
+      .map(([ws]) => ws);
+  };
+  (base as any).getTags = (ws: FakeWebSocket): string[] => {
+    return registry.get(ws) ?? [];
+  };
+
+  (base as any)._wsRegistry = registry;
+  return base as any;
+}
+
+/** Globally stub WebSocketPair so fetch() can construct one. */
+export function stubWebSocketPair(): void {
+  (globalThis as any).WebSocketPair = class {
+    constructor() {
+      const client = makeFakeWs();
+      const server = makeFakeWs();
+      return { 0: client, 1: server };
+    }
+  };
+
+  // Node's native Response rejects status 101 (only 200-599 allowed).
+  // Wrap it so WS-upgrade responses get status mapped to 101 via the
+  // `webSocket` property presence, but actually construct as 200.
+  const OriginalResponse = globalThis.Response;
+  (globalThis as any).Response = class extends OriginalResponse {
+    readonly _status101: boolean;
+    constructor(body?: BodyInit | null, init?: ResponseInit) {
+      const status = init?.status ?? 200;
+      const is101 = status === 101;
+      super(body, is101 ? { ...init, status: 200 } : init);
+      this._status101 = is101;
+    }
+    get status(): number {
+      return this._status101 ? 101 : super.status;
+    }
+  };
+}
