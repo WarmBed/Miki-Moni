@@ -2,6 +2,7 @@ import path from "node:path";
 import type { HookEvent, Session, SessionStatus } from "./types.js";
 import type { SessionStore } from "./session-store.js";
 import type { SessionResolver } from "./session-resolver.js";
+import type { Notifier } from "./notifier.js";
 
 const STATUS_BY_EVENT: Record<HookEvent["event_type"], SessionStatus> = {
   session_start: "active",
@@ -17,7 +18,11 @@ function basename(cwd: string): string {
 }
 
 export class HookHandler {
-  constructor(private store: SessionStore, private resolver: SessionResolver) {}
+  constructor(
+    private store: SessionStore,
+    private resolver: SessionResolver,
+    private notifier?: Notifier,
+  ) {}
 
   async handle(ev: HookEvent): Promise<void> {
     const existing = this.store.get(ev.cwd);
@@ -35,6 +40,15 @@ export class HookHandler {
       vscode_pid: existing?.vscode_pid ?? null,
     };
     this.store.upsert(next);
+
+    const wasWaiting = existing?.status === "waiting";
+    const isWaiting = next.status === "waiting";
+    if (this.notifier && isWaiting && !wasWaiting) {
+      void this.notifier.notify({
+        project: next.project_name,
+        message: "Claude is waiting for you",
+      });
+    }
 
     if (!next.session_uuid) {
       // Fire-and-forget backfill

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { SessionStore } from "../src/session-store.js";
 import { HookHandler } from "../src/hook-handler.js";
+import { Notifier } from "../src/notifier.js";
 import type { HookEvent } from "../src/types.js";
 
 class StubResolver {
@@ -85,5 +86,34 @@ describe("HookHandler", () => {
       session_uuid: "u1", timestamp: 1,
     });
     expect(store.get("C:\\Users\\mike\\proj-x")?.project_name).toBe("proj-x");
+  });
+});
+
+describe("HookHandler + Notifier", () => {
+  it("notifies when session transitions to waiting", async () => {
+    const store = new SessionStore(":memory:");
+    const resolver = new StubResolver();
+    const sends: any[] = [];
+    const notifier = new Notifier((opts) => sends.push(opts));
+    const handler = new HookHandler(store, resolver as any, notifier);
+
+    await handler.handle({ event_type: "session_start", cwd: "x", session_uuid: "u", timestamp: 1 });
+    expect(sends).toHaveLength(0);
+
+    await handler.handle({ event_type: "stop", cwd: "d:\\code\\dragonfly", session_uuid: "u", timestamp: 2 });
+    expect(sends).toHaveLength(1);
+    expect(sends[0].title).toContain("dragonfly");
+  });
+
+  it("does NOT notify if already waiting (no transition)", async () => {
+    const store = new SessionStore(":memory:");
+    const resolver = new StubResolver();
+    const sends: any[] = [];
+    const notifier = new Notifier((opts) => sends.push(opts));
+    const handler = new HookHandler(store, resolver as any, notifier);
+
+    await handler.handle({ event_type: "stop", cwd: "x", session_uuid: "u", timestamp: 1 });
+    await handler.handle({ event_type: "stop", cwd: "x", session_uuid: "u", timestamp: 2 });
+    expect(sends).toHaveLength(1);
   });
 });
