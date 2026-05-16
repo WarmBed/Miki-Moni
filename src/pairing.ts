@@ -4,23 +4,31 @@ import { deriveSharedSecret, toBase64, fromBase64 } from "./crypto.js";
 import type { PairedPeer } from "./config.js";
 import type { Plaintext } from "./relay-protocol.js";
 
-export const PAIRING_TOKEN_TTL_MS = 5 * 60 * 1000;
+export const PAIRING_TOKEN_TTL_MS = 10 * 60 * 1000;
+
+const PAIRING_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+const PAIRING_TOKEN_LENGTH = 16;
 const PAIRING_TOKEN_BYTES = 16;
+
+export function generateNewPairingToken(): string {
+  const bytes = nacl.randomBytes(PAIRING_TOKEN_LENGTH);
+  let out = "";
+  for (let i = 0; i < PAIRING_TOKEN_LENGTH; i++) {
+    out += PAIRING_ALPHABET[bytes[i]! % PAIRING_ALPHABET.length];
+  }
+  return out;
+}
 
 export interface PairingQrInput {
   worker_url: string;
   pairing_token: string;
-  daemon_pubkey: string;
-  device_name: string;
+  daemon_pubkey: string;   // kept for backwards-compat; not used in new URL
+  device_name: string;     // kept for backwards-compat; not used in new URL
 }
 
 export function pairingQrPayload(input: PairingQrInput): string {
-  return JSON.stringify({
-    worker_url: input.worker_url,
-    pairing_token: input.pairing_token,
-    daemon_pk: input.daemon_pubkey,
-    name: input.device_name,
-  });
+  const relay = encodeURIComponent(input.worker_url);
+  return `cch://pair?token=${input.pairing_token}&relay=${relay}`;
 }
 
 export function computePeerId(peerPubkeyBase64: string): string {

@@ -5,10 +5,11 @@ import {
   pairingQrPayload,
   computePeerId,
   PAIRING_TOKEN_TTL_MS,
+  generateNewPairingToken,
 } from "../src/pairing.js";
 
 describe("pairingQrPayload", () => {
-  it("returns a JSON string containing worker_url, pairing_token, daemon_pk, name", () => {
+  it("returns a cch://pair?token=...&relay=... URL format", () => {
     const kp = generateKeypair();
     const payload = pairingQrPayload({
       worker_url: "wss://example.workers.dev",
@@ -16,11 +17,9 @@ describe("pairingQrPayload", () => {
       daemon_pubkey: toBase64(kp.pubkey),
       device_name: "mike2-pc",
     });
-    const parsed = JSON.parse(payload);
-    expect(parsed.worker_url).toBe("wss://example.workers.dev");
-    expect(parsed.pairing_token).toBe("tok123");
-    expect(parsed.daemon_pk).toBe(toBase64(kp.pubkey));
-    expect(parsed.name).toBe("mike2-pc");
+    expect(payload.startsWith("cch://pair?")).toBe(true);
+    expect(payload).toContain("token=tok123");
+    expect(payload).toContain("relay=wss%3A%2F%2Fexample.workers.dev");
   });
 });
 
@@ -89,5 +88,37 @@ describe("PairingSession", () => {
     expect(session.isExpired()).toBe(false);
     vi.advanceTimersByTime(2);
     expect(session.isExpired()).toBe(true);
+  });
+});
+
+describe("pairing QR payload (new cch:// format)", () => {
+  it("emits a cch://pair?token=...&relay=... URL", () => {
+    const payload = pairingQrPayload({
+      worker_url: "https://relay.f1telemetrystationpro.org",
+      pairing_token: "K7H2X9PNRT4BMWQ8",
+      daemon_pubkey: "(unused for now)",
+      device_name: "(unused)",
+    });
+    expect(payload.startsWith("cch://pair?")).toBe(true);
+    expect(payload).toContain("token=K7H2X9PNRT4BMWQ8");
+    expect(payload).toContain("relay=https%3A%2F%2Frelay.f1telemetrystationpro.org");
+  });
+
+  it("URL-encodes special characters in worker_url", () => {
+    const payload = pairingQrPayload({
+      worker_url: "https://relay.example.com:8443",
+      pairing_token: "AAAA1111BBBB2222",
+      daemon_pubkey: "x",
+      device_name: "x",
+    });
+    expect(payload).toContain("relay=https%3A%2F%2Frelay.example.com%3A8443");
+  });
+});
+
+describe("generateNewPairingToken", () => {
+  it("returns a 16-char Crockford base32 token (no hyphens)", () => {
+    const t = generateNewPairingToken();
+    expect(t).toHaveLength(16);
+    expect(t).toMatch(/^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]+$/);
   });
 });
