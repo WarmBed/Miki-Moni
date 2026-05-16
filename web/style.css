@@ -321,9 +321,9 @@ textarea { resize: vertical; }
 .cell {
   background: rgba(255, 255, 255, 0.7);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 0;
   padding: 10px 12px;
-  cursor: pointer;
+  cursor: default;
   transition: border-color 0.12s ease, background 0.12s ease, transform 0.06s ease;
   position: relative;
   display: flex; flex-direction: column;
@@ -381,6 +381,17 @@ textarea { resize: vertical; }
   text-transform: uppercase;
   letter-spacing: 0.06em;
   padding-top: 1px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cell-turn-ts {
+  font-size: 9px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--fg-subtle);
+  font-family: ui-monospace, monospace;
 }
 .cell-turn-body {
   color: var(--fg);
@@ -404,6 +415,43 @@ textarea { resize: vertical; }
 }
 .cell-flash {
   animation: cell-flash-yellow 1s ease-in-out infinite;
+}
+
+/* Live activity indicator for wrapped sessions (Ideating / Using <tool> / Replying) */
+.cell-activity {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 500;
+  color: #5a2db8;
+  background: rgba(110, 60, 200, 0.10);
+  border: 1px solid rgba(110, 60, 200, 0.25);
+  white-space: nowrap;
+}
+.cell-activity-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #6e3cc8;
+  animation: cell-activity-pulse 1.1s ease-in-out infinite;
+}
+@keyframes cell-activity-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50%      { opacity: 1;   transform: scale(1.15); }
+}
+
+/* Cell update-flash: brief blue pulse when a turn timestamp changes
+ * (preview refresh from /sessions/previews picked up a new message). */
+@keyframes cell-flash-update {
+  0%, 100% { background: transparent; box-shadow: none; }
+  20%      { background: rgba(80, 150, 255, 0.22); box-shadow: 0 0 0 2px rgba(60, 130, 235, 0.32); }
+  60%      { background: rgba(80, 150, 255, 0.10); box-shadow: 0 0 0 2px rgba(60, 130, 235, 0.16); }
+}
+.cell-flash-update {
+  animation: cell-flash-update 1.2s ease-in-out 1;
 }
 
 /* Client type badge: small toggle showing VSCode / CLI per session */
@@ -441,13 +489,208 @@ textarea { resize: vertical; }
   cursor: default;
 }
 
+/* AskUserQuestion modal */
+.ask-modal {
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(560px, 90vw);
+  max-height: 80vh; overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border-hi);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.18);
+  padding: 16px;
+  z-index: 1000;
+}
+.ask-tab {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.ask-tab:hover { background: var(--sl3); }
+.ask-tab-active { background: var(--sl3); color: var(--fg); border-color: var(--border-hi); font-weight: 500; }
+.ask-tab-done { color: var(--pass); }
+.ask-option {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 8px;
+  align-items: start;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  background: var(--bg);
+  transition: background 0.12s, border-color 0.12s;
+}
+.ask-option:hover { background: var(--sl2); }
+.ask-option-checked { background: rgba(40, 110, 200, 0.06); border-color: rgba(40, 110, 200, 0.4); }
+.ask-option input { margin-top: 3px; }
+
+.pmode-badge-auto {
+  background: rgba(40, 140, 100, 0.14);
+  color: #1f7a4d;
+  border-color: rgba(40, 140, 100, 0.35);
+  cursor: default;
+}
+.pmode-badge-bypass {
+  background: rgba(200, 50, 40, 0.14);
+  color: #b3261e;
+  border-color: rgba(200, 50, 40, 0.38);
+  cursor: default;
+}
+.pmode-badge-plan {
+  background: rgba(40, 110, 200, 0.14);
+  color: #2c5fa8;
+  border-color: rgba(40, 110, 200, 0.32);
+  cursor: default;
+}
+/* Smaller chip used in cell-foot — always visible when wrapped, including default mode */
+.pmode-chip-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.pmode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  font-family: ui-monospace, monospace;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+.pmode-chip svg { flex-shrink: 0; }
+.pmode-chip:hover:not(:disabled) { filter: brightness(0.94); }
+.pmode-chip:disabled { cursor: default; opacity: 0.6; }
+.pmode-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  min-width: 260px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-family: inherit;
+}
+.pmode-menu-head {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-subtle);
+  letter-spacing: 0.04em;
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
+.pmode-menu-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 8px;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  width: 100%;
+}
+.pmode-menu-item:hover:not(:disabled) { background: var(--sl3); }
+.pmode-menu-item:disabled { cursor: default; opacity: 0.5; }
+.pmode-menu-item.is-current { background: var(--sl3); }
+.pmode-menu-icon {
+  flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+}
+.pmode-menu-item.pmode-chip-default .pmode-menu-icon { color: #60646c; }
+.pmode-menu-item.pmode-chip-auto .pmode-menu-icon { color: #1f7a4d; }
+.pmode-menu-item.pmode-chip-plan .pmode-menu-icon { color: #2c5fa8; }
+.pmode-menu-item.pmode-chip-autopick .pmode-menu-icon { color: #7b3fb8; }
+.pmode-menu-item.pmode-chip-bypass .pmode-menu-icon { color: #b3261e; }
+.pmode-menu-text { flex: 1; min-width: 0; }
+.pmode-menu-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  line-height: 1.2;
+}
+.pmode-menu-desc {
+  font-size: 10.5px;
+  color: var(--fg-subtle);
+  margin-top: 1px;
+  line-height: 1.3;
+}
+.pmode-check { margin-left: 6px; color: var(--pass); font-weight: 700; flex-shrink: 0; }
+.pmode-err {
+  font-size: 10px;
+  color: var(--accent);
+  padding: 4px 8px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+.pmode-chip-default {
+  background: rgba(120, 130, 150, 0.10);
+  color: #60646c;
+  border-color: rgba(120, 130, 150, 0.25);
+}
+.pmode-chip-auto {
+  background: rgba(40, 140, 100, 0.12);
+  color: #1f7a4d;
+  border-color: rgba(40, 140, 100, 0.32);
+}
+.pmode-chip-bypass {
+  background: rgba(200, 50, 40, 0.12);
+  color: #b3261e;
+  border-color: rgba(200, 50, 40, 0.36);
+}
+.pmode-chip-plan {
+  background: rgba(40, 110, 200, 0.12);
+  color: #2c5fa8;
+  border-color: rgba(40, 110, 200, 0.30);
+}
+.pmode-chip-autopick {
+  background: rgba(170, 110, 220, 0.12);
+  color: #7b3fb8;
+  border-color: rgba(170, 110, 220, 0.30);
+}
+/* Neutral chip — used when mode color is rendered elsewhere (e.g. send button) */
+.pmode-chip-neutral {
+  background: var(--sl2);
+  color: var(--fg-muted);
+  border-color: var(--border);
+}
+.pmode-chip-neutral:hover:not(:disabled) {
+  background: var(--sl3);
+  border-color: var(--border-hi);
+  color: var(--fg);
+  filter: none;
+}
+
 /* Shared role-tinted background tokens (used by transcript turns + cell preview turns). */
 :root {
   --turn-bg-user: rgba(120, 130, 150, 0.08);
   --turn-bg-assistant: rgba(40, 140, 100, 0.06);
+  --turn-bg-tool: rgba(200, 160, 50, 0.10);
 }
 .turn-bg-user { background: var(--turn-bg-user); }
 .turn-bg-assistant { background: var(--turn-bg-assistant); }
+.turn-bg-tool { background: var(--turn-bg-tool); }
 .cell-foot {
   display: flex; align-items: center; gap: 6px;
   margin-top: 6px;
@@ -465,6 +708,65 @@ textarea { resize: vertical; }
   background: var(--bg);
 }
 .cell-open-tab:hover { color: var(--fg); border-color: var(--border-hi); }
+/* Icon-only button — square-ish, centers SVG, no inherited line-height jank */
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  line-height: 1;
+}
+.icon-btn svg { display: block; }
+.cell-send-btn {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 10px;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  cursor: pointer;
+  font-family: inherit;
+}
+.cell-send-btn:hover { border-color: var(--pass, #1f8a5a); color: var(--pass, #1f8a5a); background: var(--bg); }
+.cell-clickable { cursor: pointer; }
+
+/* ── Cell modal (centered, tall overlay) ───────────────────────────── */
+
+.cell-modal-backdrop {
+  position: fixed; inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.32);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  animation: cell-modal-fade-in 0.12s ease-out;
+}
+@keyframes cell-modal-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.cell-modal {
+  position: relative;
+  width: min(760px, 100%);
+  height: min(85vh, 900px);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.cell-modal-close {
+  position: absolute;
+  top: 8px; right: 8px;
+  z-index: 1;
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; line-height: 1;
+  color: var(--fg-subtle);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.cell-modal-close:hover { color: var(--fg); background: var(--bg-subtle); border-color: var(--border); }
 
 /* ── Popover (mouse-positioned) ──────────────────────────────────── */
 
