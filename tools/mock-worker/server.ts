@@ -14,16 +14,17 @@
  */
 
 import http from "node:http";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { WebSocketServer, WebSocket } from "ws";
+import nacl from "tweetnacl";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.MOCK_WORKER_PORT ?? 8787);
-const DAEMON_TOKEN = process.env.MOCK_WORKER_TOKEN ?? "local-dev-token";
 const WEB_PHONE_DIR = path.resolve(__dirname, "..", "..", "dist", "web-phone");
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -31,10 +32,12 @@ const WEB_PHONE_DIR = path.resolve(__dirname, "..", "..", "dist", "web-phone");
 interface DaemonEntry {
   ws: WebSocket;
   id: string;
+  pubkey: Buffer;
 }
 
 interface PairingEntry {
   daemon?: WebSocket;
+  daemonId?: string;
   phone?: WebSocket;
 }
 
@@ -154,77 +157,253 @@ server.on("upgrade", (req, socket, head) => {
     return;
   }
 
-  const daemonAuth = req.headers["x-daemon-auth"] as string | undefined;
-  const urlObj = new URL(req.url ?? "/", `http://127.0.0.1:${PORT}`);
-  const pairingToken = (req.headers["x-pairing-token"] as string | undefined) ?? urlObj.searchParams.get("pairing_token") ?? undefined;
-  const daemonId = (req.headers["x-daemon-id"] as string | undefined) ?? urlObj.searchParams.get("daemon_id") ?? undefined;
-
-  // Daemon connections require X-Daemon-Auth
-  if (isDaemon && daemonAuth !== DAEMON_TOKEN) {
-    socket.write("HTTP/1.1 401 Unauthorized\r\nX-Error: bad X-Daemon-Auth\r\n\r\n");
-    socket.destroy();
-    log("daemon rejected: bad X-Daemon-Auth");
-    return;
-  }
-
   // Phone connections: no SSO check (local dev only — see file header)
 
-  // Must supply either X-Pairing-Token or X-Daemon-Id
-  if (!pairingToken && !daemonId) {
-    socket.write(
-      "HTTP/1.1 400 Bad Request\r\nX-Error: need X-Pairing-Token or X-Daemon-Id\r\n\r\n",
-    );
-    socket.destroy();
-    return;
-  }
-
   wss.handleUpgrade(req, socket, head, (ws) => {
-    const role = isDaemon ? "daemon" : "phone";
-    if (pairingToken) {
-      attachPairing(ws, pairingToken, role);
-    } else if (daemonId) {
-      if (isDaemon) {
-        attachDaemon(ws, daemonId);
-      } else {
-        attachPhone(ws, daemonId);
-      }
+    if (isDaemon) {
+      handleDaemonConnection(ws, req);
+    } else {
+      handlePhoneConnection(ws, req);
     }
   });
 });
 
-// ── Connection handlers ────────────────────────────────────────────────────
+// ── Daemon connection handler (Ed25519 challenge-response) ─────────────────
+
+function handleDaemonConnection(ws: WebSocket, req: http.IncomingMessage): void {
+  const pubkeyHdr = req.headers["x-daemon-pubkey"];
+  if (!pubkeyHdr || typeof pubkeyHdr !== "string") {
+    log("daemon connect: missing X-Daemon-Pubkey");
+    ws.close(1008, "missing X-Daemon-Pubkey");
+    return;
+  }
+
+  const pubkey = Buffer.from(pubkeyHdr, "base64");
+  if (pubkey.length !== 32) {
+    log("daemon connect: bad pubkey length", { length: pubkey.length });
+    ws.close(1008, "bad pubkey length");
+    return;
+  }
+
+  const daemon_id = crypto
+    .createHash("sha256")
+    .update(pubkey)
+    .digest("hex")
+    .slice(0, 32);
+
+  // Issue challenge
+  const nonce = crypto.randomBytes(32);
+  const issued_at_ms = Date.now();
+  ws.send(JSON.stringify({
+    type: "challenge",
+    nonce: nonce.toString("base64"),
+    issued_at_ms,
+  }));
+
+  log("daemon challenge sent", { daemon_id });
+
+  let authed = false;
+
+  ws.on("message", (raw) => {
+    let msg: any;
+    try { msg = JSON.parse(raw.toString()); } catch { return; }
+
+    if (!authed) {
+      // Expect challenge_response first
+      if (msg.type !== "challenge_response") {
+        log("daemon: expected challenge_response", { got: msg.type });
+        ws.close(1008, "expected challenge_response");
+        return;
+      }
+
+      let sig: Uint8Array;
+      try {
+        sig = new Uint8Array(Buffer.from(msg.sig, "base64"));
+      } catch {
+        log("daemon: bad sig encoding");
+        ws.close(1008, "bad sig encoding");
+        return;
+      }
+
+      // Signed bytes: nonce (32B) ++ issued_at_ms (8B big-endian)
+      const issuedBuf = Buffer.alloc(8);
+      issuedBuf.writeBigUInt64BE(BigInt(issued_at_ms));
+      const sigMsg = new Uint8Array(Buffer.concat([nonce, issuedBuf]));
+
+      const ok = nacl.sign.detached.verify(sigMsg, sig, new Uint8Array(pubkey));
+      if (!ok) {
+        log("daemon: challenge_response sig failed", { daemon_id });
+        ws.close(4001, "bad_sig");
+        return;
+      }
+
+      authed = true;
+      daemons.set(daemon_id, { ws, id: daemon_id, pubkey });
+      log(`daemon authed: ${daemon_id}`);
+      ws.send(JSON.stringify({ type: "ready", daemon_id }));
+      return;
+    }
+
+    // ── Post-auth daemon messages ──────────────────────────────────────────
+
+    if (msg.type === "register_pairing") {
+      const token = String(msg.token ?? "");
+      if (!token) return;
+      let entry = pairings.get(token);
+      if (!entry) {
+        entry = {};
+        pairings.set(token, entry);
+      }
+      entry.daemon = ws;
+      entry.daemonId = daemon_id;
+      log(`daemon registered pairing token`, { token, daemon_id });
+      return;
+    }
+
+    if (msg.type === "pair_ack") {
+      // Forward pair_ack to all phones waiting on this daemon
+      const phones = phonesByDaemon.get(daemon_id);
+      if (phones) {
+        for (const phone of phones) {
+          if (phone.readyState === WebSocket.OPEN) {
+            try { phone.send(JSON.stringify({ type: "pair_ack" })); } catch {}
+          }
+        }
+      }
+      return;
+    }
+
+    // envelope: broadcast to all paired phones
+    if (msg.type === "envelope") {
+      const phones = phonesByDaemon.get(daemon_id);
+      if (phones) {
+        for (const phone of phones) {
+          if (phone.readyState === WebSocket.OPEN) {
+            try { phone.send(raw.toString()); } catch {}
+          }
+        }
+      }
+      return;
+    }
+
+    // Generic relay fallback: forward anything else to paired phones
+    const phones = phonesByDaemon.get(daemon_id);
+    if (phones) {
+      for (const phone of phones) {
+        if (phone.readyState === WebSocket.OPEN) {
+          try { phone.send(raw.toString()); } catch {}
+        }
+      }
+    }
+  });
+
+  ws.on("close", () => {
+    if (authed && daemons.get(daemon_id)?.ws === ws) {
+      daemons.delete(daemon_id);
+      log(`daemon disconnected`, { daemon_id });
+    }
+  });
+
+  ws.on("error", (err) => {
+    log("daemon ws error", { daemon_id, err: String(err) });
+  });
+}
+
+// ── Phone connection handler ───────────────────────────────────────────────
+
+function handlePhoneConnection(ws: WebSocket, req: http.IncomingMessage): void {
+  const urlObj = new URL(req.url ?? "/", `http://127.0.0.1:${PORT}`);
+  const pairingToken =
+    (req.headers["x-pairing-token"] as string | undefined) ??
+    urlObj.searchParams.get("pairing_token") ??
+    undefined;
+  const daemonIdParam =
+    (req.headers["x-daemon-id"] as string | undefined) ??
+    urlObj.searchParams.get("daemon_id") ??
+    undefined;
+
+  if (pairingToken) {
+    // Pairing flow: phone provides a pairing token
+    const entry = pairings.get(pairingToken);
+    if (!entry || !entry.daemon || entry.daemon.readyState !== WebSocket.OPEN) {
+      log("phone: pairing token not found or daemon gone", { pairingToken });
+      ws.close(4040, "pairing_token_not_found");
+      return;
+    }
+
+    const daemonId = entry.daemonId!;
+    entry.phone = ws;
+
+    // Look up daemon pubkey to send pair_init
+    const daemonEntry = daemons.get(daemonId);
+    if (daemonEntry) {
+      ws.send(JSON.stringify({
+        type: "pair_init",
+        daemon_pubkey: daemonEntry.pubkey.toString("base64"),
+      }));
+    }
+
+    log("phone connected via pairing token", { pairingToken, daemonId });
+
+    // Track phone under this daemon
+    let phoneSet = phonesByDaemon.get(daemonId);
+    if (!phoneSet) {
+      phoneSet = new Set();
+      phonesByDaemon.set(daemonId, phoneSet);
+    }
+    phoneSet.add(ws);
+
+    ws.on("message", (raw) => {
+      let msg: any;
+      try { msg = JSON.parse(raw.toString()); } catch { return; }
+
+      if (msg.type === "pair_offer") {
+        // Forward pair_offer to daemon
+        const d = entry!.daemon;
+        if (d && d.readyState === WebSocket.OPEN) {
+          d.send(raw.toString());
+        }
+        return;
+      }
+
+      // Other phone messages: forward to daemon
+      const d = daemons.get(daemonId);
+      if (d && d.ws.readyState === WebSocket.OPEN) {
+        d.ws.send(raw.toString());
+      }
+    });
+
+    ws.on("close", () => {
+      const ps = phonesByDaemon.get(daemonId);
+      if (ps) {
+        ps.delete(ws);
+        if (ps.size === 0) phonesByDaemon.delete(daemonId);
+      }
+      if (entry!.phone === ws) entry!.phone = undefined;
+      log("phone disconnected (pairing)", { pairingToken, daemonId });
+    });
+
+    ws.on("error", (err) => {
+      log("phone ws error (pairing)", { pairingToken, err: String(err) });
+    });
+
+  } else if (daemonIdParam) {
+    // Direct daemon-id flow (legacy / post-pair direct channel)
+    attachPhone(ws, daemonIdParam);
+
+  } else {
+    log("phone connect: missing X-Pairing-Token or daemon_id");
+    ws.close(1008, "need X-Pairing-Token or daemon_id");
+  }
+}
+
+// ── Helper: attach phone directly to a daemon by daemon_id ────────────────
 
 function byteLength(raw: unknown): number {
   if (Buffer.isBuffer(raw)) return raw.byteLength;
   if (raw instanceof ArrayBuffer) return raw.byteLength;
   if (typeof raw === "string") return Buffer.byteLength(raw, "utf8");
   return 0;
-}
-
-function attachDaemon(ws: WebSocket, id: string): void {
-  daemons.set(id, { ws, id });
-  log("daemon connected", { id });
-
-  ws.on("message", (raw, isBinary) => {
-    const phones = phonesByDaemon.get(id);
-    if (!phones || phones.size === 0) return;
-    const size = byteLength(raw);
-    log(`daemon->phone(${phones.size}) ${size} bytes`, { id });
-    for (const p of phones) {
-      if (p.readyState === WebSocket.OPEN) {
-        p.send(raw, { binary: isBinary });
-      }
-    }
-  });
-
-  ws.on("close", () => {
-    if (daemons.get(id)?.ws === ws) daemons.delete(id);
-    log("daemon disconnected", { id });
-  });
-
-  ws.on("error", (err) => {
-    log("daemon ws error", { id, err: String(err) });
-  });
 }
 
 function attachPhone(ws: WebSocket, daemonId: string): void {
@@ -255,50 +434,11 @@ function attachPhone(ws: WebSocket, daemonId: string): void {
   });
 }
 
-function attachPairing(ws: WebSocket, token: string, role: "daemon" | "phone"): void {
-  let entry = pairings.get(token);
-  if (!entry) {
-    entry = {};
-    pairings.set(token, entry);
-  }
-
-  if (role === "daemon") {
-    entry.daemon = ws;
-  } else {
-    entry.phone = ws;
-  }
-  log(`pairing ${role} connected`, { token });
-
-  ws.on("message", (raw, isBinary) => {
-    const e = pairings.get(token);
-    if (!e) return;
-    const other = role === "daemon" ? e.phone : e.daemon;
-    if (!other || other.readyState !== WebSocket.OPEN) return;
-    const size = byteLength(raw);
-    const direction = role === "daemon" ? "daemon->phone" : "phone->daemon";
-    log(`pairing ${direction} ${size} bytes`, { token });
-    other.send(raw, { binary: isBinary });
-  });
-
-  ws.on("close", () => {
-    const e = pairings.get(token);
-    if (!e) return;
-    if (role === "daemon" && e.daemon === ws) e.daemon = undefined;
-    if (role === "phone" && e.phone === ws) e.phone = undefined;
-    if (!e.daemon && !e.phone) pairings.delete(token);
-    log(`pairing ${role} disconnected`, { token });
-  });
-
-  ws.on("error", (err) => {
-    log(`pairing ${role} ws error`, { token, err: String(err) });
-  });
-}
-
 // ── Start ──────────────────────────────────────────────────────────────────
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`mock-worker listening on http://127.0.0.1:${PORT}`);
-  console.log(`  WSS /v1/daemon  — X-Daemon-Auth: ${DAEMON_TOKEN}`);
+  console.log(`  WSS /v1/daemon  — Ed25519 challenge-response (X-Daemon-Pubkey header)`);
   console.log(`  WSS /v1/phone   — no auth (local dev mode, see file header)`);
   console.log(`  GET /v1/health  — JSON health check`);
   console.log(`  GET /           — serves dist/web-phone/ (run pnpm build:phone first)`);
