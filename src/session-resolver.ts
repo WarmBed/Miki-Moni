@@ -143,6 +143,10 @@ export async function readSessionPreview(
     const msg = e.message;
     if (!msg) continue;
 
+    // Skip synthetic placeholder messages Claude Code writes when no model
+    // response was needed (e.g. {model:"<synthetic>", text:"No response requested."}).
+    if (msg.model === "<synthetic>") continue;
+
     // Extract text content
     let textPart = "";
     if (typeof msg.content === "string") {
@@ -156,6 +160,9 @@ export async function readSessionPreview(
     }
     textPart = textPart.trim();
     if (!textPart) continue;
+
+    // Also skip known placeholder strings just in case
+    if (textPart === "No response requested." || textPart === "(no content)") continue;
 
     if (msg.role === "assistant" && !last_assistant_text) {
       last_assistant_text = textPart;
@@ -199,9 +206,14 @@ export async function readTranscriptTail(
     const role = msg.role;
     if (role !== "user" && role !== "assistant") continue;
 
+    // Skip synthetic placeholder messages
+    if (msg.model === "<synthetic>") continue;
+
     const content = msg.content;
     if (typeof content === "string") {
-      if (!content.trim()) continue;
+      const trimmed = content.trim();
+      if (!trimmed) continue;
+      if (trimmed === "No response requested." || trimmed === "(no content)") continue;
       turns.push({ ts, role, text: content, raw_type: entry.type });
       continue;
     }
