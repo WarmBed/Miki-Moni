@@ -1,13 +1,13 @@
-name = "cch-relay"
+name = "miki-relay"
 main = "src/index.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Custom domain (DNS must exist in Cloudflare for f1telemetrystationpro.org zone)
-# Self-host users: replace or delete this block.
-routes = [
-  { pattern = "relay.f1telemetrystationpro.org/*", custom_domain = true }
-]
+# Custom domain — self-host users replace with your own zone, or delete this
+# block entirely to use the default workers.dev subdomain.
+# routes = [
+#   { pattern = "miki.example.com/*", custom_domain = true }
+# ]
 
 [[durable_objects.bindings]]
 name = "PAIRING"
@@ -19,7 +19,8 @@ class_name = "DaemonRelay"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["PairingCoordinator", "DaemonRelay"]
+# Free tier requires new_sqlite_classes (SQLite-backed DO). Paid tier could use new_classes (KV-backed).
+new_sqlite_classes = ["PairingCoordinator", "DaemonRelay"]
 
 [[unsafe.bindings]]
 name = "RATE_LIMITER"
