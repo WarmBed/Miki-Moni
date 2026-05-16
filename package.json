@@ -14,7 +14,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "install:hooks": "tsx src/install-hooks.ts",
-    "pair": "tsx src/cli/pair.ts"
+    "pair": "tsx src/cli/pair.ts",
+    "mock-worker": "tsx tools/mock-worker/server.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
