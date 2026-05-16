@@ -1,6 +1,6 @@
 name = "cch-relay"
 main = "src/index.ts"
-compatibility_date = "2026-05-17"
+compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
 # Custom domain (DNS must exist in Cloudflare for f1telemetrystationpro.org zone)
