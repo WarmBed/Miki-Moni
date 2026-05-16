@@ -1,4 +1,36 @@
 import { spawn } from "node:child_process";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import os from "node:os";
+
+/**
+ * Hook-reported cwd ≠ where the session's transcript actually lives.
+ * Find the directory under ~/.claude/projects/ that contains `<sessionUuid>.jsonl`.
+ * Falls back to the original cwd if nothing is found.
+ */
+export async function resolveSessionCwd(sessionUuid: string, fallbackCwd: string): Promise<string> {
+  const projectsRoot = path.join(os.homedir(), ".claude", "projects");
+  let dirs: string[];
+  try {
+    dirs = await fs.readdir(projectsRoot);
+  } catch {
+    return fallbackCwd;
+  }
+  for (const d of dirs) {
+    const candidate = path.join(projectsRoot, d, `${sessionUuid}.jsonl`);
+    try {
+      await fs.access(candidate);
+      // Decode the encoded dir name back to a real cwd: "D--code-openruterati" → "d:\code\openruterati"
+      const decoded = d
+        .replace(/^([A-Za-z])--/, (_, letter) => `${letter.toLowerCase()}:\\`)
+        .replace(/-/g, "\\");
+      return decoded;
+    } catch {
+      // not in this dir, keep looking
+    }
+  }
+  return fallbackCwd;
+}
 
 export type LaunchFn = (url: string) => Promise<void>;
 
@@ -23,11 +55,13 @@ export type HeadlessFn = (opts: {
   timeoutMs?: number;
 }) => Promise<{ reply: string; exitCode: number; durationMs: number }>;
 
-export const defaultHeadless: HeadlessFn = ({ sessionUuid, cwd, prompt, maxBudgetUsd = 5, timeoutMs = 120_000 }) =>
-  new Promise((resolve, reject) => {
+export const defaultHeadless: HeadlessFn = async ({ sessionUuid, cwd, prompt, maxBudgetUsd = 5, timeoutMs = 120_000 }) => {
+  // The session's transcript may live in a different workspace than the cwd
+  // the daemon last saw (hooks fire with whatever sub-dir was active). Find the
+  // real one or `claude -r <id>` will fail with "No conversation found".
+  const actualCwd = await resolveSessionCwd(sessionUuid, cwd);
+  return new Promise<{ reply: string; exitCode: number; durationMs: number }>((resolve, reject) => {
     const start = Date.now();
-    // On Windows, `claude` is typically a .cmd shim. Use cmd.exe with /D /C and pass the
-    // prompt via stdin to avoid quoting nightmares with multibyte / quotes / backticks.
     // Spawn `claude` directly (claude.exe on Windows, claude on POSIX).
     // Pass prompt via STDIN. KNOWN LIMITATION on Windows: non-ASCII characters in
     // the prompt get mangled in claude.exe's stdin parsing (system codepage issue).
@@ -35,7 +69,7 @@ export const defaultHeadless: HeadlessFn = ({ sessionUuid, cwd, prompt, maxBudge
     const child = spawn(
       "claude",
       ["-r", sessionUuid, "-p", "--max-budget-usd", String(maxBudgetUsd)],
-      { cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, shell: false },
+      { cwd: actualCwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, shell: false },
     );
     child.stdin?.write(Buffer.from(prompt, "utf8"));
     child.stdin?.end();
@@ -51,10 +85,11 @@ export const defaultHeadless: HeadlessFn = ({ sessionUuid, cwd, prompt, maxBudge
       clearTimeout(timer);
       const durationMs = Date.now() - start;
       if (code === 0) resolve({ reply: stdout.trim(), exitCode: code, durationMs });
-      else reject(new Error(`headless claude exited ${code}: ${stderr.trim().slice(0, 500)}`));
+      else reject(new Error(`headless claude exited ${code} (cwd=${actualCwd}): ${stderr.trim().slice(0, 500)}`));
     });
     child.on("error", (err) => { clearTimeout(timer); reject(err); });
   });
+};
 
 export class VscodeBridge {
   constructor(
