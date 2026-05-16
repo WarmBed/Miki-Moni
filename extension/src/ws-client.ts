@@ -33,6 +33,11 @@ export class WsClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private attempt = 0;
   private readonly backoff: (attempt: number) => number;
+  // Serialize submit handling — running two submit flows in parallel races on
+  // Win32 SetForegroundWindow + SendKeys, causing prompts to land in the
+  // wrong VSCode window or wrong panel. Chain submits through this promise
+  // so the second one waits for the first to fully finish (ack sent).
+  private submitChain: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly opts: WsClientOptions) {
     this.backoff = opts.backoffMs ?? DEFAULT_BACKOFF;
@@ -82,7 +87,21 @@ export class WsClient {
       return;
     }
     if (msg.type === "submit") {
-      this.opts.onSubmit(msg).then((ack) => this.sendMsg(ack));
+      // Chain so we never run two submits in parallel (see field comment).
+      const submitMsg = msg;
+      this.submitChain = this.submitChain
+        .catch(() => {/* swallow prior errors so chain keeps moving */})
+        .then(() => this.opts.onSubmit(submitMsg))
+        .then((ack) => this.sendMsg(ack))
+        .catch((err) => {
+          this.opts.log?.("submit chain caught error", { error: String(err) });
+          this.sendMsg({
+            type: "submit_ack",
+            request_id: submitMsg.request_id,
+            ok: false,
+            error: `submit chain crashed: ${String(err)}`,
+          });
+        });
       return;
     }
     if (msg.type === "ping") {

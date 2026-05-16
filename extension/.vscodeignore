@@ -4,9 +4,8 @@ tests/**
 src/**
 **/*.map
 **/*.ts
-!dist/**
 node_modules/**
-!node_modules/ws/**
+!dist/**
 vitest.config.ts
 tsconfig.json
 !README.md

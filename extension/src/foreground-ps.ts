@@ -1,20 +1,41 @@
 /**
- * PowerShell script: find a VSCode top-level window (prefer one whose title
- * contains `folderHint`), force it to OS foreground via Win32 P/Invoke
- * (LockSetForegroundWindow unlock + ALT keypress + AttachThreadInput +
- * SetForegroundWindow + SwitchToThisWindow), then SendKeys {ENTER}.
+ * PowerShell script that:
+ *   1. Sets clipboard to the prompt text (UTF-8 base64-encoded to avoid PS quoting bugs)
+ *   2. Finds a VSCode top-level window (prefers title containing `folderHint`)
+ *   3. Force-foregrounds it via Win32 P/Invoke (ALT keypress + AttachThreadInput
+ *      + SetForegroundWindow + SwitchToThisWindow — defeats Win10/11 fg lock)
+ *   4. SendKeys ^a then {DELETE} to clear any leftover input text
+ *   5. SendKeys ^v to paste the prompt from clipboard
+ *   6. Brief settle, then SendKeys {ENTER} to submit
+ *   7. Restores prior clipboard contents (best-effort)
  *
- * This is a variant of cc-hub/src/vscode-bridge.ts:buildFocusAndEnterPS with
- * the `Start-Process vscode://...` step removed — the extension already fired
- * the URI in-process via vscode.env.openExternal, so there's nothing to launch.
+ * Clipboard paste path is chosen over passing the prompt through the URI /
+ * primaryEditor.open command arg because claude-code IGNORES the prompt arg
+ * when the session is already open (shows "Session is already open. Your
+ * prompt was not applied — enter it manually."). That breaks the 2nd send
+ * to any session and pops up a noisy notification. With clipboard paste we
+ * sidestep that path entirely and reliably deliver to whichever input has
+ * keyboard focus after claude-vscode.focus.
  *
- * The `'@` here-string terminator MUST be at column 0 — the function builds
- * the script without leading whitespace on that line.
+ * The `'@` here-string terminator MUST be at column 0.
  */
-export function buildFocusAndEnterPS(opts: { folderHint: string }): string {
+export function buildFocusAndEnterPS(opts: { folderHint: string; prompt: string }): string {
   const h = opts.folderHint.replace(/'/g, "''");
+  // Base64 keeps the PS source free of any quoting / newline / backtick edge
+  // case in the user's prompt — we just decode at runtime inside PS.
+  const promptB64 = Buffer.from(opts.prompt, "utf8").toString("base64");
   return `
 $ErrorActionPreference = 'Stop'
+
+# Stash existing clipboard so we restore it after our paste (the user may have
+# copied something they care about). Best-effort; if it fails we proceed.
+$savedClip = $null
+try { $savedClip = Get-Clipboard -Raw -ErrorAction Stop } catch {}
+
+# Decode our prompt from base64 (avoids ALL quoting / newline / backtick edge cases).
+$promptBytes = [System.Convert]::FromBase64String('${promptB64}')
+$promptText  = [System.Text.Encoding]::UTF8.GetString($promptBytes)
+Set-Clipboard -Value $promptText
 
 $sig = @'
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
@@ -94,7 +115,21 @@ $fgAfter = [CcHubHelper.U]::GetForegroundWindow()
 Write-Output ("attach=" + $attachOk + " setFg=" + $setFgOk + " fg-after=" + $fgAfter + " match=" + ($fgAfter -eq $hwnd))
 
 Add-Type -AssemblyName System.Windows.Forms
+
+# Clear leftover input, paste the new prompt from clipboard, then submit.
+[System.Windows.Forms.SendKeys]::SendWait('^a')
+Start-Sleep -Milliseconds 30
+[System.Windows.Forms.SendKeys]::SendWait('{DELETE}')
+Start-Sleep -Milliseconds 30
+[System.Windows.Forms.SendKeys]::SendWait('^v')
+Start-Sleep -Milliseconds 80
 [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
 Write-Output "enter-sent"
+
+# Restore prior clipboard contents (best-effort).
+if ($savedClip -ne $null) {
+  Start-Sleep -Milliseconds 50
+  try { Set-Clipboard -Value $savedClip } catch {}
+}
 `.trim();
 }

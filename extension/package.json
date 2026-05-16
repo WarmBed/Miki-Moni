@@ -8,12 +8,19 @@
     "type": "git",
     "url": "https://github.com/cc-hub/cc-hub.git"
   },
-  "engines": { "vscode": "^1.85.0" },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
   "main": "./dist/extension.js",
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "commands": [
-      { "command": "cc-hub-helper.showStatus", "title": "cc-hub helper: Show status" }
+      {
+        "command": "cc-hub-helper.showStatus",
+        "title": "cc-hub helper: Show status"
+      }
     ],
     "configuration": {
       "title": "cc-hub helper",
@@ -32,8 +39,9 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p .",
-    "watch": "tsc -p . --watch",
+    "compile": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --platform=node --target=node18 --external:vscode --format=cjs --sourcemap",
+    "typecheck": "tsc -p . --noEmit",
+    "watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --platform=node --target=node18 --external:vscode --format=cjs --sourcemap --watch",
     "package": "vsce package --no-dependencies",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -46,6 +54,7 @@
     "@types/vscode": "^1.85.0",
     "@types/ws": "^8.5.12",
     "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.28.0",
     "typescript": "^5.6.2",
     "vitest": "^2.1.1"
   }

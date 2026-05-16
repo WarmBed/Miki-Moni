@@ -131,4 +131,57 @@ describe("WsClient", () => {
     expect(onSubmit).not.toHaveBeenCalled();
     c.stop();
   });
+
+  it("serializes parallel submit messages (one runs at a time, in arrival order)", async () => {
+    let inFlight = 0;
+    let maxConcurrent = 0;
+    const order: string[] = [];
+    const onSubmit = vi.fn(async (req: any) => {
+      inFlight++;
+      maxConcurrent = Math.max(maxConcurrent, inFlight);
+      order.push(`start:${req.request_id}`);
+      await new Promise((r) => setTimeout(r, 20));
+      order.push(`end:${req.request_id}`);
+      inFlight--;
+      return { type: "submit_ack", request_id: req.request_id, ok: true };
+    });
+
+    const c = new WsClient(makeOpts({ onSubmit }));
+    c.start();
+    FakeWs.instances[0]!.simulateOpen();
+    // Fire 3 submits back-to-back; the client must NOT run them in parallel.
+    FakeWs.instances[0]!.simulateServerMessage({ type: "submit", request_id: "a", session_uuid: "u", prompt: "p1" });
+    FakeWs.instances[0]!.simulateServerMessage({ type: "submit", request_id: "b", session_uuid: "u", prompt: "p2" });
+    FakeWs.instances[0]!.simulateServerMessage({ type: "submit", request_id: "c", session_uuid: "u", prompt: "p3" });
+    await new Promise((r) => setTimeout(r, 150));
+
+    expect(maxConcurrent).toBe(1);
+    expect(order).toEqual([
+      "start:a", "end:a", "start:b", "end:b", "start:c", "end:c",
+    ]);
+    c.stop();
+  });
+
+  it("keeps the submit chain alive even when onSubmit rejects", async () => {
+    let calls = 0;
+    const onSubmit = vi.fn(async (req: any) => {
+      calls++;
+      if (calls === 1) throw new Error("first one fails");
+      return { type: "submit_ack", request_id: req.request_id, ok: true };
+    });
+
+    const c = new WsClient(makeOpts({ onSubmit }));
+    c.start();
+    FakeWs.instances[0]!.simulateOpen();
+    FakeWs.instances[0]!.simulateServerMessage({ type: "submit", request_id: "a", session_uuid: "u", prompt: "p1" });
+    FakeWs.instances[0]!.simulateServerMessage({ type: "submit", request_id: "b", session_uuid: "u", prompt: "p2" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+    // Second submit's ack should still have been sent (chain didn't deadlock).
+    const sentAcks = FakeWs.instances[0]!.sent
+      .map((s) => JSON.parse(s))
+      .filter((m: any) => m.type === "submit_ack");
+    expect(sentAcks.find((a: any) => a.request_id === "b")?.ok).toBe(true);
+    c.stop();
+  });
 });

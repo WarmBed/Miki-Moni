@@ -23,14 +23,18 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const cfg = vscode.workspace.getConfiguration("cc-hub-helper");
   const daemonUrl = cfg.get<string>("daemonUrl", "ws://127.0.0.1:8765/ws_ext");
-  const prefillDelayMs = cfg.get<number>("prefillDelayMs", 500);
+  // Default 1000ms — Claude panel needs time to switch tabs / clear previous
+  // response state before the new prefill + Enter lands cleanly. Lower values
+  // race against panel reloading and SendKeys lands on a disabled/wrong control.
+  const prefillDelayMs = cfg.get<number>("prefillDelayMs", 1000);
 
   const workspaceRoot = normalizePath(folder.uri.fsPath);
   const workspaceFolderName = path.basename(folder.uri.fsPath);
   const version = context.extension.packageJSON.version as string;
 
   const submitterDeps: SubmitterDeps = {
-    openExternal: async (uri) => Boolean(await vscode.env.openExternal(vscode.Uri.parse(uri))),
+    revealClaudePanel: (sessionUuid) =>
+      Promise.resolve(vscode.commands.executeCommand("claude-vscode.primaryEditor.open", sessionUuid, undefined)),
     executeCommand: (cmd, ...args) => Promise.resolve(vscode.commands.executeCommand(cmd, ...args)),
     spawnPS: defaultSpawnPS,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),

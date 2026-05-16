@@ -3,7 +3,7 @@ import { submit, type SubmitterDeps } from "../src/submitter.js";
 
 function makeDeps(overrides: Partial<SubmitterDeps> = {}): SubmitterDeps {
   return {
-    openExternal: vi.fn().mockResolvedValue(true),
+    revealClaudePanel: vi.fn().mockResolvedValue(undefined),
     executeCommand: vi.fn().mockResolvedValue(undefined),
     spawnPS: vi.fn().mockResolvedValue({ ok: true, stdout: "enter-sent", stderr: "" }),
     sleep: vi.fn().mockResolvedValue(undefined),
@@ -20,20 +20,20 @@ describe("submit", () => {
     expect(ack).toEqual({ type: "submit_ack", request_id: "r1", ok: true, diag: "enter-sent" });
   });
 
-  it("calls openExternal with correctly-encoded vscode:// URI", async () => {
+  it("calls revealClaudePanel with only sessionUuid (no prompt — see comment)", async () => {
     const deps = makeDeps();
     await submit({ request_id: "r1", session_uuid: "uuid-x", prompt: "hello world" }, deps);
-    const [uri] = (deps.openExternal as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(uri).toBe("vscode://anthropic.claude-code/open?session=uuid-x&prompt=hello%20world");
+    expect(deps.revealClaudePanel).toHaveBeenCalledWith("uuid-x");
+    expect(deps.revealClaudePanel).toHaveBeenCalledTimes(1);
   });
 
-  it("sleeps prefillDelayMs between URI fire and focus command", async () => {
+  it("sleeps prefillDelayMs between reveal and focus command", async () => {
     const deps = makeDeps({ prefillDelayMs: 750 });
     await submit({ request_id: "r1", session_uuid: "u", prompt: "p" }, deps);
     expect(deps.sleep).toHaveBeenCalledWith(750);
   });
 
-  it("calls executeCommand('claude-vscode.focus') after URI + sleep", async () => {
+  it("calls executeCommand('claude-vscode.focus') after reveal + sleep", async () => {
     const deps = makeDeps();
     await submit({ request_id: "r1", session_uuid: "u", prompt: "p" }, deps);
     expect(deps.executeCommand).toHaveBeenCalledWith("claude-vscode.focus");
@@ -46,20 +46,32 @@ describe("submit", () => {
     expect(script).toContain("my-ws");
   });
 
-  it("returns ok=false when openExternal returns false", async () => {
-    const deps = makeDeps({ openExternal: vi.fn().mockResolvedValue(false) });
-    const ack = await submit({ request_id: "r1", session_uuid: "u", prompt: "p" }, deps);
-    expect(ack.ok).toBe(false);
-    expect(ack.error).toMatch(/URI dispatch refused/);
+  it("passes prompt to spawnPS (base64-encoded inside the script)", async () => {
+    const deps = makeDeps();
+    await submit({ request_id: "r1", session_uuid: "u", prompt: "hello world" }, deps);
+    const [script] = (deps.spawnPS as ReturnType<typeof vi.fn>).mock.calls[0];
+    // The script base64-encodes the prompt for safe interpolation.
+    const expectedB64 = Buffer.from("hello world", "utf8").toString("base64");
+    expect(script).toContain(expectedB64);
   });
 
-  it("returns ok=false when executeCommand throws", async () => {
+  it("returns ok=false when revealClaudePanel throws", async () => {
     const deps = makeDeps({
-      executeCommand: vi.fn().mockRejectedValue(new Error("cmd not found")),
+      revealClaudePanel: vi.fn().mockRejectedValue(new Error("command not found")),
     });
     const ack = await submit({ request_id: "r1", session_uuid: "u", prompt: "p" }, deps);
     expect(ack.ok).toBe(false);
-    expect(ack.error).toMatch(/cmd not found/);
+    expect(ack.error).toMatch(/primaryEditor\.open failed/);
+    expect(ack.error).toMatch(/command not found/);
+  });
+
+  it("returns ok=false when executeCommand (focus) throws", async () => {
+    const deps = makeDeps({
+      executeCommand: vi.fn().mockRejectedValue(new Error("focus cmd not found")),
+    });
+    const ack = await submit({ request_id: "r1", session_uuid: "u", prompt: "p" }, deps);
+    expect(ack.ok).toBe(false);
+    expect(ack.error).toMatch(/focus cmd not found/);
   });
 
   it("returns ok=false with diag when PS exits non-zero", async () => {
@@ -73,7 +85,7 @@ describe("submit", () => {
   });
 
   it("preserves request_id in ack regardless of outcome", async () => {
-    const deps = makeDeps({ openExternal: vi.fn().mockResolvedValue(false) });
+    const deps = makeDeps({ revealClaudePanel: vi.fn().mockRejectedValue(new Error("nope")) });
     const ack = await submit({ request_id: "abc-xyz-123", session_uuid: "u", prompt: "p" }, deps);
     expect(ack.request_id).toBe("abc-xyz-123");
   });
