@@ -434,6 +434,12 @@ textarea { resize: vertical; }
   color: #8a5d0a;
   border-color: rgba(180, 130, 40, 0.35);
 }
+.client-badge-wrap {
+  background: rgba(110, 60, 200, 0.14);
+  color: #5a2db8;
+  border-color: rgba(110, 60, 200, 0.32);
+  cursor: default;
+}
 
 /* Shared role-tinted background tokens (used by transcript turns + cell preview turns). */
 :root {

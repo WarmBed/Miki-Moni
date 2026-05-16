@@ -53,7 +53,12 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   });
 
   app.get("/sessions", (_req, res) => {
-    res.json(deps.store.list());
+    const wrapConns: Map<string, import("ws").WebSocket> | undefined = (deps as any).__wrapConnections;
+    const list = deps.store.list().map((s) => ({
+      ...s,
+      wrapped: wrapConns?.has(s.session_uuid ?? "") ?? false,
+    }));
+    res.json(list);
   });
 
   // /sessions/previews MUST come before /sessions/:session_uuid (Express order)
@@ -236,6 +241,32 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       res.status(400).json({ error: "submit mode requires session_uuid (got null)" });
       return;
     }
+
+    // FAST PATH: if a `cch claude` wrapper is alive for this session, push
+    // through its long-running query() — no spawn, no -p, no resume marker,
+    // no extra cost. The wrapper is the host; we just hand it the prompt.
+    const wrapConns: Map<string, import("ws").WebSocket> | undefined = (deps as any).__wrapConnections;
+    const wrapWs = wrapConns?.get(session.session_uuid);
+    if (wrapWs && wrapWs.readyState === wrapWs.OPEN) {
+      try {
+        wrapWs.send(JSON.stringify({ type: "push", prompt }));
+        deps.log?.info({ route: "/send", mode: "wrap-push", session_uuid: session.session_uuid, project: session.project_name, promptLength: prompt.length }, "pushed via wrap WS");
+        res.status(200).json({
+          ok: true,
+          mode: "wrap-push",
+          session_uuid: session.session_uuid,
+          cwd: session.cwd,
+          project: session.project_name,
+          reply: "(streaming to wrapper — see terminal / next dashboard refresh)",
+          duration_ms: 0,
+        });
+        return;
+      } catch (err) {
+        deps.log?.error({ route: "/send", mode: "wrap-push", session_uuid: session.session_uuid, error: String(err) }, "wrap push threw, falling back to -p spawn");
+        // fall through to spawn fallback
+      }
+    }
+
     deps.log?.info({ route: "/send", mode: "submit", session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name, promptLength: prompt.length, maxBudgetUsd }, "spawning headless claude...");
     const start = Date.now();
     try {
@@ -265,8 +296,61 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server, path: "/ws" });
 
+  // Wrap WS endpoint — each `cch claude` wrapper connects here and registers
+  // its session. /send for a wrapped session goes through this socket instead
+  // of spawning `claude -p`.
+  const wrapWss = new WebSocketServer({ server, path: "/wrap" });
+  const wrapConnections = new Map<string, import("ws").WebSocket>(); // uuid → ws
+  // Re-broadcast a session's row with the updated `wrapped` flag so dashboard
+  // can repaint the badge live. Cheap (one JSON.stringify per client).
+  function rebroadcastSession(uuid: string): void {
+    const s = deps.store.get(uuid);
+    if (!s) return;
+    const enriched = { ...s, wrapped: wrapConnections.has(uuid) };
+    const msg = JSON.stringify({ type: "session_changed", session: enriched });
+    for (const client of wss.clients) {
+      if (client.readyState === client.OPEN) client.send(msg, () => { /* noop */ });
+    }
+  }
+
+  wrapWss.on("connection", (ws) => {
+    let registeredUuid: string | null = null;
+    deps.log?.info({ route: "/wrap" }, "wrap client connected");
+    function bind(uuid: string): void {
+      if (registeredUuid && registeredUuid !== uuid && wrapConnections.get(registeredUuid) === ws) {
+        wrapConnections.delete(registeredUuid);
+      }
+      registeredUuid = uuid;
+      wrapConnections.set(uuid, ws);
+      rebroadcastSession(uuid);
+    }
+    ws.on("message", (raw) => {
+      let m: any; try { m = JSON.parse(raw.toString()); } catch { return; }
+      if (m?.type === "register" && typeof m.session_uuid === "string" && m.session_uuid) {
+        bind(m.session_uuid);
+        deps.log?.info({ route: "/wrap", session_uuid: m.session_uuid }, "wrap registered");
+      } else if (m?.type === "session_uuid" && typeof m.session_uuid === "string" && m.session_uuid) {
+        bind(m.session_uuid);
+        deps.log?.info({ route: "/wrap", session_uuid: m.session_uuid }, "wrap uuid late-bound");
+      }
+    });
+    ws.on("close", () => {
+      const uuid = registeredUuid;
+      if (uuid && wrapConnections.get(uuid) === ws) {
+        wrapConnections.delete(uuid);
+        deps.log?.info({ route: "/wrap", session_uuid: uuid }, "wrap disconnected");
+        rebroadcastSession(uuid);
+      }
+    });
+    ws.on("error", () => { /* swallow — close handler does cleanup */ });
+  });
+
+  // Expose check for /send to route through wrap when available
+  (deps as any).__wrapConnections = wrapConnections;
+
   deps.store.on("session_changed", (session) => {
-    const msg = JSON.stringify({ type: "session_changed", session });
+    const enriched = { ...session, wrapped: wrapConnections.has(session.session_uuid ?? "") };
+    const msg = JSON.stringify({ type: "session_changed", session: enriched });
     for (const client of wss.clients) {
       if (client.readyState === client.OPEN) {
         client.send(msg, (_err) => { /* client may have raced disconnect; ignore */ });

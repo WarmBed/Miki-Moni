@@ -13,6 +13,7 @@ interface Session {
   last_message_preview: string;
   tokens_in: number;
   tokens_out: number;
+  wrapped?: boolean;  // true if a `cch claude` wrapper is actively connected
 }
 
 interface ToolUseInfo { id: string; name: string; description?: string; input: unknown; input_summary: string }
@@ -828,6 +829,9 @@ function Cell({ s, preview, clientType, onSetClientType, onQuickSend, onOpenTab,
           type={clientType}
           onToggle={() => onSetClientType(s.session_uuid ?? "", clientType === "cli" ? "vscode" : "cli")}
         />
+        {s.wrapped && (
+          <span class="client-badge client-badge-wrap" title="這個 session 被 `cch claude` wrapper 接管 — 送出走 push、不再 spawn / 不花 $$">🔌 wrapped</span>
+        )}
       </div>
       <div class="cell-preview cell-convo">
         {!lastUser && !lastAssistant && !lastTool ? (
