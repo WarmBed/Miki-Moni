@@ -1,0 +1,28 @@
+name = "cch-relay"
+main = "src/index.ts"
+compatibility_date = "2026-05-17"
+compatibility_flags = ["nodejs_compat"]
+
+# Custom domain (DNS must exist in Cloudflare for f1telemetrystationpro.org zone)
+# Self-host users: replace or delete this block.
+routes = [
+  { pattern = "relay.f1telemetrystationpro.org/*", custom_domain = true }
+]
+
+[[durable_objects.bindings]]
+name = "PAIRING"
+class_name = "PairingCoordinator"
+
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "DaemonRelay"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["PairingCoordinator", "DaemonRelay"]
+
+[[unsafe.bindings]]
+name = "RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1"
+simple = { limit = 30, period = 60 }

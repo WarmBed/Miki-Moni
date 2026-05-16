@@ -1,0 +1,24 @@
+{
+  "name": "cc-hub-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker + Durable Objects for cc-hub E2E relay",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.7.0",
+    "@cloudflare/workers-types": "^4.20250515.0",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.1",
+    "wrangler": "^3.85.0"
+  }
+}
