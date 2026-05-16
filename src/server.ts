@@ -1,5 +1,6 @@
 import express, { type Express, type Request, type Response } from "express";
 import http from "node:http";
+import { WebSocketServer } from "ws";
 import type { SessionStore } from "./session-store.js";
 import type { HookHandler } from "./hook-handler.js";
 import type { VscodeBridge } from "./vscode-bridge.js";
@@ -53,5 +54,14 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   });
 
   const server = http.createServer(app);
+  const wss = new WebSocketServer({ server, path: "/ws" });
+
+  deps.store.on("session_changed", (session) => {
+    const msg = JSON.stringify({ type: "session_changed", session });
+    for (const client of wss.clients) {
+      if (client.readyState === client.OPEN) client.send(msg);
+    }
+  });
+
   return { app, server };
 }
