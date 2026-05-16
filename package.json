@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "Loom / 織機 — weave multiple VSCode Claude Code panel sessions into one local dashboard, with optional encrypted relay to a phone client. (Working-title package name; see docs/naming.md.)",
   "engines": {
     "node": ">=20"
   },
@@ -45,6 +46,7 @@
     "@types/supertest": "^6.0.2",
     "@types/ws": "^8.5.12",
     "autoprefixer": "^10.5.0",
+    "fake-indexeddb": "^6.2.5",
     "postcss": "^8.5.14",
     "preact": "^10.24.0",
     "supertest": "^7.0.0",
