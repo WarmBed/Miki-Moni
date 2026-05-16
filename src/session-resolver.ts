@@ -107,6 +107,7 @@ export interface SessionPreview {
   ai_title: string | null;
   last_assistant_text: string | null;
   last_user_text: string | null;
+  last_tool_use: { name: string; description?: string } | null;
   last_modified_ms: number;
   transcript_path: string;
 }
@@ -128,6 +129,7 @@ export async function readSessionPreview(
   let ai_title: string | null = null;
   let last_assistant_text: string | null = null;
   let last_user_text: string | null = null;
+  let last_tool_use: { name: string; description?: string } | null = null;
 
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
@@ -147,7 +149,7 @@ export async function readSessionPreview(
     // response was needed (e.g. {model:"<synthetic>", text:"No response requested."}).
     if (msg.model === "<synthetic>") continue;
 
-    // Extract text content
+    // Extract text content + scan for most recent tool_use (assistant turns).
     let textPart = "";
     if (typeof msg.content === "string") {
       textPart = msg.content;
@@ -155,24 +157,28 @@ export async function readSessionPreview(
       for (const block of msg.content) {
         if (block?.type === "text" && typeof block.text === "string") {
           textPart += block.text;
+        } else if (!last_tool_use && block?.type === "tool_use" && typeof block.name === "string") {
+          const desc = typeof block.input?.description === "string" ? block.input.description : undefined;
+          last_tool_use = { name: block.name, description: desc };
         }
       }
     }
     textPart = textPart.trim();
-    if (!textPart) continue;
 
-    // Also skip known placeholder strings just in case
-    if (textPart === "No response requested." || textPart === "(no content)") continue;
+    if (textPart) {
+      // Also skip known placeholder strings just in case
+      if (textPart === "No response requested." || textPart === "(no content)") continue;
 
-    if (msg.role === "assistant" && !last_assistant_text) {
-      last_assistant_text = textPart;
+      if (msg.role === "assistant" && !last_assistant_text) {
+        last_assistant_text = textPart;
+      }
+      if (msg.role === "user" && !last_user_text) {
+        // skip tool_result-only messages (no text block)
+        last_user_text = textPart;
+      }
     }
-    if (msg.role === "user" && !last_user_text) {
-      // skip tool_result-only messages (no text block)
-      last_user_text = textPart;
-    }
 
-    if (ai_title && last_assistant_text && last_user_text) break;
+    if (ai_title && last_assistant_text && last_user_text && last_tool_use) break;
   }
 
   return {
@@ -180,6 +186,7 @@ export async function readSessionPreview(
     ai_title,
     last_assistant_text,
     last_user_text,
+    last_tool_use,
     last_modified_ms: stat.mtimeMs,
     transcript_path: transcriptPath,
   };

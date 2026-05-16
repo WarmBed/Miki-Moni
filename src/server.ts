@@ -95,9 +95,31 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     res.json(session);
   });
 
+  // Lightweight poll endpoint: returns just file stat (no read of JSONL).
+  // Client polls this every ~2s; if last_modified/file_size differ from cached,
+  // re-fetch the full transcript. Cheap = fs.stat only.
+  app.get("/sessions/:session_uuid/transcript-meta", async (req, res) => {
+    const sessionUuid = decodeURIComponent(req.params.session_uuid!);
+    const projectsRoot = path.join(os.homedir(), ".claude", "projects");
+    try {
+      const dirs = await fs.readdir(projectsRoot);
+      for (const d of dirs) {
+        const candidate = path.join(projectsRoot, d, `${sessionUuid}.jsonl`);
+        try {
+          const stat = await fs.stat(candidate);
+          res.json({ session_uuid: sessionUuid, file_size: stat.size, last_modified: stat.mtime.toISOString() });
+          return;
+        } catch { /* keep looking */ }
+      }
+      res.status(404).json({ error: "transcript not found", session_uuid: sessionUuid });
+    } catch {
+      res.status(404).json({ error: "projects dir not found" });
+    }
+  });
+
   app.get("/sessions/:session_uuid/transcript", async (req, res) => {
     const sessionUuid = decodeURIComponent(req.params.session_uuid!);
-    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "20"), 10) || 20, 1), 200);
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "20"), 10) || 20, 1), 10000);
     const projectsRoot = path.join(os.homedir(), ".claude", "projects");
     // Find which projects dir contains <uuid>.jsonl
     let transcriptPath: string | null = null;
@@ -193,13 +215,15 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       const url = buildSendUrl(session.session_uuid, prompt);
       const mode = autoEnter ? "prefill+enter" : "prefill";
       try {
+        let diag: string | null = null;
         if (autoEnter) {
-          await deps.bridge.prefillAndSubmit(session.session_uuid, prompt);
+          const r = await deps.bridge.prefillAndSubmit(session.session_uuid, prompt, { cwd: session.cwd });
+          diag = r.diag;
         } else {
           await deps.bridge.send(session.session_uuid, prompt);
         }
-        deps.log?.info({ route: "/send", mode, via, key, cwd: session.cwd, session_uuid: session.session_uuid, project: session.project_name, promptLength: prompt.length, url }, autoEnter ? "URI prefilled + Enter sent to foreground" : "URI prefilled (not submitted)");
-        res.status(200).json({ ok: true, mode, url, session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name });
+        deps.log?.info({ route: "/send", mode, via, key, cwd: session.cwd, session_uuid: session.session_uuid, project: session.project_name, promptLength: prompt.length, url, diag }, autoEnter ? "URI prefilled + Enter sent to foreground" : "URI prefilled (not submitted)");
+        res.status(200).json({ ok: true, mode, url, session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name, diag });
       } catch (err) {
         deps.log?.error({ route: "/send", mode, via, key, url, error: String(err) }, "bridge prefill threw");
         res.status(500).json({ error: String(err), url });

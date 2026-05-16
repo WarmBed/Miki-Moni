@@ -27,6 +27,7 @@ interface SessionPreview {
   ai_title: string | null;
   last_assistant_text: string | null;
   last_user_text: string | null;
+  last_tool_use: { name: string; description?: string } | null;
   last_modified_ms: number;
   transcript_path: string;
 }
@@ -197,8 +198,9 @@ function TurnView({ t }: { t: TranscriptTurn }) {
   const isUser = t.role === "user";
   const roleLabel = isUser ? "user" : "assistant";
   const roleColor = isUser ? "var(--neutral)" : "var(--pass)";
+  const bgClass = isUser ? "turn-bg-user" : "turn-bg-assistant";
   return (
-    <div style={{ padding: "10px 14px", borderTop: "1px solid var(--border)" }}>
+    <div class={bgClass} style={{ padding: "10px 14px", borderTop: "1px solid var(--border)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
         <span style={{ color: roleColor, fontWeight: 600, fontSize: 12 }}>{roleLabel}</span>
         <span style={{ color: "var(--fg-subtle)", fontSize: 11 }}>{fmtDateTime(t.ts)}</span>
@@ -220,27 +222,52 @@ function TurnView({ t }: { t: TranscriptTurn }) {
 //   left  — conversation (user/assistant text, no tool activity)
 //   right — tool activity (assistant tool_use + user tool_result)
 // A turn that has BOTH text and tool_use shows the text on the left and the tool box on the right.
+// Auto follow-tail: each column auto-scrolls to bottom on new content unless the user has
+// manually scrolled up. Scrolling back to bottom re-engages follow.
 function TwoColumnTranscript({ turns }: { turns: TranscriptTurn[] }) {
+  const leftRef = useRef<HTMLDivElement | null>(null);
+  const rightRef = useRef<HTMLDivElement | null>(null);
+  // refs (not state) so toggling doesn't re-render; only the scroll effect reads them.
+  const stickyLeft = useRef(true);
+  const stickyRight = useRef(true);
+
+  const { leftTurns, rightTurns } = useMemo(() => {
+    const l: TranscriptTurn[] = [];
+    const r: TranscriptTurn[] = [];
+    for (const t of turns) {
+      const hasTool = !!(t.tool_use || t.tool_result);
+      if (t.text) l.push({ ...t, tool_use: undefined, tool_result: undefined });
+      if (hasTool) r.push({ ...t, text: "" });
+    }
+    return { leftTurns: l, rightTurns: r };
+  }, [turns]);
+
+  // After each render (i.e., when turns change), pin to bottom if user is still following.
+  useEffect(() => {
+    if (stickyLeft.current && leftRef.current) {
+      leftRef.current.scrollTop = leftRef.current.scrollHeight;
+    }
+    if (stickyRight.current && rightRef.current) {
+      rightRef.current.scrollTop = rightRef.current.scrollHeight;
+    }
+  });
+
+  // Tolerance for "at bottom": some browsers report fractional scroll positions.
+  const TAIL_TOL = 24;
+  function makeOnScroll(stickyRef: { current: boolean }) {
+    return (ev: Event) => {
+      const el = ev.currentTarget as HTMLDivElement;
+      stickyRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < TAIL_TOL;
+    };
+  }
+
   if (turns.length === 0) {
     return <div style={{ padding: "12px 14px", color: "var(--fg-subtle)", fontSize: 12 }}>(transcript 沒有可顯示的訊息)</div>;
   }
-  const leftTurns: TranscriptTurn[] = [];
-  const rightTurns: TranscriptTurn[] = [];
-  for (const t of turns) {
-    const hasTool = !!(t.tool_use || t.tool_result);
-    if (t.text) {
-      // text → conversation column (strip tool fields so TurnView doesn't render them on the left)
-      leftTurns.push({ ...t, tool_use: undefined, tool_result: undefined });
-    }
-    if (hasTool) {
-      // tool activity → right column (strip text so TurnView doesn't render it on the right)
-      rightTurns.push({ ...t, text: "" });
-    }
-  }
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", maxHeight: 600, overflow: "hidden" }}>
-      <div style={{ overflowY: "auto", borderRight: "1px solid var(--border)" }}>
-        <div style={{ padding: "6px 14px", fontSize: 10, fontWeight: 600, color: "var(--fg-subtle)", textTransform: "uppercase", letterSpacing: "0.08em", background: "var(--sl2)", borderTop: "1px solid var(--border)" }}>
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", height: "100%", minHeight: 0, overflow: "hidden" }}>
+      <div ref={leftRef} onScroll={makeOnScroll(stickyLeft)} style={{ overflowY: "auto", borderRight: "1px solid var(--border)" }}>
+        <div style={{ position: "sticky", top: 0, zIndex: 1, padding: "6px 14px", fontSize: 10, fontWeight: 600, color: "var(--fg-subtle)", textTransform: "uppercase", letterSpacing: "0.08em", background: "var(--sl2)", borderBottom: "1px solid var(--border)" }}>
           對話 · {leftTurns.length}
         </div>
         {leftTurns.length === 0 ? (
@@ -249,8 +276,8 @@ function TwoColumnTranscript({ turns }: { turns: TranscriptTurn[] }) {
           leftTurns.map((t, i) => <TurnView key={`L${i}`} t={t} />)
         )}
       </div>
-      <div style={{ overflowY: "auto" }}>
-        <div style={{ padding: "6px 14px", fontSize: 10, fontWeight: 600, color: "var(--fg-subtle)", textTransform: "uppercase", letterSpacing: "0.08em", background: "var(--sl2)", borderTop: "1px solid var(--border)" }}>
+      <div ref={rightRef} onScroll={makeOnScroll(stickyRight)} style={{ overflowY: "auto" }}>
+        <div style={{ position: "sticky", top: 0, zIndex: 1, padding: "6px 14px", fontSize: 10, fontWeight: 600, color: "var(--fg-subtle)", textTransform: "uppercase", letterSpacing: "0.08em", background: "var(--sl2)", borderBottom: "1px solid var(--border)" }}>
           工具 · {rightTurns.length}
         </div>
         {rightTurns.length === 0 ? (
@@ -265,14 +292,17 @@ function TwoColumnTranscript({ turns }: { turns: TranscriptTurn[] }) {
 
 // ── Session card ───────────────────────────────────────────────────────────
 
-type ActionResult = { ok: boolean; label: string; url?: string; reply?: string; durationMs?: number; ts: number } | null;
+type ActionResult = { ok: boolean; label: string; url?: string; reply?: string; durationMs?: number; diag?: string; ts: number } | null;
 
-function Card({ s, defaultExpanded, onFocus, onSend }: {
+function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend }: {
   s: Session;
   defaultExpanded: boolean;
+  clientType: ClientType;
+  onSetClientType: (uuid: string, type: ClientType) => void;
   onFocus: (uuid: string) => Promise<{ ok: boolean; status: number; url?: string }>;
-  onSend: (uuid: string, prompt: string, submit: boolean) => Promise<{ ok: boolean; status: number; url?: string; reply?: string; duration_ms?: number }>;
+  onSend: (uuid: string, prompt: string, submit: boolean) => Promise<{ ok: boolean; status: number; url?: string; reply?: string; duration_ms?: number; diag?: string }>;
 }) {
+  const isCli = clientType === "cli";
   const [collapsed, setCollapsed] = useState(!defaultExpanded);
   const [draft, setDraft] = useState("");
   // Default = prefill (free, uses your already-running VSCode panel session).
@@ -280,16 +310,88 @@ function Card({ s, defaultExpanded, onFocus, onSend }: {
   // the whole session context through cache → burns real $ for large sessions
   // BEFORE generating any token.
   const [submitMode, setSubmitMode] = useState(false);
+  // CLI session can ONLY use submitMode (vscode:// URI doesn't reach a terminal).
+  // Force it on whenever clientType flips to cli.
+  useEffect(() => { if (isCli && !submitMode) setSubmitMode(true); }, [isCli]); // eslint-disable-line react-hooks/exhaustive-deps
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [focusResult, setFocusResult] = useState<ActionResult>(null);
   const [sendResult, setSendResult] = useState<ActionResult>(null);
-  const [showTranscript, setShowTranscript] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(defaultExpanded);
   const [transcript, setTranscript] = useState<TranscriptResp | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const [transcriptLimit, setTranscriptLimit] = useState(20);
   const sessionUuid = s.session_uuid ?? "";
+
+  // Auto-load transcript on first mount when defaultExpanded (i.e., in tab view)
+  useEffect(() => {
+    if (defaultExpanded && sessionUuid && !transcript && !transcriptLoading) {
+      void loadTranscript();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionUuid]);
+
+  // Live tail (path 1): WS-driven. When this session emits session_changed
+  // (hook fired), debounce 600ms then refetch.
+  const autoRefreshTimerRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!defaultExpanded || !sessionUuid || !showTranscript || !transcript) return;
+    if (autoRefreshTimerRef.current) clearTimeout(autoRefreshTimerRef.current);
+    autoRefreshTimerRef.current = window.setTimeout(() => {
+      void loadTranscript(transcriptLimit);
+    }, 600);
+    return () => { if (autoRefreshTimerRef.current) clearTimeout(autoRefreshTimerRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.last_event_at]);
+
+  // Live tail (path 2): polling fallback. Hooks may not be installed for every
+  // VSCode panel (panels opened BEFORE `pnpm install:hooks` won't fire), so
+  // we also poll a cheap meta endpoint every 2s. If the JSONL's mtime or size
+  // bumps, refetch the full transcript.
+  //
+  // Self-disabling on 404: if the daemon doesn't have /transcript-meta (older
+  // daemon not yet restarted) the very first poll 404s — stop the interval to
+  // avoid spamming the console, then retry once after 5s in case the user
+  // restarts the daemon mid-session.
+  useEffect(() => {
+    if (!defaultExpanded || !sessionUuid || !showTranscript) return;
+    let cancelled = false;
+    let intervalId: number | undefined;
+    let retryTimerId: number | undefined;
+    let lastMtime = transcript?.last_modified ?? "";
+    let lastSize = transcript?.file_size ?? 0;
+
+    function start() {
+      intervalId = window.setInterval(async () => {
+        if (cancelled) return;
+        try {
+          const r = await fetch(`/sessions/${encodeURIComponent(sessionUuid)}/transcript-meta`);
+          if (r.status === 404) {
+            if (intervalId) { window.clearInterval(intervalId); intervalId = undefined; }
+            cwarn("transcript-meta 404 — polling paused (restart daemon to re-enable); retry in 5s");
+            retryTimerId = window.setTimeout(() => { if (!cancelled) start(); }, 5000);
+            return;
+          }
+          if (!r.ok) return;
+          const meta: { last_modified: string; file_size: number } = await r.json();
+          if (meta.last_modified !== lastMtime || meta.file_size !== lastSize) {
+            lastMtime = meta.last_modified;
+            lastSize = meta.file_size;
+            void loadTranscript(transcriptLimit);
+          }
+        } catch { /* silent — next tick will retry */ }
+      }, 2000);
+    }
+    start();
+
+    return () => {
+      cancelled = true;
+      if (intervalId) window.clearInterval(intervalId);
+      if (retryTimerId) window.clearTimeout(retryTimerId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionUuid, showTranscript, transcript?.last_modified, transcript?.file_size, transcriptLimit]);
 
   async function loadTranscript(limit = transcriptLimit) {
     if (!sessionUuid) return;
@@ -338,7 +440,7 @@ function Card({ s, defaultExpanded, onFocus, onSend }: {
         : submitMode
           ? `Claude 已回覆 (${r.duration_ms ?? "?"} ms)`
           : `已送出到 VSCode panel（Enter 已自動按）`;
-      setSendResult({ ok: r.ok, label, url: r.url, reply: r.reply, durationMs: r.duration_ms, ts: Date.now() });
+      setSendResult({ ok: r.ok, label, url: r.url, reply: r.reply, durationMs: r.duration_ms, diag: r.diag, ts: Date.now() });
       setDraft("");
       if (r.ok && submitMode && transcript) void loadTranscript();
     } finally {
@@ -362,122 +464,53 @@ function Card({ s, defaultExpanded, onFocus, onSend }: {
   }
 
   // ── Expanded view ──────────────────────────────────────────────────────
+  // When defaultExpanded (tab view): card fills viewport, transcript flex:1 in middle,
+  // bottom section (meta + composer) sticks to bottom.
+  // When inline (legacy): natural height.
+  const fixedHeight = defaultExpanded;
   return (
-    <div class="card">
+    <div class="card" style={fixedHeight ? { display: "flex", flexDirection: "column", height: "calc(100vh - 220px)", minHeight: 480 } : undefined}>
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
         <span class={STATUS_DOT[s.status]} />
         <button
           class="btn-ghost"
           style={{ fontWeight: 600, fontSize: 15, padding: "2px 6px" }}
           onClick={handleFocus}
-          title="叫起 VSCode 視窗（focus）"
+          title={isCli ? "🚫 CLI session 不支援 focus（URI handler 只開 VSCode）" : "叫起 VSCode 視窗（focus）"}
+          disabled={isCli}
         >{s.project_name}</button>
+        <ClientTypeBadge
+          type={clientType}
+          onToggle={() => onSetClientType(sessionUuid, isCli ? "vscode" : "cli")}
+          size="md"
+        />
         <span style={{ color: "var(--fg-muted)", fontSize: 12 }}>{STATUS_LABEL[s.status]}</span>
         <span style={{ color: "var(--fg-subtle)", fontSize: 11, marginLeft: 8 }}>{fmtRelative(s.last_event_at)}</span>
         <button
           class="btn-ghost"
           style={{ marginLeft: "auto", fontSize: 11 }}
           onClick={handleFocus}
-          title="同步 VSCode panel — 觸發 vscode:// URI handler 強制 extension 重新從 JSONL 讀 session（已開的 tab 可能只 refocus，請配合 Cmd/Ctrl+Shift+P → Developer: Reload Window 確保 hot-reload）"
+          title={isCli ? "🚫 CLI session 不支援同步（URI handler 只開 VSCode）" : "同步 VSCode panel — 觸發 vscode:// URI handler 強制 extension 重新從 JSONL 讀 session（已開的 tab 可能只 refocus，請配合 Cmd/Ctrl+Shift+P → Developer: Reload Window 確保 hot-reload）"}
+          disabled={isCli}
         >🔄 同步</button>
         <button class="btn-ghost" onClick={() => setCollapsed(true)} title="收合">▴</button>
       </div>
 
-      {/* Meta */}
-      <div style={{ padding: "8px 14px", color: "var(--fg-subtle)", fontSize: 11, fontFamily: "ui-monospace, monospace" }}>
-        <div>{s.cwd}</div>
-        <div>session_uuid: {sessionUuid || <span style={{ color: "var(--warn)" }}>null</span>}</div>
-      </div>
-
-      {/* Focus result */}
-      {focusResult && (
-        <div style={{ padding: "0 14px 8px", fontSize: 12, color: focusResult.ok ? "var(--pass)" : "var(--accent)" }}>
-          叫起視窗：{focusResult.label}
-        </div>
-      )}
-
-      {/* Send composer */}
-      <div style={{ padding: "8px 14px 12px", display: "flex", flexDirection: "column", gap: 6, borderTop: "1px solid var(--border)" }}>
-        <div style={{ display: "flex", gap: 8 }}>
-          <textarea
-            style={{ flex: 1, minHeight: 38, fontSize: 13 }}
-            rows={2}
-            placeholder={submitMode ? "輸入 prompt 真的送給這個 session（會花 API 費用）…" : "輸入 prompt 一鍵送給這個 session（透過你 VSCode panel）…"}
-            value={draft}
-            onInput={(e) => setDraft((e.currentTarget as HTMLTextAreaElement).value)}
-            disabled={busy}
-          />
-          <button
-            class={submitMode ? "btn-warn" : "btn-primary"}
-            disabled={!draft.trim() || busy}
-            onClick={handleSend}
-            title={submitMode ? "headless `claude -p`（新 process、重 load cache、花 API$）" : "vscode:// URI prefill + 自動按 Enter（用 panel 既有 session、cache 熱、~free）"}
-          >
-            {busy ? "⌛" : submitMode ? "真送出 💸" : "送出"}
+      {/* Transcript section — flex:1, scrollable */}
+      <div style={fixedHeight
+        ? { display: "flex", flexDirection: "column", flex: 1, minHeight: 0, borderBottom: "1px solid var(--border)" }
+        : { borderBottom: "1px solid var(--border)" }
+      }>
+        <div style={{ display: "flex", alignItems: "center", gap: 0, flexShrink: 0 }}>
+          <button class="btn-ghost" style={{ flex: 1, justifyContent: "flex-start", padding: "8px 14px", borderRadius: 0 }} onClick={toggleTranscript}>
+            {showTranscript ? "▾" : "▸"} 上下文 transcript
+            {transcript && <span style={{ marginLeft: 8, color: "var(--fg-subtle)", fontSize: 11 }}>· {transcript.turn_count} 條 · {(transcript.file_size / 1024).toFixed(1)} KB</span>}
           </button>
         </div>
-        <div style={{ fontSize: 10, color: "var(--fg-subtle)", lineHeight: 1.5 }}>
-          {submitMode ? (
-            <>
-              💸 <strong style={{ color: "var(--accent)" }}>真送出</strong>：spawn `claude -p` 新 process、重 load 整個 session cache、call API → 大 session 可能花 $2-5+。<br />
-              <span style={{ color: "var(--warn)" }}>⚠️ Windows 限制：prompt 含中文/emoji 會被切碼，請用英文。</span>
-            </>
-          ) : (
-            <>
-              🚀 <strong style={{ color: "var(--pass)" }}>送出</strong>：vscode:// URI 把 prompt 塞進你現有 VSCode panel 的 input box，自動按 Enter → 走你 panel 已 loaded 的 session（cache 全熱、不重 load、近乎零成本）。⚠️ 按下後別動鍵盤/滑鼠 800ms，避免 Enter 落到別的視窗。
-            </>
-          )}
-        </div>
-        <button
-          class="btn-ghost"
-          style={{ fontSize: 10, alignSelf: "flex-start", padding: "2px 6px" }}
-          onClick={() => setShowAdvanced((v) => !v)}
-        >
-          {showAdvanced ? "▾" : "▸"} advanced：切換送出模式
-        </button>
-        {showAdvanced && (
-          <label style={{ fontSize: 11, color: "var(--fg-subtle)", cursor: "pointer", userSelect: "none", paddingLeft: 16 }}>
-            <input
-              type="checkbox"
-              checked={submitMode}
-              onChange={(e) => setSubmitMode((e.currentTarget as HTMLInputElement).checked)}
-              style={{ marginRight: 6, verticalAlign: "middle" }}
-            />
-            真送出模式（headless `claude -r -p`，會花 API 費用、不走你 panel session）
-          </label>
-        )}
-
-        {/* Send result */}
-        {sendResult && (
-          <div style={{ marginTop: 4 }}>
-            <div style={{ fontSize: 12, color: sendResult.ok ? "var(--pass)" : "var(--accent)" }}>
-              送 prompt：{sendResult.label}
-            </div>
-            {sendResult.reply && (
-              <div style={{ marginTop: 6, padding: 10, background: "var(--sl2)", border: "1px solid var(--border)", borderRadius: 6 }}>
-                <div class="section-label" style={{ marginBottom: 4 }}>Claude 回覆</div>
-                <MD text={sendResult.reply} />
-              </div>
-            )}
-            {sendResult.url && (
-              <div style={{ marginTop: 6, fontSize: 11, fontFamily: "ui-monospace, monospace", color: "var(--fg-subtle)", wordBreak: "break-all" }}>
-                URI：<a href={sendResult.url} style={{ color: "var(--neutral)" }}>{sendResult.url}</a>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Transcript */}
-      <div style={{ borderTop: "1px solid var(--border)" }}>
-        <button class="btn-ghost" style={{ width: "100%", justifyContent: "flex-start", padding: "8px 14px", borderRadius: 0 }} onClick={toggleTranscript}>
-          {showTranscript ? "▾" : "▸"} 上下文 transcript
-          {transcript && <span style={{ marginLeft: 8, color: "var(--fg-subtle)", fontSize: 11 }}>· {transcript.turn_count} 條 · {(transcript.file_size / 1024).toFixed(1)} KB</span>}
-        </button>
         {showTranscript && (
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", borderTop: "1px solid var(--border)" }}>
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", borderTop: "1px solid var(--border)", flexShrink: 0 }}>
               {transcript && (
                 <span style={{ color: "var(--fg-subtle)", fontSize: 11 }}>
                   最後修改 {fmtDateTime(transcript.last_modified)}
@@ -493,7 +526,16 @@ function Card({ s, defaultExpanded, onFocus, onSend }: {
                 <option value={50}>50 條</option>
                 <option value={100}>100 條</option>
                 <option value={200}>200 條</option>
+                <option value={500}>500 條</option>
+                <option value={10000}>全部</option>
               </select>
+              <button
+                class="btn-outline"
+                style={{ height: 28, padding: "0 10px" }}
+                onClick={() => { setTranscriptLimit(10000); void loadTranscript(10000); }}
+                disabled={transcriptLoading}
+                title="把整個 session JSONL 全部讀進來（最多 10000 turn）"
+              >📜 載入全部</button>
               <button class="btn-outline" style={{ height: 28, padding: "0 10px" }} onClick={() => loadTranscript(transcriptLimit)} disabled={transcriptLoading}>
                 {transcriptLoading ? "讀取中…" : "重新讀取"}
               </button>
@@ -501,9 +543,116 @@ function Card({ s, defaultExpanded, onFocus, onSend }: {
             {transcriptError && (
               <div style={{ padding: "8px 14px", color: "var(--accent)", fontSize: 12 }}>{transcriptError}</div>
             )}
-            {transcript && <TwoColumnTranscript turns={transcript.turns} />}
+            {transcript && (
+              <div style={fixedHeight ? { flex: 1, minHeight: 0, display: "flex" } : { maxHeight: 480, overflow: "hidden", display: "flex" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <TwoColumnTranscript turns={transcript.turns} />
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Bottom: Meta + Send composer */}
+      <div style={{ flexShrink: 0 }}>
+        {/* Meta */}
+        <div style={{ padding: "8px 14px", color: "var(--fg-subtle)", fontSize: 11, fontFamily: "ui-monospace, monospace" }}>
+          <div>{s.cwd}</div>
+          <div>session_uuid: {sessionUuid || <span style={{ color: "var(--warn)" }}>null</span>}</div>
+        </div>
+
+        {/* Focus result */}
+        {focusResult && (
+          <div style={{ padding: "0 14px 8px", fontSize: 12, color: focusResult.ok ? "var(--pass)" : "var(--accent)" }}>
+            叫起視窗：{focusResult.label}
           </div>
         )}
+
+        {/* Send composer */}
+        <div style={{ padding: "8px 14px 12px", display: "flex", flexDirection: "column", gap: 6, borderTop: "1px solid var(--border)" }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <textarea
+              style={{ flex: 1, minHeight: 38, fontSize: 13 }}
+              rows={2}
+              placeholder={submitMode ? "輸入 prompt 真的送給這個 session（會花 API 費用）…" : "輸入 prompt 一鍵送給這個 session（透過你 VSCode panel）…"}
+              value={draft}
+              onInput={(e) => setDraft((e.currentTarget as HTMLTextAreaElement).value)}
+              disabled={busy}
+            />
+            <button
+              class={submitMode ? "btn-warn" : "btn-primary"}
+              disabled={!draft.trim() || busy}
+              onClick={handleSend}
+              title={submitMode ? "headless `claude -p`（新 process、重 load cache、花 API$）" : "vscode:// URI prefill + 自動按 Enter（用 panel 既有 session、cache 熱、~free）"}
+            >
+              {busy ? "⌛" : submitMode ? "真送出 💸" : "送出"}
+            </button>
+          </div>
+          <div style={{ fontSize: 10, color: "var(--fg-subtle)", lineHeight: 1.5 }}>
+            {isCli ? (
+              <>
+                📟 <strong style={{ color: "#a8740d" }}>CLI session</strong>：vscode:// URI 沒辦法塞進 terminal，所以只能走 spawn {"`claude -r <uuid> -p`"}（會花 $$，新 process 不會出現在你 terminal 視覺輸出，但 JSONL 會更新 → dashboard 看得到）。
+              </>
+            ) : submitMode ? (
+              <>
+                💸 <strong style={{ color: "var(--accent)" }}>真送出</strong>：spawn `claude -p` 新 process、重 load 整個 session cache、call API → 大 session 可能花 $2-5+。<br />
+                <span style={{ color: "var(--warn)" }}>⚠️ Windows 限制：prompt 含中文/emoji 會被切碼，請用英文。</span>
+              </>
+            ) : (
+              <>
+                🚀 <strong style={{ color: "var(--pass)" }}>送出</strong>：vscode:// URI 把 prompt 塞進你現有 VSCode panel 的 input box，自動按 Enter → 走你 panel 已 loaded 的 session（cache 全熱、不重 load、近乎零成本）。⚠️ 按下後別動鍵盤/滑鼠 800ms，避免 Enter 落到別的視窗。
+              </>
+            )}
+          </div>
+          {!isCli && (
+            <>
+              <button
+                class="btn-ghost"
+                style={{ fontSize: 10, alignSelf: "flex-start", padding: "2px 6px" }}
+                onClick={() => setShowAdvanced((v) => !v)}
+              >
+                {showAdvanced ? "▾" : "▸"} advanced：切換送出模式
+              </button>
+              {showAdvanced && (
+                <label style={{ fontSize: 11, color: "var(--fg-subtle)", cursor: "pointer", userSelect: "none", paddingLeft: 16 }}>
+                  <input
+                    type="checkbox"
+                    checked={submitMode}
+                    onChange={(e) => setSubmitMode((e.currentTarget as HTMLInputElement).checked)}
+                    style={{ marginRight: 6, verticalAlign: "middle" }}
+                  />
+                  真送出模式（headless `claude -r -p`，會花 API 費用、不走你 panel session）
+                </label>
+              )}
+            </>
+          )}
+
+          {/* Send result */}
+          {sendResult && (
+            <div style={{ marginTop: 4 }}>
+              <div style={{ fontSize: 12, color: sendResult.ok ? "var(--pass)" : "var(--accent)" }}>
+                送 prompt：{sendResult.label}
+              </div>
+              {sendResult.reply && (
+                <div style={{ marginTop: 6, padding: 10, background: "var(--sl2)", border: "1px solid var(--border)", borderRadius: 6 }}>
+                  <div class="section-label" style={{ marginBottom: 4 }}>Claude 回覆</div>
+                  <MD text={sendResult.reply} />
+                </div>
+              )}
+              {sendResult.url && (
+                <div style={{ marginTop: 6, fontSize: 11, fontFamily: "ui-monospace, monospace", color: "var(--fg-subtle)", wordBreak: "break-all" }}>
+                  URI：<a href={sendResult.url} style={{ color: "var(--neutral)" }}>{sendResult.url}</a>
+                </div>
+              )}
+              {sendResult.diag && (
+                <div style={{ marginTop: 6, fontSize: 11, fontFamily: "ui-monospace, monospace", color: "var(--fg-subtle)", wordBreak: "break-all" }}>
+                  diag：{sendResult.diag}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -564,26 +713,101 @@ function colorForCwd(cwd: string) {
   return CWD_PALETTE[h % CWD_PALETTE.length]!;
 }
 
+// ── Client type toggle badge ───────────────────────────────────────────────
+
+function ClientTypeBadge({ type, onToggle, size = "sm" }: {
+  type: ClientType;
+  onToggle: () => void;
+  size?: "sm" | "md";
+}) {
+  const isCli = type === "cli";
+  const label = isCli ? "📟 CLI" : "🖥️ VSCode";
+  const title = isCli
+    ? "標記為 CLI session — 預填送出已停用（URI handler 不支援 terminal）。點一下改回 VSCode。"
+    : "標記為 VSCode session — 點一下改成 CLI。";
+  return (
+    <button
+      class={"client-badge" + (isCli ? " client-badge-cli" : " client-badge-vscode") + (size === "md" ? " client-badge-md" : "")}
+      onClick={(e) => { e.stopPropagation(); onToggle(); }}
+      title={title}
+    >{label}</button>
+  );
+}
+
 // ── Grid overview cell ────────────────────────────────────────────────────
 
-function Cell({ s, preview, onQuickSend, onOpenTab, onSync }: {
+function Cell({ s, preview, clientType, onSetClientType, onQuickSend, onOpenTab, onSync }: {
   s: Session;
   preview?: SessionPreview;
+  clientType: ClientType;
+  onSetClientType: (uuid: string, type: ClientType) => void;
   onQuickSend: (s: Session, x: number, y: number) => void;
   onOpenTab: (uuid: string) => void;
   onSync: (uuid: string) => void;
 }) {
   const title = preview?.ai_title ?? s.project_name;
-  const lastReplyRaw = preview?.last_assistant_text;
-  const lastReply = useMemo(() => (lastReplyRaw ? mdToPlainText(lastReplyRaw) : ""), [lastReplyRaw]);
+  const lastUserRaw = preview?.last_user_text;
+  const lastAssistantRaw = preview?.last_assistant_text;
+  const lastTool = preview?.last_tool_use ?? null;
+  const lastUser = useMemo(() => (lastUserRaw ? mdToPlainText(lastUserRaw) : ""), [lastUserRaw]);
+  const lastAssistant = useMemo(() => (lastAssistantRaw ? mdToPlainText(lastAssistantRaw) : ""), [lastAssistantRaw]);
   const c = colorForCwd(s.cwd);
+
+  // Flash whole card light-yellow when AI is genuinely idle waiting for user.
+  // Two-stage timer to avoid false flashes from transient stops (sub-agent
+  // finishing, multi-step assistant pausing for a beat, etc.):
+  //   1. Enter waiting   → arm 10s timer
+  //   2. Still waiting after 10s → START flashing for 10s
+  //   3. Status leaves waiting at any point → cancel + stop
+  const [flashing, setFlashing] = useState(false);
+  const prevStatusRef = useRef(s.status);
+  const armTimerRef = useRef<number | undefined>(undefined);
+  const flashTimerRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = s.status;
+
+    function clearAll() {
+      if (armTimerRef.current) { window.clearTimeout(armTimerRef.current); armTimerRef.current = undefined; }
+      if (flashTimerRef.current) { window.clearTimeout(flashTimerRef.current); flashTimerRef.current = undefined; }
+    }
+
+    // Any transition AWAY from waiting kills both the pending arm and the active flash.
+    if (prev === "waiting" && s.status !== "waiting") {
+      clearAll();
+      setFlashing(false);
+      return;
+    }
+
+    // Enter waiting → arm a 10s timer; only after it survives, start the flash.
+    if (prev !== "waiting" && s.status === "waiting") {
+      clearAll();
+      armTimerRef.current = window.setTimeout(() => {
+        armTimerRef.current = undefined;
+        setFlashing(true);
+        flashTimerRef.current = window.setTimeout(() => {
+          flashTimerRef.current = undefined;
+          setFlashing(false);
+        }, 10000);
+      }, 10000);
+    }
+  }, [s.status]);
+
+  // Cleanup any pending timers on unmount.
+  useEffect(() => () => {
+    if (armTimerRef.current) window.clearTimeout(armTimerRef.current);
+    if (flashTimerRef.current) window.clearTimeout(flashTimerRef.current);
+  }, []);
 
   function handleClick(ev: MouseEvent) {
     onQuickSend(s, ev.clientX, ev.clientY);
   }
 
+  const USER_MAX = 140;
+  const ASSISTANT_MAX = 260;
+
   return (
-    <div class="cell" onClick={handleClick} style={{ borderTop: `3px solid ${c.border}` }}>
+    <div class={"cell" + (flashing ? " cell-flash" : "")} onClick={handleClick} style={{ borderTop: `3px solid ${c.border}` }}>
       <div class="cell-head">
         <span class={STATUS_DOT[s.status]} />
         <span class="cell-title" title={title}>{title}</span>
@@ -598,14 +822,43 @@ function Cell({ s, preview, onQuickSend, onOpenTab, onSync }: {
           title="開到 tab"
         >開 tab ↗</button>
       </div>
-      <div class="cell-cwd" style={{ color: c.label }} title={s.cwd}>
+      <div class="cell-cwd" style={{ color: c.label, display: "flex", alignItems: "center", gap: 6 }} title={s.cwd}>
         <strong style={{ fontWeight: 600 }}>{s.project_name}</strong>
-        <span style={{ opacity: 0.7 }}> · {s.cwd}</span>
+        <ClientTypeBadge
+          type={clientType}
+          onToggle={() => onSetClientType(s.session_uuid ?? "", clientType === "cli" ? "vscode" : "cli")}
+        />
       </div>
-      <div class="cell-preview">
-        {lastReply
-          ? lastReply.slice(0, 240) + (lastReply.length > 240 ? "…" : "")
-          : <span class="cell-empty">(尚未有 AI 回應)</span>}
+      <div class="cell-preview cell-convo">
+        {!lastUser && !lastAssistant && !lastTool ? (
+          <span class="cell-empty">(尚未開始對話)</span>
+        ) : (
+          <>
+            {lastTool && (
+              <div class="cell-turn cell-turn-tool" title={lastTool.description || lastTool.name}>
+                <div class="cell-turn-role">🔧 tool</div>
+                <div class="cell-turn-body">
+                  <strong style={{ fontWeight: 600 }}>{lastTool.name}</strong>
+                  {lastTool.description && (
+                    <span style={{ color: "var(--fg-subtle)" }}> · {lastTool.description}</span>
+                  )}
+                </div>
+              </div>
+            )}
+            {lastAssistant && (
+              <div class="cell-turn cell-turn-assistant">
+                <div class="cell-turn-role">assistant</div>
+                <div class="cell-turn-body">{lastAssistant.slice(0, ASSISTANT_MAX)}{lastAssistant.length > ASSISTANT_MAX ? "…" : ""}</div>
+              </div>
+            )}
+            {lastUser && (
+              <div class="cell-turn cell-turn-user">
+                <div class="cell-turn-role">user</div>
+                <div class="cell-turn-body">{lastUser.slice(0, USER_MAX)}{lastUser.length > USER_MAX ? "…" : ""}</div>
+              </div>
+            )}
+          </>
+        )}
       </div>
       <div class="cell-foot">
         <span class="cell-status">{STATUS_LABEL[s.status]}</span>
@@ -618,15 +871,31 @@ function Cell({ s, preview, onQuickSend, onOpenTab, onSync }: {
 
 // ── Grid overview (sessions grouped by cwd) ──────────────────────────
 
-function GridOverview({ sessions, previews, onQuickSend, onOpenTab, onSync }: {
+function GridOverview({ sessions, previews, getClientType, onSetClientType, onQuickSend, onOpenTab, onSync }: {
   sessions: Session[];
   previews: Record<string, SessionPreview>;
+  getClientType: (uuid: string | null | undefined) => ClientType;
+  onSetClientType: (uuid: string, type: ClientType) => void;
   onQuickSend: (s: Session, x: number, y: number) => void;
   onOpenTab: (uuid: string) => void;
   onSync: (uuid: string) => void;
 }) {
-  // Flat list, newest first. No grouping.
-  const ordered = [...sessions].sort((a, b) => b.last_event_at - a.last_event_at);
+  // Stable layout: each session is assigned a slot index the first time we see
+  // its key, and that index never changes for the lifetime of this tab. New
+  // sessions append at the end, existing sessions never reshuffle on WS update.
+  // A session that disappears keeps its slot reserved (cheap; ~bytes per entry)
+  // so if it comes back the layout stays the same.
+  const slotRef = useRef<Map<string, number>>(new Map());
+  let nextSlot = slotRef.current.size;
+  for (const s of sessions) {
+    const key = s.session_uuid ?? s.cwd;
+    if (!slotRef.current.has(key)) slotRef.current.set(key, nextSlot++);
+  }
+  const ordered = [...sessions].sort((a, b) => {
+    const ai = slotRef.current.get(a.session_uuid ?? a.cwd) ?? 0;
+    const bi = slotRef.current.get(b.session_uuid ?? b.cwd) ?? 0;
+    return ai - bi;
+  });
   return (
     <div class="cwd-group-grid">
       {ordered.map((s) => (
@@ -634,6 +903,8 @@ function GridOverview({ sessions, previews, onQuickSend, onOpenTab, onSync }: {
           key={s.session_uuid ?? s.cwd}
           s={s}
           preview={s.session_uuid ? previews[s.session_uuid] : undefined}
+          clientType={getClientType(s.session_uuid)}
+          onSetClientType={onSetClientType}
           onQuickSend={onQuickSend}
           onOpenTab={onOpenTab}
           onSync={onSync}
@@ -645,17 +916,21 @@ function GridOverview({ sessions, previews, onQuickSend, onOpenTab, onSync }: {
 
 // ── Popover (quick-send at mouse position) ───────────────────────────
 
-function Popover({ s, x, y, onClose, onSend, onOpenTab, onSync }: {
+function Popover({ s, x, y, clientType, onSetClientType, onClose, onSend, onOpenTab, onSync }: {
   s: Session;
   x: number;
   y: number;
+  clientType: ClientType;
+  onSetClientType: (uuid: string, type: ClientType) => void;
   onClose: () => void;
   onSend: (uuid: string, prompt: string, submit: boolean) => Promise<{ ok: boolean; status: number; reply?: string; duration_ms?: number }>;
   onOpenTab: (uuid: string) => void;
   onSync: (uuid: string) => void;
 }) {
+  const isCli = clientType === "cli";
   const [prompt, setPrompt] = useState("");
-  const [submitMode, setSubmitMode] = useState(false);  // default = prefill (free)
+  // CLI sessions: force submitMode (真送出) since prefill (vscode:// URI) can't reach a terminal.
+  const [submitMode, setSubmitMode] = useState(isCli);  // default = prefill (free); CLI = forced submit
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; label: string; reply?: string } | null>(null);
@@ -701,11 +976,16 @@ function Popover({ s, x, y, onClose, onSend, onOpenTab, onSync }: {
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
           <span class={STATUS_DOT[s.status]} />
           <strong style={{ fontSize: 13 }}>{s.project_name}</strong>
+          <ClientTypeBadge
+            type={clientType}
+            onToggle={() => onSetClientType(s.session_uuid ?? "", isCli ? "vscode" : "cli")}
+          />
           <button
             class="btn-ghost"
             style={{ marginLeft: "auto", padding: "2px 6px" }}
             onClick={() => onSync(s.session_uuid ?? "")}
-            title="同步 VSCode panel"
+            title={isCli ? "🚫 CLI session 不支援同步（URI handler 只開 VSCode）" : "同步 VSCode panel"}
+            disabled={isCli}
           >🔄</button>
           <button class="btn-ghost" style={{ padding: "2px 6px" }} onClick={() => { onOpenTab(s.session_uuid ?? ""); onClose(); }}>
             開到 tab ↗
@@ -718,7 +998,7 @@ function Popover({ s, x, y, onClose, onSend, onOpenTab, onSync }: {
         </div>
         <textarea
           autoFocus
-          placeholder={submitMode ? "輸入 prompt 真的送出（會花 API$）…" : "輸入 prompt 預填到 VSCode input box…"}
+          placeholder={isCli ? "CLI session：只能用真送出（spawn claude -p）" : (submitMode ? "輸入 prompt 真的送出（會花 API$）…" : "輸入 prompt 預填到 VSCode input box…")}
           value={prompt}
           onInput={(e) => setPrompt((e.currentTarget as HTMLTextAreaElement).value)}
           onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSend(); }}
@@ -726,12 +1006,14 @@ function Popover({ s, x, y, onClose, onSend, onOpenTab, onSync }: {
           style={{ width: "100%", minHeight: 80, fontSize: 13, fontFamily: "inherit", marginBottom: 8 }}
         />
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button
-            class="btn-ghost"
-            style={{ fontSize: 10, padding: "2px 6px" }}
-            onClick={() => setShowAdvanced((v) => !v)}
-            title="切換到 -p headless 模式（會花錢）"
-          >{showAdvanced ? "▾ adv" : "▸ adv"}</button>
+          {!isCli && (
+            <button
+              class="btn-ghost"
+              style={{ fontSize: 10, padding: "2px 6px" }}
+              onClick={() => setShowAdvanced((v) => !v)}
+              title="切換到 -p headless 模式（會花錢）"
+            >{showAdvanced ? "▾ adv" : "▸ adv"}</button>
+          )}
           <button
             class={submitMode ? "btn-warn" : "btn-primary"}
             disabled={!prompt.trim() || busy}
@@ -741,16 +1023,18 @@ function Popover({ s, x, y, onClose, onSend, onOpenTab, onSync }: {
             {busy ? "⌛" : submitMode ? "真送出 💸" : "送出"}
           </button>
         </div>
-        {showAdvanced && (
+        {!isCli && showAdvanced && (
           <label style={{ fontSize: 10, color: "var(--fg-subtle)", cursor: "pointer", marginTop: 4, display: "block" }}>
             <input type="checkbox" checked={submitMode} onChange={(e) => setSubmitMode((e.currentTarget as HTMLInputElement).checked)} style={{ marginRight: 4, verticalAlign: "middle" }} />
             真送出（spawn `claude -p`，重 load context 會花 $$）
           </label>
         )}
         <div style={{ marginTop: 4, fontSize: 10, color: "var(--fg-subtle)" }}>
-          {submitMode
-            ? "💸 真送出：新 process、重 load cache、call API"
-            : "🚀 送出：餵進你 VSCode panel input box + 自動按 Enter（cache 熱、~free）·別動鍵盤 800ms"}
+          {isCli
+            ? "📟 CLI session：vscode:// URI 沒辦法塞進 terminal，所以只開放真送出（spawn 新 claude -p，會花 $$，不會出現在你 terminal 那個 session 的視覺輸出，但會更新到 JSONL）。"
+            : submitMode
+              ? "💸 真送出：新 process、重 load cache、call API"
+              : "🚀 送出：餵進你 VSCode panel input box + 自動按 Enter（cache 熱、~free）·別動鍵盤 800ms"}
           <br />⌘/Ctrl+Enter 送出 · Esc 關閉
         </div>
         {result && (
@@ -794,11 +1078,42 @@ function ActivityLog({ entries, onClear }: { entries: LogEntry[]; onClear: () =>
 
 // ── App ────────────────────────────────────────────────────────────────────
 
+// Manual per-session "is this a CLI or VSCode session?" flag. Stored in
+// localStorage so the choice persists across page reloads. Daemon doesn't
+// know the difference yet — this is a user-controlled toggle for now.
+type ClientType = "vscode" | "cli";
+const CLIENT_TYPE_LS_KEY = "cc-hub:client-types";
+function loadClientTypesFromLS(): Record<string, ClientType> {
+  try {
+    const raw = localStorage.getItem(CLIENT_TYPE_LS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, ClientType>;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch { return {}; }
+}
+function saveClientTypesToLS(map: Record<string, ClientType>) {
+  try { localStorage.setItem(CLIENT_TYPE_LS_KEY, JSON.stringify(map)); } catch { /* quota / disabled */ }
+}
+
 function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [previews, setPreviews] = useState<Record<string, SessionPreview>>({});
   const [wsConn, setWsConn] = useState<"connecting" | "open" | "closed">("connecting");
   const [log, setLog] = useState<LogEntry[]>([]);
+  const [clientTypes, setClientTypesState] = useState<Record<string, ClientType>>(() => loadClientTypesFromLS());
+
+  function setClientType(uuid: string, type: ClientType) {
+    if (!uuid) return;
+    setClientTypesState((prev) => {
+      const next = { ...prev, [uuid]: type };
+      saveClientTypesToLS(next);
+      return next;
+    });
+  }
+  function getClientType(uuid: string | null | undefined): ClientType {
+    if (!uuid) return "vscode";
+    return clientTypes[uuid] ?? "vscode";
+  }
 
   // Tabs: "overview" or session_uuid. Order = open order; "overview" always first.
   const [openTabs, setOpenTabs] = useState<string[]>(["overview"]);
@@ -885,10 +1200,10 @@ function App() {
     try {
       const r = await fetch("/send", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_uuid: uuid, prompt, submit }) });
       let body: any = null; try { body = await r.json(); } catch {}
-      addLog(r.ok ? "info" : "error", `/send ${r.status}`, { mode: body?.mode, reply_preview: body?.reply?.slice(0, 60), duration_ms: body?.duration_ms });
+      addLog(r.ok ? "info" : "error", `/send ${r.status}`, { mode: body?.mode, reply_preview: body?.reply?.slice(0, 60), duration_ms: body?.duration_ms, diag: body?.diag });
       // refresh previews so the cell shows the new reply
       if (r.ok && submit) scheduleRefresh();
-      return { ok: r.ok, status: r.status, url: body?.url, reply: body?.reply, duration_ms: body?.duration_ms };
+      return { ok: r.ok, status: r.status, url: body?.url, reply: body?.reply, duration_ms: body?.duration_ms, diag: body?.diag };
     } catch (e) { addLog("error", "/send throw", { error: String(e) }); return { ok: false, status: 0 }; }
   }
 
@@ -979,6 +1294,8 @@ function App() {
             <GridOverview
               sessions={sessions}
               previews={previews}
+              getClientType={getClientType}
+              onSetClientType={setClientType}
               onQuickSend={openQuickSend}
               onOpenTab={openTab}
               onSync={(uuid) => { void onFocus(uuid); }}
@@ -989,7 +1306,7 @@ function App() {
         (() => {
           const s = sessionByUuid.get(currentTab);
           if (!s) return <div style={{ padding: 24, color: "var(--fg-subtle)" }}>(session 不存在了，可能 daemon 重啟過)</div>;
-          return <Card s={s} defaultExpanded={true} onFocus={onFocus} onSend={onSend} />;
+          return <Card s={s} defaultExpanded={true} clientType={getClientType(s.session_uuid)} onSetClientType={setClientType} onFocus={onFocus} onSend={onSend} />;
         })()
       )}
 
@@ -1001,6 +1318,8 @@ function App() {
           s={popoverFor.s}
           x={popoverFor.x}
           y={popoverFor.y}
+          clientType={getClientType(popoverFor.s.session_uuid)}
+          onSetClientType={setClientType}
           onClose={() => setPopoverFor(null)}
           onSend={onSend}
           onOpenTab={openTab}
