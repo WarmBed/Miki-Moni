@@ -4,6 +4,10 @@
   "publisher": "cc-hub",
   "version": "0.1.0",
   "description": "Companion VSCode extension for cc-hub daemon — receives prompt-submit commands and dispatches them to the local Claude panel.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cc-hub/cc-hub.git"
+  },
   "engines": { "vscode": "^1.85.0" },
   "main": "./dist/extension.js",
   "activationEvents": ["onStartupFinished"],
