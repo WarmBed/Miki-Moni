@@ -5,6 +5,7 @@ import { createApp } from "../src/server.js";
 import { SessionStore } from "../src/session-store.js";
 import { HookHandler } from "../src/hook-handler.js";
 import { SessionResolver } from "../src/session-resolver.js";
+import { VscodeBridge } from "../src/vscode-bridge.js";
 import path from "node:path";
 
 const fixturesRoot = path.join(__dirname, "fixtures", "projects");
@@ -91,6 +92,56 @@ describe("server WS /ws", () => {
 
     ws.close();
     await new Promise<void>((r) => server.close(() => r()));
+    store.close();
+  });
+});
+
+describe("server POST /focus + /send", () => {
+  it("focus calls bridge.focus with session_uuid from store", async () => {
+    const store = new SessionStore(":memory:");
+    store.upsert({
+      cwd: "d:\\code\\x", session_uuid: "uuid-xyz", project_name: "x",
+      status: "waiting", last_event_at: 1, last_message_preview: "",
+      tokens_in: 0, tokens_out: 0, vscode_pid: null,
+    });
+    const launches: string[] = [];
+    const bridge = new VscodeBridge(async (url) => { launches.push(url); });
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    const { app } = createApp({ store, handler, bridge, notifier: null as any, webDir: "/tmp/none" });
+
+    const res = await request(app).post("/focus").send({ cwd: "d:\\code\\x" });
+    expect(res.status).toBe(204);
+    expect(launches).toContain("vscode://anthropic.claude-code/open?session=uuid-xyz");
+    store.close();
+  });
+
+  it("send calls bridge.send with encoded prompt", async () => {
+    const store = new SessionStore(":memory:");
+    store.upsert({
+      cwd: "d:\\code\\x", session_uuid: "uuid-xyz", project_name: "x",
+      status: "waiting", last_event_at: 1, last_message_preview: "",
+      tokens_in: 0, tokens_out: 0, vscode_pid: null,
+    });
+    const launches: string[] = [];
+    const bridge = new VscodeBridge(async (url) => { launches.push(url); });
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    const { app } = createApp({ store, handler, bridge, notifier: null as any, webDir: "/tmp/none" });
+
+    const res = await request(app).post("/send").send({ cwd: "d:\\code\\x", prompt: "run tests" });
+    expect(res.status).toBe(204);
+    expect(launches[0]).toMatch(/session=uuid-xyz/);
+    expect(launches[0]).toMatch(/prompt=run\+tests|prompt=run%20tests/);
+    store.close();
+  });
+
+  it("focus returns 404 for unknown cwd", async () => {
+    const store = new SessionStore(":memory:");
+    const bridge = new VscodeBridge(async () => {});
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    const { app } = createApp({ store, handler, bridge, notifier: null as any, webDir: "/tmp/none" });
+
+    const res = await request(app).post("/focus").send({ cwd: "d:\\code\\nope" });
+    expect(res.status).toBe(404);
     store.close();
   });
 });

@@ -53,6 +53,25 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     res.json(session);
   });
 
+  app.post("/focus", async (req: Request, res: Response) => {
+    const cwd = typeof req.body?.cwd === "string" ? req.body.cwd : null;
+    if (!cwd) { res.status(400).json({ error: "missing cwd" }); return; }
+    const session = deps.store.get(cwd);
+    if (!session) { res.status(404).end(); return; }
+    await deps.bridge.focus(session.session_uuid);
+    res.status(204).end();
+  });
+
+  app.post("/send", async (req: Request, res: Response) => {
+    const cwd = typeof req.body?.cwd === "string" ? req.body.cwd : null;
+    const prompt = typeof req.body?.prompt === "string" ? req.body.prompt : null;
+    if (!cwd || !prompt) { res.status(400).json({ error: "missing cwd or prompt" }); return; }
+    const session = deps.store.get(cwd);
+    if (!session) { res.status(404).end(); return; }
+    await deps.bridge.send(session.session_uuid, prompt);
+    res.status(204).end();
+  });
+
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server, path: "/ws" });
 
