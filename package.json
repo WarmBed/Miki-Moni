@@ -16,6 +16,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "install:hooks": "tsx src/install-hooks.ts",
+    "install-helper": "node scripts/install-helper.mjs",
     "pair": "tsx src/cli/pair.ts",
     "cch": "tsx src/cli/cch.ts",
     "wrap": "tsx src/cli/wrap.ts",
