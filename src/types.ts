@@ -29,4 +29,5 @@ export interface HookEvent {
 
 export interface StoreEvents {
   session_changed: (session: Session) => void;
+  session_removed: (sessionUuid: string) => void;
 }

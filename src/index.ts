@@ -51,6 +51,11 @@ async function main(): Promise<void> {
   await fs.writeFile(PORT_FILE, String(port));
 
   const store = new SessionStore(DB_FILE);
+  // Wipe stale sessions on every daemon start. Hooks will repopulate the row
+  // for any panel that's still actively firing events; closed/idle ones stay
+  // out. Dashboard total = "currently in use" instead of "ever seen".
+  const cleared = store.truncate();
+  log.info({ cleared }, "session store wiped on startup");
   const resolver = new SessionResolver(PROJECTS_ROOT);
   const notifier = new Notifier();
   const handler = new HookHandler(store, resolver, notifier);

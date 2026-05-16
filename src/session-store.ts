@@ -95,6 +95,28 @@ export class SessionStore extends EventEmitter {
     return this.db.prepare("SELECT * FROM sessions ORDER BY last_event_at DESC").all() as Session[];
   }
 
+  /** Remove a session by UUID. Emits `session_removed`. No-op if not found. */
+  remove(sessionUuid: string): boolean {
+    const r = this.db.prepare("DELETE FROM sessions WHERE session_uuid = ?").run(sessionUuid);
+    if (r.changes > 0) {
+      this.emit("session_removed", sessionUuid);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Wipe all sessions. Called on daemon startup so the dashboard only shows
+   * sessions that are actually still firing hooks (= really in use right now).
+   * Old / closed panels won't re-fire and stay out. Returns the row count
+   * that was cleared.
+   */
+  truncate(): number {
+    const before = (this.db.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number }).n;
+    this.db.exec("DELETE FROM sessions;");
+    return before;
+  }
+
   close(): void {
     this.db.close();
   }
