@@ -36,7 +36,16 @@ async function findFreePort(start: number, maxTries = 10): Promise<number> {
 async function main(): Promise<void> {
   await fs.mkdir(HUB_HOME, { recursive: true });
 
-  const log = pino({ transport: { target: "pino/file", options: { destination: path.join(HUB_HOME, "cc-hub.log") } } });
+  // Multi-stream: write to file AND mirror to stdout so `pnpm dev:all`'s
+  // [daemon] prefix shows logs in real time.
+  const fileStream = (await import("node:fs")).createWriteStream(path.join(HUB_HOME, "cc-hub.log"), { flags: "a" });
+  const log = pino(
+    { level: "debug" },
+    pino.multistream([
+      { stream: process.stdout },
+      { stream: fileStream },
+    ]),
+  );
 
   const port = await findFreePort(DEFAULT_PORT);
   await fs.writeFile(PORT_FILE, String(port));
@@ -48,7 +57,7 @@ async function main(): Promise<void> {
   const bridge = new VscodeBridge();
   const webDir = path.resolve("dist/web");
 
-  const { app, server } = createApp({ store, handler, bridge, notifier, webDir });
+  const { app, server } = createApp({ store, handler, bridge, notifier, webDir, log });
 
   // Serve web UI if built
   const express = (await import("express")).default;

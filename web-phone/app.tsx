@@ -38,6 +38,20 @@ const STATUS_LABEL: Record<Session["status"], string> = {
   stale: "已斷線",
 };
 
+// ── F12 console logging helper ────────────────────────────────────────────
+const TAG = "%c[cc-hub-phone]";
+const TAG_STYLE = "color:#f472b6;font-weight:bold";
+
+function clog(label: string, ctx?: Record<string, unknown>): void {
+  console.log(TAG, TAG_STYLE, label, ctx ?? "");
+}
+function cwarn(label: string, ctx?: Record<string, unknown>): void {
+  console.warn(TAG, TAG_STYLE, label, ctx ?? "");
+}
+function cerr(label: string, ctx?: Record<string, unknown>): void {
+  console.error(TAG, TAG_STYLE, label, ctx ?? "");
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /**
@@ -242,6 +256,9 @@ function SessionCard({
         <span class="text-xs text-slate-500 ml-auto flex-shrink-0">{STATUS_LABEL[s.status]}</span>
       </div>
       <div class="text-xs text-slate-500 font-mono break-all">{s.cwd}</div>
+      <div class="text-[10px] text-slate-600 font-mono break-all">
+        session_uuid: {s.session_uuid ?? <span class="text-amber-400">null（沒抓到，叫起/送出可能會開錯 session）</span>}
+      </div>
       {s.last_message_preview && (
         <div class="text-sm text-slate-300 line-clamp-2">{s.last_message_preview}</div>
       )}
@@ -291,20 +308,39 @@ const CONN_LABEL: Record<ConnStatus, string> = {
   error: "連線錯誤",
 };
 
+interface LogEntry { ts: number; level: "info" | "warn" | "error"; msg: string; ctx?: Record<string, unknown> }
+const ACT_LOG_MAX = 50;
+function fmtTime(ts: number): string {
+  const d = new Date(ts);
+  return d.toLocaleTimeString("zh-TW", { hour12: false }) + "." + String(d.getMilliseconds()).padStart(3, "0");
+}
+
 function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () => void }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [connStatus, setConnStatus] = useState<ConnStatus>("connecting");
+  const [log, setLog] = useState<LogEntry[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const backoffRef = useRef(1000);
   const mountedRef = useRef(true);
 
   const sharedSecret = fromBase64(state.shared_secret_b64);
 
-  function sendEncrypted(plain: object) {
+  function addLog(level: "info" | "warn" | "error", msg: string, ctx?: Record<string, unknown>): void {
+    const entry: LogEntry = { ts: Date.now(), level, msg, ctx };
+    setLog((prev) => [entry, ...prev].slice(0, ACT_LOG_MAX));
+    (level === "error" ? cerr : level === "warn" ? cwarn : clog)(msg, ctx);
+  }
+
+  function sendEncrypted(plain: object, label: string) {
     const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      addLog("error", `${label}: WS 未連線，無法送出`, { state: ws?.readyState ?? "no-ws" });
+      return false;
+    }
     const env = encodeEnvelope(plain, sharedSecret, "daemon");
     ws.send(JSON.stringify(env));
+    addLog("info", `加密送出 ${label}`, { kind: (plain as any).kind, envBytes: JSON.stringify(env).length });
+    return true;
   }
 
   function connect() {
@@ -313,6 +349,7 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
 
     const phoneWsBase = daemonUrlToPhoneUrl(state.worker_url);
     const wsUrl = appendQueryParam(phoneWsBase, "daemon_id", state.daemon_id);
+    addLog("info", `WS 連線中`, { url: wsUrl, daemon_id: state.daemon_id, daemon_name: state.daemon_name });
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -320,42 +357,51 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
       if (!mountedRef.current) { ws.close(); return; }
       backoffRef.current = 1000;
       setConnStatus("connected");
-      sendEncrypted({ kind: "request_snapshot" });
+      addLog("info", "WS open — 送 request_snapshot");
+      sendEncrypted({ kind: "request_snapshot" }, "request_snapshot");
     };
 
     ws.onmessage = (ev) => {
       if (!mountedRef.current) return;
-      try {
-        const env: Envelope = JSON.parse(ev.data as string);
-        const plain = decodeEnvelope(env, sharedSecret) as {
-          kind?: string;
-          sessions?: Session[];
-          session?: Session;
-        } | null;
-        if (!plain) return;
-
-        if (plain.kind === "state_snapshot" && Array.isArray(plain.sessions)) {
-          setSessions(plain.sessions as Session[]);
-        } else if (plain.kind === "event" && plain.session) {
-          setSessions((prev) => {
-            const others = prev.filter((s) => s.cwd !== plain.session!.cwd);
-            return [plain.session!, ...others].sort((a, b) => b.last_event_at - a.last_event_at);
-          });
-        }
-      } catch {
-        // ignore malformed messages
+      let env: Envelope;
+      try { env = JSON.parse(ev.data as string); }
+      catch { addLog("warn", "WS 收到非 JSON", { raw: String(ev.data).slice(0, 80) }); return; }
+      const plain = decodeEnvelope(env, sharedSecret) as {
+        kind?: string;
+        sessions?: Session[];
+        session?: Session;
+        echo?: string;
+      } | null;
+      if (!plain) {
+        addLog("warn", "envelope 解密失敗 — 可能對方不是這個 peer", { to: env.to, ts: env.ts });
+        return;
+      }
+      if (plain.kind === "state_snapshot" && Array.isArray(plain.sessions)) {
+        addLog("info", `state_snapshot — 收到 ${plain.sessions.length} 個 session`, { cwds: plain.sessions.map((s) => s.cwd) });
+        setSessions(plain.sessions as Session[]);
+      } else if (plain.kind === "event" && plain.session) {
+        const s = plain.session;
+        addLog("info", `event — ${s.project_name}`, { cwd: s.cwd, status: s.status, session_uuid: s.session_uuid });
+        setSessions((prev) => {
+          const others = prev.filter((x) => x.cwd !== s.cwd);
+          return [s, ...others].sort((a, b) => b.last_event_at - a.last_event_at);
+        });
+      } else {
+        addLog("warn", `不認識的訊息 kind`, { kind: plain.kind });
       }
     };
 
     ws.onerror = () => {
       if (!mountedRef.current) return;
       setConnStatus("error");
+      addLog("error", "WS error");
     };
 
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (!mountedRef.current) return;
       setConnStatus("reconnecting");
       const delay = Math.min(backoffRef.current, 60_000);
+      addLog("warn", `WS close — ${delay}ms 後重連`, { code: ev.code, reason: ev.reason || "(無)" });
       backoffRef.current = delay * 2;
       setTimeout(connect, delay);
     };
@@ -370,8 +416,14 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
     };
   }, []);
 
-  const onFocus = (cwd: string) => sendEncrypted({ kind: "cmd_focus", cwd });
-  const onSend = (cwd: string, prompt: string) => sendEncrypted({ kind: "cmd_send", cwd, prompt });
+  const onFocus = (cwd: string) => {
+    addLog("info", `click 叫起視窗`, { cwd });
+    sendEncrypted({ kind: "cmd_focus", cwd }, "cmd_focus");
+  };
+  const onSend = (cwd: string, prompt: string) => {
+    addLog("info", `click 送出 prompt`, { cwd, promptLength: prompt.length, promptPreview: prompt.slice(0, 40) });
+    sendEncrypted({ kind: "cmd_send", cwd, prompt }, "cmd_send");
+  };
 
   return (
     <div class="min-h-screen bg-slate-950 text-slate-100">
@@ -405,6 +457,27 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
         {sessions.map((s) => (
           <SessionCard key={s.cwd} s={s} onFocus={onFocus} onSend={onSend} />
         ))}
+
+        <div class="mt-6 border border-slate-800 rounded-lg bg-slate-900/50">
+          <div class="flex items-center px-3 py-2 border-b border-slate-800">
+            <span class="text-xs font-semibold text-slate-400">活動紀錄（同步輸出到 F12 Console）</span>
+            <button class="ml-auto text-xs text-slate-500 hover:text-slate-300" onClick={() => setLog([])}>清空</button>
+          </div>
+          <div class="text-[11px] font-mono p-3 max-h-64 overflow-y-auto">
+            {log.length === 0 && <div class="text-slate-600">尚無活動。WS 連上、配對後送出 cmd、收到 event 都會即時顯示。</div>}
+            {log.map((e, i) => (
+              <div key={i} class={
+                e.level === "error" ? "text-red-400" :
+                e.level === "warn" ? "text-amber-400" :
+                "text-slate-300"
+              }>
+                <span class="text-slate-600">{fmtTime(e.ts)}</span>{" "}
+                <span>{e.msg}</span>
+                {e.ctx && <span class="text-slate-500"> {JSON.stringify(e.ctx)}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
       </main>
     </div>
   );

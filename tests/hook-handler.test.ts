@@ -79,13 +79,21 @@ describe("HookHandler", () => {
     expect(store.get("x")?.status).toBe("active");
   });
 
-  it("project_name uses basename of cwd (handles Windows backslash)", async () => {
+  it("project_name uses basename of cwd; normalizes drive letter and slashes", async () => {
     await handler.handle({
       event_type: "session_start",
       cwd: "C:\\Users\\mike\\proj-x",
       session_uuid: "u1", timestamp: 1,
     });
-    expect(store.get("C:\\Users\\mike\\proj-x")?.project_name).toBe("proj-x");
+    // Stored under normalized form: lowercase drive letter, backslashes
+    expect(store.get("c:\\Users\\mike\\proj-x")?.project_name).toBe("proj-x");
+    // Same path with forward slashes collapses to the same record
+    await handler.handle({
+      event_type: "user_prompt",
+      cwd: "C:/Users/mike/proj-x",
+      session_uuid: "u1", timestamp: 2,
+    });
+    expect(store.list().filter((s) => s.project_name === "proj-x")).toHaveLength(1);
   });
 });
 

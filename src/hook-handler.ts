@@ -17,6 +17,17 @@ function basename(cwd: string): string {
   return path.posix.basename(normalized);
 }
 
+// On Windows, paths like "D:\code\x" and "d:/code/x" point to the same place.
+// Normalize: lowercase the drive letter and use backslashes consistently.
+export function normalizeCwd(cwd: string): string {
+  let n = cwd.replace(/\//g, "\\");
+  // Lowercase Windows drive letter (e.g. "D:\..." → "d:\...")
+  if (/^[A-Za-z]:/.test(n)) n = n[0]!.toLowerCase() + n.slice(1);
+  // Trim trailing backslash unless it's just a drive root like "c:\"
+  if (n.length > 3 && n.endsWith("\\")) n = n.replace(/\\+$/, "");
+  return n;
+}
+
 export class HookHandler {
   constructor(
     private store: SessionStore,
@@ -25,13 +36,14 @@ export class HookHandler {
   ) {}
 
   async handle(ev: HookEvent): Promise<void> {
-    const existing = this.store.get(ev.cwd);
+    const cwd = normalizeCwd(ev.cwd);
+    const existing = this.store.get(cwd);
     if (existing && existing.last_event_at > ev.timestamp) return;  // last-write-wins
 
     const next: Session = {
-      cwd: ev.cwd,
+      cwd,
       session_uuid: ev.session_uuid ?? existing?.session_uuid ?? null,
-      project_name: basename(ev.cwd),
+      project_name: basename(cwd),
       status: STATUS_BY_EVENT[ev.event_type],
       last_event_at: ev.timestamp,
       last_message_preview: existing?.last_message_preview ?? "",
@@ -52,7 +64,7 @@ export class HookHandler {
 
     if (!next.session_uuid) {
       // Fire-and-forget backfill
-      void this.backfillUuid(ev.cwd);
+      void this.backfillUuid(cwd);
     }
   }
 
