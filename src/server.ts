@@ -7,6 +7,10 @@ import type { VscodeBridge } from "./vscode-bridge.js";
 import type { Notifier } from "./notifier.js";
 import type { HookEvent, Session } from "./types.js";
 import { normalizeCwd } from "./hook-handler.js";
+import { readTranscriptTail } from "./session-resolver.js";
+import path from "node:path";
+import os from "node:os";
+import { promises as fs } from "node:fs";
 
 type Log = { info: (obj: Record<string, unknown>, msg?: string) => void; warn: (obj: Record<string, unknown>, msg?: string) => void; error: (obj: Record<string, unknown>, msg?: string) => void };
 
@@ -56,6 +60,43 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     const session = deps.store.get(decodeURIComponent(req.params.session_uuid!));
     if (!session) { res.status(404).end(); return; }
     res.json(session);
+  });
+
+  app.get("/sessions/:session_uuid/transcript", async (req, res) => {
+    const sessionUuid = decodeURIComponent(req.params.session_uuid!);
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "20"), 10) || 20, 1), 200);
+    const projectsRoot = path.join(os.homedir(), ".claude", "projects");
+    // Find which projects dir contains <uuid>.jsonl
+    let transcriptPath: string | null = null;
+    try {
+      const dirs = await fs.readdir(projectsRoot);
+      for (const d of dirs) {
+        const candidate = path.join(projectsRoot, d, `${sessionUuid}.jsonl`);
+        try { await fs.access(candidate); transcriptPath = candidate; break; }
+        catch { /* keep looking */ }
+      }
+    } catch { /* no projects dir */ }
+    if (!transcriptPath) {
+      deps.log?.warn({ route: "/sessions/:id/transcript", sessionUuid }, "transcript not found");
+      res.status(404).json({ error: "transcript not found", session_uuid: sessionUuid });
+      return;
+    }
+    try {
+      const turns = await readTranscriptTail(transcriptPath, limit);
+      const stat = await fs.stat(transcriptPath);
+      deps.log?.info({ route: "/sessions/:id/transcript", sessionUuid, returned: turns.length, fileSize: stat.size }, "transcript served");
+      res.json({
+        session_uuid: sessionUuid,
+        transcript_path: transcriptPath,
+        file_size: stat.size,
+        last_modified: stat.mtime.toISOString(),
+        turn_count: turns.length,
+        turns,
+      });
+    } catch (err) {
+      deps.log?.error({ route: "/sessions/:id/transcript", sessionUuid, error: String(err) }, "transcript read failed");
+      res.status(500).json({ error: String(err) });
+    }
   });
 
   function buildFocusUrl(sessionUuid: string | null): string {

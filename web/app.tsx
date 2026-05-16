@@ -58,6 +58,23 @@ function fmtTime(ts: number): string {
 
 // ── Card ──────────────────────────────────────────────────────────────────
 
+interface TranscriptTurn {
+  ts: string;
+  role: "user" | "assistant" | "system" | "tool" | "other";
+  text: string;
+  tool_use?: { name: string; summary: string };
+  is_tool_result?: boolean;
+}
+
+interface TranscriptResp {
+  session_uuid: string;
+  transcript_path: string;
+  file_size: number;
+  last_modified: string;
+  turn_count: number;
+  turns: TranscriptTurn[];
+}
+
 type ActionResult = { ok: boolean; label: string; url?: string; reply?: string; durationMs?: number; ts: number } | null;
 
 function Card({ s, onFocus, onSend }: {
@@ -70,7 +87,41 @@ function Card({ s, onFocus, onSend }: {
   const [busy, setBusy] = useState(false);
   const [focusResult, setFocusResult] = useState<ActionResult>(null);
   const [sendResult, setSendResult] = useState<ActionResult>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [transcript, setTranscript] = useState<TranscriptResp | null>(null);
+  const [transcriptLoading, setTranscriptLoading] = useState(false);
+  const [transcriptError, setTranscriptError] = useState<string | null>(null);
+  const [transcriptLimit, setTranscriptLimit] = useState(20);
   const sessionUuid = s.session_uuid ?? "";
+
+  async function loadTranscript(limit = transcriptLimit) {
+    if (!sessionUuid) return;
+    setTranscriptLoading(true);
+    setTranscriptError(null);
+    try {
+      const r = await fetch(`/sessions/${encodeURIComponent(sessionUuid)}/transcript?limit=${limit}`);
+      if (!r.ok) {
+        const body = await r.text().catch(() => "");
+        setTranscriptError(`HTTP ${r.status}: ${body.slice(0, 200)}`);
+        return;
+      }
+      const data: TranscriptResp = await r.json();
+      setTranscript(data);
+      clog("transcript loaded", { session_uuid: sessionUuid, turns: data.turn_count, fileSize: data.file_size });
+    } catch (e) {
+      setTranscriptError(String(e));
+    } finally {
+      setTranscriptLoading(false);
+    }
+  }
+
+  function toggleExpand() {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && !transcript && !transcriptLoading) {
+      void loadTranscript();
+    }
+  }
 
   async function handleFocus() {
     clog("click 叫起視窗", { cwd: s.cwd, session_uuid: s.session_uuid, project_name: s.project_name });
@@ -172,6 +223,73 @@ function Card({ s, onFocus, onSend }: {
           )}
         </div>
       )}
+
+      <div class="mt-2 pt-2 border-t border-slate-800/60">
+        <button
+          class="text-xs text-slate-400 hover:text-slate-200 select-none"
+          onClick={toggleExpand}
+        >
+          {expanded ? "▼ 收合上下文" : "▶ 展開上下文（讀 transcript）"}
+        </button>
+        {expanded && (
+          <div class="mt-2">
+            <div class="flex items-center gap-2 text-[11px] text-slate-500 mb-2">
+              {transcript && (
+                <>
+                  <span>📜 {transcript.transcript_path.split(/[\\/]/).pop()}</span>
+                  <span>· {(transcript.file_size / 1024).toFixed(1)} KB</span>
+                  <span>· 最後修改 {new Date(transcript.last_modified).toLocaleString("zh-TW", { hour12: false })}</span>
+                </>
+              )}
+              <button
+                class="ml-auto px-2 py-0.5 bg-slate-800 hover:bg-slate-700 rounded text-slate-300"
+                onClick={() => loadTranscript(transcriptLimit)}
+                disabled={transcriptLoading}
+              >{transcriptLoading ? "讀取中…" : "🔄 重新讀取"}</button>
+              <select
+                class="bg-slate-800 px-2 py-0.5 rounded text-slate-300"
+                value={transcriptLimit}
+                onChange={(e) => {
+                  const n = parseInt((e.currentTarget as HTMLSelectElement).value, 10);
+                  setTranscriptLimit(n);
+                  void loadTranscript(n);
+                }}
+              >
+                <option value={10}>10 條</option>
+                <option value={20}>20 條</option>
+                <option value={50}>50 條</option>
+                <option value={100}>100 條</option>
+                <option value={200}>200 條</option>
+              </select>
+            </div>
+            {transcriptError && (
+              <div class="text-xs text-red-400">{transcriptError}</div>
+            )}
+            {transcript && (
+              <div class="border border-slate-800 rounded bg-slate-950/50 max-h-96 overflow-y-auto">
+                {transcript.turns.length === 0 && (
+                  <div class="text-xs text-slate-600 p-3">(transcript 沒有可顯示的訊息)</div>
+                )}
+                {transcript.turns.map((t, i) => (
+                  <div key={i} class={`px-3 py-2 text-xs border-b border-slate-800/40 ${
+                    t.role === "user" ? "bg-indigo-900/20" : "bg-slate-900/40"
+                  }`}>
+                    <div class="flex items-center gap-2 mb-1">
+                      <span class={`font-semibold ${
+                        t.role === "user" ? "text-indigo-300" : t.role === "assistant" ? "text-emerald-300" : "text-slate-400"
+                      }`}>{t.role === "user" ? "🧑 user" : t.role === "assistant" ? "🤖 assistant" : t.role}</span>
+                      <span class="text-[10px] text-slate-600">{t.ts ? new Date(t.ts).toLocaleString("zh-TW", { hour12: false }) : ""}</span>
+                      {t.tool_use && <span class="text-[10px] text-amber-400">🔧 {t.tool_use.name}</span>}
+                      {t.is_tool_result && <span class="text-[10px] text-slate-500">📤 tool_result</span>}
+                    </div>
+                    <div class="text-slate-300 whitespace-pre-wrap break-words">{t.text}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
