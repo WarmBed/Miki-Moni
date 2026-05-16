@@ -40,7 +40,7 @@ const STATUS_LABEL: Record<Session["status"], string> = {
 };
 
 // ── F12 console logging helper ────────────────────────────────────────────
-const TAG = "%c[cc-hub-phone]";
+const TAG = "%c[miki-moni-phone]";
 const TAG_STYLE = "color:#f472b6;font-weight:bold";
 
 function clog(label: string, ctx?: Record<string, unknown>): void {
@@ -113,12 +113,12 @@ function PairForm({ relayUrl, onPaired }: PairFormProps) {
   return (
     <div class="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
       <div class="w-full max-w-md">
-        <h1 class="text-2xl font-bold mb-2">cc-hub 配對</h1>
-        <p class="text-slate-400 mb-6 text-sm">把這台裝置跟你電腦上的 cc-hub daemon 配對</p>
+        <h1 class="text-2xl font-bold mb-2">miki-moni 配對</h1>
+        <p class="text-slate-400 mb-6 text-sm">把這台裝置跟你電腦上的 miki-moni daemon 配對</p>
 
         <div class="bg-slate-900 rounded-lg border border-slate-800 p-5 flex flex-col gap-4">
           <p class="text-sm text-slate-400">
-            在電腦終端機跑 <code class="bg-slate-800 px-1 rounded font-mono">cch pair</code>，輸入它顯示的 16 碼配對碼。
+            在電腦終端機跑 <code class="bg-slate-800 px-1 rounded font-mono">miki pair</code>，輸入它顯示的 16 碼配對碼。
           </p>
 
           <div class="flex flex-col gap-1">
@@ -383,7 +383,7 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
   return (
     <div class="min-h-screen bg-slate-950 text-slate-100">
       <header class="sticky top-0 bg-slate-900 border-b border-slate-800 px-4 py-3 flex items-center gap-3">
-        <h1 class="text-lg font-bold">cc-hub · <span class="text-indigo-400">{state.daemon_name}</span></h1>
+        <h1 class="text-lg font-bold">miki-moni · <span class="text-indigo-400">{state.daemon_name}</span></h1>
         <div class="flex items-center gap-2 ml-auto">
           <span class={`w-2.5 h-2.5 rounded-full ${CONN_DOT[connStatus]}`} />
           <span class="text-xs text-slate-400">{CONN_LABEL[connStatus]}</span>
