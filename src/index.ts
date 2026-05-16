@@ -8,10 +8,13 @@ import { SessionResolver } from "./session-resolver.js";
 import { HookHandler } from "./hook-handler.js";
 import { VscodeBridge } from "./vscode-bridge.js";
 import { Notifier } from "./notifier.js";
+import { loadOrInitConfig } from "./config.js";
+import { RelayClient } from "./relay-client.js";
 
 const HUB_HOME = path.join(os.homedir(), ".cc-hub");
 const PORT_FILE = path.join(HUB_HOME, "port");
 const DB_FILE = path.join(HUB_HOME, "state.db");
+const CONFIG_FILE = path.join(HUB_HOME, "config.json");
 const PROJECTS_ROOT = path.join(os.homedir(), ".claude", "projects");
 const DEFAULT_PORT = 8765;
 
@@ -51,13 +54,26 @@ async function main(): Promise<void> {
   const express = (await import("express")).default;
   app.use(express.static(webDir, { fallthrough: true }));
 
+  // Phase 2: optional remote relay to user's Cloudflare Worker
+  const config = await loadOrInitConfig(CONFIG_FILE);
+  let relay: RelayClient | null = null;
+  if (config.remote && config.paired_peers.length > 0) {
+    relay = new RelayClient({ config, store, bridge });
+    await relay.start();
+    log.info({ worker_url: config.remote.worker_url, peers: config.paired_peers.length }, "relay started");
+    console.log(`relay -> ${config.remote.worker_url} (${config.paired_peers.length} peer${config.paired_peers.length === 1 ? "" : "s"})`);
+  } else {
+    log.info("relay disabled (no remote configured or no paired peers)");
+  }
+
   server.listen(port, "127.0.0.1", () => {
     log.info({ port }, "cc-hub listening");
     console.log(`cc-hub listening on http://127.0.0.1:${port}`);
   });
 
-  const shutdown = () => {
+  const shutdown = async () => {
     log.info("shutting down");
+    if (relay) { try { await relay.stop(); } catch { /* ignore */ } }
     server.close(() => { store.close(); process.exit(0); });
   };
   process.on("SIGINT", shutdown);
