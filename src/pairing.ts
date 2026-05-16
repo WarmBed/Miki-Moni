@@ -1,0 +1,82 @@
+import nacl from "tweetnacl";
+import { createHash } from "node:crypto";
+import { deriveSharedSecret, toBase64, fromBase64 } from "./crypto.js";
+import type { PairedPeer } from "./config.js";
+import type { Plaintext } from "./relay-protocol.js";
+
+export const PAIRING_TOKEN_TTL_MS = 5 * 60 * 1000;
+const PAIRING_TOKEN_BYTES = 16;
+
+export interface PairingQrInput {
+  worker_url: string;
+  pairing_token: string;
+  daemon_pubkey: string;
+  device_name: string;
+}
+
+export function pairingQrPayload(input: PairingQrInput): string {
+  return JSON.stringify({
+    worker_url: input.worker_url,
+    pairing_token: input.pairing_token,
+    daemon_pk: input.daemon_pubkey,
+    name: input.device_name,
+  });
+}
+
+export function computePeerId(peerPubkeyBase64: string): string {
+  return createHash("sha256")
+    .update(peerPubkeyBase64)
+    .digest("base64")
+    .replace(/[+/=]/g, "")
+    .slice(0, 16);
+}
+
+type PairingState = "pending" | "paired" | "expired";
+
+export interface PairOffer {
+  phone_pk: string;   // base64
+  phone_name: string;
+}
+
+export interface PairResult {
+  peer: PairedPeer;
+  pairAck: Extract<Plaintext, { kind: "pair_ack" }>;
+}
+
+export class PairingSession {
+  readonly pairingToken: string;
+  state: PairingState = "pending";
+  private readonly createdAt: number = Date.now();
+  private readonly daemonPrivkey: Uint8Array;
+  private readonly daemonPubkey: Uint8Array;
+
+  constructor(daemonPrivkey: Uint8Array, daemonPubkey: Uint8Array) {
+    this.daemonPrivkey = daemonPrivkey;
+    this.daemonPubkey = daemonPubkey;
+    this.pairingToken = toBase64(nacl.randomBytes(PAIRING_TOKEN_BYTES));
+  }
+
+  isExpired(): boolean {
+    return Date.now() - this.createdAt >= PAIRING_TOKEN_TTL_MS;
+  }
+
+  handleOffer(offer: PairOffer): PairResult {
+    if (this.state !== "pending") {
+      throw new Error(
+        `PairingSession already in state '${this.state}'; cannot accept new offer`,
+      );
+    }
+    const phonePubkey = fromBase64(offer.phone_pk);
+    const sharedSecret = deriveSharedSecret(this.daemonPrivkey, phonePubkey);
+    const peer: PairedPeer = {
+      peer_id: computePeerId(offer.phone_pk),
+      peer_name: offer.phone_name,
+      peer_pubkey: offer.phone_pk,
+      shared_secret: toBase64(sharedSecret),
+      paired_at: Date.now(),
+      last_seen_at: null,
+    };
+    this.state = "paired";
+    return { peer, pairAck: { kind: "pair_ack", ok: true } };
+  }
+}
