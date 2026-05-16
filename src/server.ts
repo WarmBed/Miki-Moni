@@ -7,7 +7,7 @@ import type { VscodeBridge } from "./vscode-bridge.js";
 import type { Notifier } from "./notifier.js";
 import type { HookEvent, Session } from "./types.js";
 import { normalizeCwd } from "./hook-handler.js";
-import { readTranscriptTail } from "./session-resolver.js";
+import { readTranscriptTail, readSessionPreview, type SessionPreview } from "./session-resolver.js";
 import path from "node:path";
 import os from "node:os";
 import { promises as fs } from "node:fs";
@@ -54,6 +54,39 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
 
   app.get("/sessions", (_req, res) => {
     res.json(deps.store.list());
+  });
+
+  // /sessions/previews MUST come before /sessions/:session_uuid (Express order)
+  app.get("/sessions/previews", async (_req, res) => {
+    const sessions = deps.store.list();
+    const projectsRoot = path.join(os.homedir(), ".claude", "projects");
+
+    // Cache transcript lookup per request
+    let dirs: string[] = [];
+    try { dirs = await fs.readdir(projectsRoot); } catch { /* no dir */ }
+
+    async function findPath(uuid: string): Promise<string | null> {
+      for (const d of dirs) {
+        const candidate = path.join(projectsRoot, d, `${uuid}.jsonl`);
+        try { await fs.access(candidate); return candidate; } catch { /* keep looking */ }
+      }
+      return null;
+    }
+
+    const previews: SessionPreview[] = [];
+    await Promise.all(sessions.map(async (s) => {
+      if (!s.session_uuid) return;
+      const tpath = await findPath(s.session_uuid);
+      if (!tpath) return;
+      try {
+        const p = await readSessionPreview(s.session_uuid, tpath);
+        previews.push(p);
+      } catch (err) {
+        deps.log?.warn({ route: "/sessions/previews", uuid: s.session_uuid, error: String(err) }, "preview failed");
+      }
+    }));
+    deps.log?.info({ route: "/sessions/previews", count: previews.length }, "previews served");
+    res.json(previews);
   });
 
   app.get("/sessions/:session_uuid", (req, res) => {

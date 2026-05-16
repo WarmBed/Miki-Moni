@@ -22,6 +22,15 @@ interface TranscriptResp { session_uuid: string; transcript_path: string; file_s
 
 interface LogEntry { ts: number; level: "info" | "warn" | "error"; msg: string; ctx?: Record<string, unknown> }
 
+interface SessionPreview {
+  session_uuid: string;
+  ai_title: string | null;
+  last_assistant_text: string | null;
+  last_user_text: string | null;
+  last_modified_ms: number;
+  transcript_path: string;
+}
+
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const STATUS_DOT: Record<Session["status"], string> = {
@@ -408,6 +417,223 @@ function Stat({ n, label, dot }: { n: number; label: string; dot: string }) {
   );
 }
 
+// ── Warm pastel palette for cwd groups ────────────────────────────────────
+
+const CWD_PALETTE: Array<{ bg: string; border: string; label: string }> = [
+  { bg: "#fef3e2", border: "#f3d4a8", label: "#7c4a08" },   // cream
+  { bg: "#fde6d3", border: "#f4c8a2", label: "#7d3f06" },   // peach
+  { bg: "#fdedd3", border: "#f1d39c", label: "#76551a" },   // butter
+  { bg: "#fce7e6", border: "#f0bdba", label: "#7e2924" },   // blush
+  { bg: "#f9e3df", border: "#e9b6ae", label: "#75342a" },   // sand
+  { bg: "#fbe6cc", border: "#eecca0", label: "#74471a" },   // apricot
+  { bg: "#fff4dc", border: "#f0d9a4", label: "#6f4f12" },   // honey
+  { bg: "#f7ede4", border: "#dec9b4", label: "#5a4838" },   // taupe
+];
+
+function colorForCwd(cwd: string) {
+  let h = 0;
+  for (let i = 0; i < cwd.length; i++) h = ((h * 31) + cwd.charCodeAt(i)) >>> 0;
+  return CWD_PALETTE[h % CWD_PALETTE.length]!;
+}
+
+// ── Grid overview cell ────────────────────────────────────────────────────
+
+function Cell({ s, preview, onQuickSend, onOpenTab }: {
+  s: Session;
+  preview?: SessionPreview;
+  onQuickSend: (s: Session, x: number, y: number) => void;
+  onOpenTab: (uuid: string) => void;
+}) {
+  const title = preview?.ai_title ?? s.project_name;
+  const lastReply = preview?.last_assistant_text;
+
+  function handleClick(ev: MouseEvent) {
+    // Open popover near the click position
+    onQuickSend(s, ev.clientX, ev.clientY);
+  }
+
+  return (
+    <div class="cell" onClick={handleClick}>
+      <div class="cell-head">
+        <span class={STATUS_DOT[s.status]} />
+        <span class="cell-title" title={title}>{title}</span>
+        <button
+          class="cell-open-tab"
+          onClick={(e) => { e.stopPropagation(); onOpenTab(s.session_uuid ?? ""); }}
+          title="開到 tab"
+        >開 tab ↗</button>
+      </div>
+      <div class="cell-preview">
+        {lastReply
+          ? lastReply.slice(0, 240) + (lastReply.length > 240 ? "…" : "")
+          : <span class="cell-empty">(尚未有 AI 回應)</span>}
+      </div>
+      <div class="cell-foot">
+        <span class="cell-status">{STATUS_LABEL[s.status]}</span>
+        <span>·</span>
+        <span>{fmtRelative(s.last_event_at)}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Grid overview (sessions grouped by cwd) ──────────────────────────
+
+function GridOverview({ sessions, previews, onQuickSend, onOpenTab }: {
+  sessions: Session[];
+  previews: Record<string, SessionPreview>;
+  onQuickSend: (s: Session, x: number, y: number) => void;
+  onOpenTab: (uuid: string) => void;
+}) {
+  // Group by normalized cwd
+  const groups = new Map<string, Session[]>();
+  for (const s of sessions) {
+    const list = groups.get(s.cwd) ?? [];
+    list.push(s);
+    groups.set(s.cwd, list);
+  }
+  const groupArr = Array.from(groups.entries()).sort((a, b) => {
+    // Sort by most-recent activity in each group
+    const maxA = Math.max(...a[1].map((x) => x.last_event_at));
+    const maxB = Math.max(...b[1].map((x) => x.last_event_at));
+    return maxB - maxA;
+  });
+
+  return (
+    <div>
+      {groupArr.map(([cwd, group]) => {
+        const c = colorForCwd(cwd);
+        return (
+          <div key={cwd} class="cwd-group" style={{ background: c.bg, borderColor: c.border }}>
+            <div class="cwd-group-header" style={{ color: c.label }}>
+              <span style={{ fontWeight: 600, fontSize: 13, fontFamily: "Inter, sans-serif" }}>
+                {group[0]?.project_name}
+              </span>
+              <span style={{ opacity: 0.7 }}>{cwd}</span>
+              <span style={{ marginLeft: "auto", fontSize: 11, opacity: 0.7 }}>{group.length} session{group.length > 1 ? "s" : ""}</span>
+            </div>
+            <div class="cwd-group-grid">
+              {group.sort((a, b) => b.last_event_at - a.last_event_at).map((s) => (
+                <Cell
+                  key={s.session_uuid ?? s.cwd}
+                  s={s}
+                  preview={s.session_uuid ? previews[s.session_uuid] : undefined}
+                  onQuickSend={onQuickSend}
+                  onOpenTab={onOpenTab}
+                />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Popover (quick-send at mouse position) ───────────────────────────
+
+function Popover({ s, x, y, onClose, onSend, onOpenTab }: {
+  s: Session;
+  x: number;
+  y: number;
+  onClose: () => void;
+  onSend: (uuid: string, prompt: string, submit: boolean) => Promise<{ ok: boolean; status: number; reply?: string; duration_ms?: number }>;
+  onOpenTab: (uuid: string) => void;
+}) {
+  const [prompt, setPrompt] = useState("");
+  const [submitMode, setSubmitMode] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; label: string; reply?: string } | null>(null);
+  const popRef = useRef<HTMLDivElement | null>(null);
+
+  // Position: open below-right of cursor, but clamp to viewport
+  const popW = 360, popH = 280;
+  const px = Math.min(x + 12, window.innerWidth - popW - 16);
+  const py = Math.min(y + 12, window.innerHeight - popH - 16);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  async function handleSend() {
+    if (!prompt.trim() || !s.session_uuid) return;
+    setBusy(true); setResult(null);
+    try {
+      const r = await onSend(s.session_uuid, prompt.trim(), submitMode);
+      const label = !r.ok
+        ? `失敗 HTTP ${r.status}`
+        : submitMode
+          ? `Claude 已回覆 (${r.duration_ms ?? "?"} ms)`
+          : `已預填，請在 VSCode 按 Enter`;
+      setResult({ ok: r.ok, label, reply: r.reply });
+      if (r.ok) setPrompt("");
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <>
+      <div class="popover-backdrop" onClick={onClose} />
+      <div
+        ref={popRef}
+        class="popover"
+        style={{ left: px, top: py }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <span class={STATUS_DOT[s.status]} />
+          <strong style={{ fontSize: 13 }}>{s.project_name}</strong>
+          <button class="btn-ghost" style={{ marginLeft: "auto", padding: "2px 6px" }} onClick={() => { onOpenTab(s.session_uuid ?? ""); onClose(); }}>
+            開到 tab ↗
+          </button>
+          <button class="btn-ghost" style={{ padding: "2px 6px" }} onClick={onClose}>×</button>
+        </div>
+        <div style={{ fontSize: 10, color: "var(--fg-subtle)", fontFamily: "ui-monospace, monospace", marginBottom: 8, wordBreak: "break-all" }}>
+          {s.cwd}<br />
+          {s.session_uuid}
+        </div>
+        <textarea
+          autoFocus
+          placeholder={submitMode ? "輸入 prompt 真的送出（會花 API$）…" : "輸入 prompt 預填到 VSCode input box…"}
+          value={prompt}
+          onInput={(e) => setPrompt((e.currentTarget as HTMLTextAreaElement).value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSend(); }}
+          disabled={busy}
+          style={{ width: "100%", minHeight: 80, fontSize: 13, fontFamily: "inherit", marginBottom: 8 }}
+        />
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <label style={{ fontSize: 11, color: "var(--fg-subtle)", cursor: "pointer" }}>
+            <input type="checkbox" checked={submitMode} onChange={(e) => setSubmitMode((e.currentTarget as HTMLInputElement).checked)} style={{ marginRight: 4, verticalAlign: "middle" }} />
+            真送出（花 API$）
+          </label>
+          <button
+            class={submitMode ? "btn-warn" : "btn-primary"}
+            disabled={!prompt.trim() || busy}
+            onClick={handleSend}
+            style={{ marginLeft: "auto" }}
+          >
+            {busy ? "⌛" : submitMode ? "真送出" : "預填"}
+          </button>
+        </div>
+        <div style={{ marginTop: 4, fontSize: 10, color: "var(--fg-subtle)" }}>
+          ⌘/Ctrl+Enter 送出 · Esc 關閉
+        </div>
+        {result && (
+          <div style={{ marginTop: 8, padding: 8, background: "var(--sl2)", border: "1px solid var(--border)", borderRadius: 6 }}>
+            <div style={{ fontSize: 12, color: result.ok ? "var(--pass)" : "var(--accent)", marginBottom: result.reply ? 6 : 0 }}>
+              {result.label}
+            </div>
+            {result.reply && <div style={{ maxHeight: 160, overflowY: "auto" }}><MD text={result.reply} /></div>}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 // ── Activity log ───────────────────────────────────────────────────────────
 
 function ActivityLog({ entries, onClear }: { entries: LogEntry[]; onClear: () => void }) {
@@ -438,8 +664,16 @@ function ActivityLog({ entries, onClear }: { entries: LogEntry[]; onClear: () =>
 
 function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [previews, setPreviews] = useState<Record<string, SessionPreview>>({});
   const [wsConn, setWsConn] = useState<"connecting" | "open" | "closed">("connecting");
   const [log, setLog] = useState<LogEntry[]>([]);
+
+  // Tabs: "overview" or session_uuid. Order = open order; "overview" always first.
+  const [openTabs, setOpenTabs] = useState<string[]>(["overview"]);
+  const [currentTab, setCurrentTab] = useState<string>("overview");
+
+  // Popover state
+  const [popoverFor, setPopoverFor] = useState<{ s: Session; x: number; y: number } | null>(null);
 
   function addLog(level: LogEntry["level"], msg: string, ctx?: Record<string, unknown>): void {
     const entry: LogEntry = { ts: Date.now(), level, msg, ctx };
@@ -447,14 +681,29 @@ function App() {
     (level === "error" ? cerr : level === "warn" ? cwarn : clog)(msg, ctx);
   }
 
+  async function loadPreviews() {
+    try {
+      const r = await fetch("/sessions/previews");
+      if (!r.ok) { addLog("warn", `GET /sessions/previews ${r.status}`); return; }
+      const arr: SessionPreview[] = await r.json();
+      const map: Record<string, SessionPreview> = {};
+      for (const p of arr) map[p.session_uuid] = p;
+      setPreviews(map);
+      addLog("info", `previews loaded`, { count: arr.length });
+    } catch (e) {
+      addLog("error", "previews fetch throw", { error: String(e) });
+    }
+  }
+
   useEffect(() => {
-    addLog("info", "啟動 — 抓 /sessions 初始狀態");
+    addLog("info", "啟動 — 抓 /sessions + previews");
     fetch("/sessions").then((r) => r.json().then((j) => ({ ok: r.ok, status: r.status, body: j })))
       .then((r) => {
         if (!r.ok) { addLog("error", `GET /sessions 失敗`, { status: r.status }); return; }
         const list = r.body as Session[];
         setSessions(list);
-        addLog("info", `GET /sessions 200 — 收到 ${list.length} 個 session`, { cwds: list.map((s) => s.cwd) });
+        addLog("info", `GET /sessions 200 — 收到 ${list.length} 個 session`);
+        void loadPreviews();
       })
       .catch((e) => addLog("error", `GET /sessions throw`, { error: String(e) }));
 
@@ -463,49 +712,82 @@ function App() {
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => { setWsConn("open"); addLog("info", "WS open"); };
-    ws.onclose = (ev) => { setWsConn("closed"); addLog("warn", "WS close", { code: ev.code, reason: ev.reason || "(無)" }); };
+    ws.onclose = (ev) => { setWsConn("closed"); addLog("warn", "WS close", { code: ev.code }); };
     ws.onerror = () => { addLog("error", "WS error"); };
     ws.onmessage = (ev) => {
       let msg: any;
-      try { msg = JSON.parse(ev.data as string); } catch { addLog("error", "WS 收到非 JSON", { raw: String(ev.data).slice(0, 80) }); return; }
+      try { msg = JSON.parse(ev.data as string); } catch { return; }
       if (msg.type === "session_changed") {
         const s = msg.session as Session;
-        addLog("info", "WS session_changed", { cwd: s.cwd, project: s.project_name, status: s.status, uuid: s.session_uuid });
+        addLog("info", "WS session_changed", { project: s.project_name, status: s.status, uuid: s.session_uuid?.slice(0, 8) });
         setSessions((prev) => {
           const others = prev.filter((x) => x.session_uuid !== s.session_uuid);
           return [s, ...others].sort((a, b) => b.last_event_at - a.last_event_at);
         });
-      } else {
-        addLog("warn", "WS 不認識的 type", { type: msg.type });
+        // Debounced previews refresh: on every WS event, schedule a single refresh
+        scheduleRefresh();
       }
     };
 
     return () => ws.close();
   }, []);
 
+  // Debounce previews refresh — many session_changed events in a row should batch
+  const refreshTimerRef = useRef<number | undefined>(undefined);
+  function scheduleRefresh() {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = window.setTimeout(() => { void loadPreviews(); }, 1500);
+  }
+
   async function onFocus(uuid: string) {
-    addLog("info", "POST /focus", { uuid });
+    addLog("info", "POST /focus", { uuid: uuid.slice(0, 8) });
     try {
       const r = await fetch("/focus", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_uuid: uuid }) });
       let body: any = null; try { body = await r.json(); } catch {}
-      addLog(r.ok ? "info" : "error", `/focus ${r.status}`, { uuid, url: body?.url, body });
+      addLog(r.ok ? "info" : "error", `/focus ${r.status}`, { url: body?.url });
       return { ok: r.ok, status: r.status, url: body?.url };
-    } catch (e) { addLog("error", "/focus throw", { uuid, error: String(e) }); return { ok: false, status: 0 }; }
+    } catch (e) { addLog("error", "/focus throw", { error: String(e) }); return { ok: false, status: 0 }; }
   }
   async function onSend(uuid: string, prompt: string, submit: boolean) {
-    addLog("info", `POST /send (mode=${submit ? "submit" : "prefill"})`, { uuid, len: prompt.length, preview: prompt.slice(0, 40) });
+    addLog("info", `POST /send (mode=${submit ? "submit" : "prefill"})`, { uuid: uuid.slice(0, 8), len: prompt.length });
     try {
       const r = await fetch("/send", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_uuid: uuid, prompt, submit }) });
       let body: any = null; try { body = await r.json(); } catch {}
-      addLog(r.ok ? "info" : "error", `/send ${r.status}`, { uuid, mode: body?.mode, url: body?.url, reply_preview: body?.reply?.slice(0, 60), duration_ms: body?.duration_ms });
+      addLog(r.ok ? "info" : "error", `/send ${r.status}`, { mode: body?.mode, reply_preview: body?.reply?.slice(0, 60), duration_ms: body?.duration_ms });
+      // refresh previews so the cell shows the new reply
+      if (r.ok && submit) scheduleRefresh();
       return { ok: r.ok, status: r.status, url: body?.url, reply: body?.reply, duration_ms: body?.duration_ms };
-    } catch (e) { addLog("error", "/send throw", { uuid, error: String(e) }); return { ok: false, status: 0 }; }
+    } catch (e) { addLog("error", "/send throw", { error: String(e) }); return { ok: false, status: 0 }; }
   }
 
+  function openTab(uuid: string) {
+    if (!uuid) return;
+    setOpenTabs((prev) => prev.includes(uuid) ? prev : [...prev, uuid]);
+    setCurrentTab(uuid);
+  }
+  function closeTab(uuid: string) {
+    setOpenTabs((prev) => {
+      const next = prev.filter((t) => t !== uuid);
+      // If closing current tab, switch to overview
+      if (currentTab === uuid) setCurrentTab("overview");
+      return next;
+    });
+  }
+
+  function openQuickSend(s: Session, x: number, y: number) {
+    setPopoverFor({ s, x, y });
+  }
+
+  const sessionByUuid = useMemo(() => {
+    const m = new Map<string, Session>();
+    for (const s of sessions) if (s.session_uuid) m.set(s.session_uuid, s);
+    return m;
+  }, [sessions]);
+
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 24px 64px" }}>
+    <div style={{ maxWidth: 1280, margin: "0 auto", padding: "16px 24px 64px" }}>
       {/* Top nav */}
-      <header style={{ display: "flex", alignItems: "center", gap: 12, paddingBottom: 16 }}>
+      <header style={{ display: "flex", alignItems: "center", gap: 12, paddingBottom: 12, borderBottom: "1px solid var(--border)" }}>
         <h1 style={{ margin: 0, fontSize: 17, fontWeight: 600, letterSpacing: "-0.01em" }}>cc-hub</h1>
         <span style={{ color: "var(--fg-subtle)", fontSize: 12 }}>本機儀表板</span>
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--fg-subtle)" }}>
@@ -514,28 +796,83 @@ function App() {
         </div>
       </header>
 
-      <SummaryBanner sessions={sessions} />
+      {/* TabBar */}
+      <div class="tabbar" style={{ marginTop: 0, marginBottom: 20 }}>
+        {openTabs.map((tabId) => {
+          if (tabId === "overview") {
+            return (
+              <div
+                key="overview"
+                class={"tab" + (currentTab === "overview" ? " active" : "")}
+                onClick={() => setCurrentTab("overview")}
+              >
+                <span>🗺️ 全覽</span>
+                <span style={{ color: "var(--fg-subtle)", fontSize: 11 }}>{sessions.length}</span>
+              </div>
+            );
+          }
+          const s = sessionByUuid.get(tabId);
+          const p = previews[tabId];
+          const label = p?.ai_title || s?.project_name || tabId.slice(0, 8);
+          return (
+            <div
+              key={tabId}
+              class={"tab" + (currentTab === tabId ? " active" : "")}
+              onClick={() => setCurrentTab(tabId)}
+              title={tabId}
+            >
+              {s && <span class={STATUS_DOT[s.status]} style={{ width: 6, height: 6 }} />}
+              <span style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+              <span
+                class="tab-close"
+                onClick={(e) => { e.stopPropagation(); closeTab(tabId); }}
+                title="關閉 tab"
+              >×</span>
+            </div>
+          );
+        })}
+      </div>
 
-      {/* Cards */}
-      <section>
-        <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
-          <span class="section-label">Sessions</span>
-          <span style={{ marginLeft: 8, color: "var(--fg-subtle)", fontSize: 11 }}>{sessions.length} 筆</span>
-        </div>
-        {sessions.length === 0 ? (
-          <div class="card" style={{ padding: "24px 14px", textAlign: "center", color: "var(--fg-subtle)", fontSize: 13 }}>
-            <div>目前沒有 session。</div>
-            <div style={{ fontSize: 11, marginTop: 6 }}>在任何 VSCode 視窗開 Claude Code panel 就會冒出來。</div>
-            <div style={{ fontSize: 11 }}>沒反應的話：<code>pnpm install:hooks</code></div>
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {sessions.map((s, i) => <Card key={s.session_uuid ?? s.cwd} s={s} defaultExpanded={i === 0} onFocus={onFocus} onSend={onSend} />)}
-          </div>
-        )}
-      </section>
+      {/* Tab content */}
+      {currentTab === "overview" ? (
+        <>
+          <SummaryBanner sessions={sessions} />
+          {sessions.length === 0 ? (
+            <div class="card" style={{ padding: "24px 14px", textAlign: "center", color: "var(--fg-subtle)", fontSize: 13 }}>
+              <div>目前沒有 session。</div>
+              <div style={{ fontSize: 11, marginTop: 6 }}>在任何 VSCode 視窗開 Claude Code panel 就會冒出來。</div>
+              <div style={{ fontSize: 11 }}>沒反應的話：<code>pnpm install:hooks</code></div>
+            </div>
+          ) : (
+            <GridOverview
+              sessions={sessions}
+              previews={previews}
+              onQuickSend={openQuickSend}
+              onOpenTab={openTab}
+            />
+          )}
+        </>
+      ) : (
+        (() => {
+          const s = sessionByUuid.get(currentTab);
+          if (!s) return <div style={{ padding: 24, color: "var(--fg-subtle)" }}>(session 不存在了，可能 daemon 重啟過)</div>;
+          return <Card s={s} defaultExpanded={true} onFocus={onFocus} onSend={onSend} />;
+        })()
+      )}
 
       <ActivityLog entries={log} onClear={() => setLog([])} />
+
+      {/* Popover */}
+      {popoverFor && (
+        <Popover
+          s={popoverFor.s}
+          x={popoverFor.x}
+          y={popoverFor.y}
+          onClose={() => setPopoverFor(null)}
+          onSend={onSend}
+          onOpenTab={openTab}
+        />
+      )}
     </div>
   );
 }

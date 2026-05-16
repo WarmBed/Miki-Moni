@@ -248,6 +248,135 @@ textarea { resize: vertical; }
 .md th { background: var(--sl2); font-weight: 600; }
 .md hr { border: 0; border-top: 1px solid var(--border); }
 
+/* ── Tab bar ───────────────────────────────────────────────────────── */
+
+.tabbar {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
+  margin-bottom: -1px;
+  white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease;
+  cursor: pointer;
+  background: transparent;
+}
+.tab:hover { background: var(--sl2); color: var(--fg); }
+.tab.active {
+  background: var(--bg);
+  color: var(--fg);
+  font-weight: 500;
+  border-color: var(--border);
+  border-bottom-color: var(--bg);
+}
+.tab .tab-close {
+  margin-left: 4px; width: 16px; height: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 3px; color: var(--fg-subtle);
+  font-size: 14px; line-height: 1;
+}
+.tab .tab-close:hover { background: var(--sl4); color: var(--accent); }
+
+/* ── CWD group (warm pastel frame) ─────────────────────────────────── */
+
+.cwd-group {
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+}
+.cwd-group-header {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.cwd-group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px;
+}
+
+/* ── Cell (compact session card in grid) ─────────────────────────── */
+
+.cell {
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, transform 0.06s ease;
+  position: relative;
+  display: flex; flex-direction: column;
+  min-height: 130px;
+}
+.cell:hover { border-color: var(--border-hi); background: rgba(255, 255, 255, 0.95); }
+.cell:active { transform: scale(0.995); }
+.cell-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.cell-title { font-weight: 500; font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cell-status { font-size: 10px; color: var(--fg-subtle); text-transform: uppercase; letter-spacing: 0.06em; }
+.cell-preview {
+  flex: 1;
+  margin-top: 4px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+}
+.cell-empty { color: var(--fg-subtle); font-style: italic; }
+.cell-foot {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--fg-subtle);
+  font-family: ui-monospace, monospace;
+}
+.cell-open-tab {
+  margin-left: auto;
+  padding: 2px 6px;
+  font-size: 10px;
+  color: var(--fg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+.cell-open-tab:hover { color: var(--fg); border-color: var(--border-hi); }
+
+/* ── Popover (mouse-positioned) ──────────────────────────────────── */
+
+.popover-backdrop {
+  position: fixed; inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.04);
+}
+.popover {
+  position: fixed;
+  z-index: 51;
+  background: var(--bg);
+  border: 1px solid var(--border-hi);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.10), 0 2px 6px rgba(0, 0, 0, 0.05);
+  padding: 12px;
+  width: 360px;
+  max-width: calc(100vw - 32px);
+}
+
 /* ── Log entries ───────────────────────────────────────────────────── */
 
 .log-entry { padding: 4px 12px; font-size: 12px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }

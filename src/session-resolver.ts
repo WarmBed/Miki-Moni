@@ -102,6 +102,82 @@ function stringifyResult(content: unknown): string {
   return JSON.stringify(content ?? "");
 }
 
+export interface SessionPreview {
+  session_uuid: string;
+  ai_title: string | null;
+  last_assistant_text: string | null;
+  last_user_text: string | null;
+  last_modified_ms: number;
+  transcript_path: string;
+}
+
+/**
+ * Cheap-ish scan: read tail of transcript, extract ai_title (special entry),
+ * last assistant text block, and last user message (skipping tool_results).
+ */
+export async function readSessionPreview(
+  sessionUuid: string,
+  transcriptPath: string,
+): Promise<SessionPreview> {
+  const stat = await fs.stat(transcriptPath);
+  const raw = await fs.readFile(transcriptPath, "utf8");
+  // Last ~500 lines is plenty to find recent assistant/user text + ai-title
+  const allLines = raw.split(/\r?\n/);
+  const lines = allLines.slice(-500);
+
+  let ai_title: string | null = null;
+  let last_assistant_text: string | null = null;
+  let last_user_text: string | null = null;
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line) continue;
+    let e: any;
+    try { e = JSON.parse(line); } catch { continue; }
+
+    // ai-title is a special non-message entry
+    if (!ai_title && e.type === "ai-title" && typeof e.aiTitle === "string") {
+      ai_title = e.aiTitle;
+    }
+
+    const msg = e.message;
+    if (!msg) continue;
+
+    // Extract text content
+    let textPart = "";
+    if (typeof msg.content === "string") {
+      textPart = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block?.type === "text" && typeof block.text === "string") {
+          textPart += block.text;
+        }
+      }
+    }
+    textPart = textPart.trim();
+    if (!textPart) continue;
+
+    if (msg.role === "assistant" && !last_assistant_text) {
+      last_assistant_text = textPart;
+    }
+    if (msg.role === "user" && !last_user_text) {
+      // skip tool_result-only messages (no text block)
+      last_user_text = textPart;
+    }
+
+    if (ai_title && last_assistant_text && last_user_text) break;
+  }
+
+  return {
+    session_uuid: sessionUuid,
+    ai_title,
+    last_assistant_text,
+    last_user_text,
+    last_modified_ms: stat.mtimeMs,
+    transcript_path: transcriptPath,
+  };
+}
+
 /** Read last `limit` "interesting" turns from a Claude Code JSONL transcript. */
 export async function readTranscriptTail(
   filePath: string,
