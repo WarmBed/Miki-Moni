@@ -42,6 +42,16 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     res.status(204).end();
   });
 
+  app.get("/sessions", (_req, res) => {
+    res.json(deps.store.list());
+  });
+
+  app.get("/sessions/:cwd", (req, res) => {
+    const session = deps.store.get(decodeURIComponent(req.params.cwd!));
+    if (!session) { res.status(404).end(); return; }
+    res.json(session);
+  });
+
   const server = http.createServer(app);
   return { app, server };
 }

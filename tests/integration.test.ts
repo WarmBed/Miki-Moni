@@ -35,3 +35,33 @@ describe("server POST /event", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("server GET /sessions", () => {
+  let store: SessionStore;
+  let app: ReturnType<typeof createApp>["app"];
+
+  beforeEach(() => {
+    store = new SessionStore(":memory:");
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    ({ app } = createApp({ store, handler, bridge: null as any, notifier: null as any, webDir: "/tmp/none" }));
+  });
+  afterEach(() => store.close());
+
+  it("returns empty array initially", async () => {
+    const res = await request(app).get("/sessions");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it("returns all sessions after events", async () => {
+    await request(app).post("/event").send({
+      event_type: "session_start", cwd: "d:\\code\\a", session_uuid: "u1", timestamp: 1,
+    });
+    await request(app).post("/event").send({
+      event_type: "session_start", cwd: "d:\\code\\b", session_uuid: "u2", timestamp: 2,
+    });
+    const res = await request(app).get("/sessions");
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(2);
+  });
+});
