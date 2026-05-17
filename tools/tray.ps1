@@ -219,9 +219,11 @@ $quitItem.Add_Click({
       -Method Post -UseBasicParsing -TimeoutSec 2 | Out-Null
   } catch { }
   # If the daemon ignored /admin/quit, fall back to killing the PID directly.
+  # Use the latest watched pid (in case daemon respawned since tray launch).
   Start-Sleep -Milliseconds 800
-  if (Get-Process -Id $DaemonPid -ErrorAction SilentlyContinue) {
-    Stop-Process -Id $DaemonPid -Force -ErrorAction SilentlyContinue
+  $pidToKill = if ($script:DaemonPidWatched) { $script:DaemonPidWatched } else { $DaemonPid }
+  if (Get-Process -Id $pidToKill -ErrorAction SilentlyContinue) {
+    Stop-Process -Id $pidToKill -Force -ErrorAction SilentlyContinue
   }
 })
 
@@ -234,12 +236,36 @@ $notify.Add_MouseClick({
 })
 $notify.ContextMenuStrip = $menu
 
-# ── PID watcher: poll once per second; when daemon dies, we die too ────
+# ── PID watcher ─────────────────────────────────────────────────────────
+# Poll the watched PID once per second. When it dies, give a grace window
+# for a replacement daemon (rotate / restart respawns) to come up — query
+# /admin/pid and if a NEW daemon is alive on the same port, follow it.
+# Only exit if the daemon stays gone for `$maxGraceTicks` consecutive polls.
 # A WinForms Timer fires on the UI thread so we can touch $notify safely.
+$script:DaemonPidWatched = $DaemonPid
+$script:GraceTicks = 0
+$script:MaxGraceTicks = 10  # ~10s window for respawn
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 1000
 $timer.Add_Tick({
-  if (-not (Get-Process -Id $DaemonPid -ErrorAction SilentlyContinue)) {
+  if (Get-Process -Id $script:DaemonPidWatched -ErrorAction SilentlyContinue) {
+    $script:GraceTicks = 0
+    return
+  }
+  # Watched pid is gone — see if a replacement daemon answered /admin/pid.
+  try {
+    $r = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/admin/pid" -TimeoutSec 1
+    if ($r.pid -and $r.pid -ne $script:DaemonPidWatched) {
+      $script:DaemonPidWatched = [int]$r.pid
+      $notify.Text = "miki-moni · running · pid $($script:DaemonPidWatched)"
+      $script:GraceTicks = 0
+      return
+    }
+  } catch {
+    # daemon unreachable — keep counting toward grace deadline
+  }
+  $script:GraceTicks++
+  if ($script:GraceTicks -ge $script:MaxGraceTicks) {
     $timer.Stop()
     $notify.Visible = $false
     $notify.Dispose()

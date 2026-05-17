@@ -171,7 +171,10 @@ async function main(): Promise<void> {
     // its own lifetime; the script watches our PID and self-exits when we
     // die. Failures here are non-fatal — the daemon is fully usable
     // without the tray icon.
-    if (process.platform === "win32") {
+    // Skip if MIKI_NO_TRAY_SPAWN=1 — set by /admin/restart / /admin/rotate-pair
+    // so respawned daemons don't duplicate the cat icon (the previous tray
+    // follows us via /admin/pid).
+    if (process.platform === "win32" && process.env.MIKI_NO_TRAY_SPAWN !== "1") {
       spawnTrayHelper(port, log).catch((err) => {
         log.warn({ err: String(err) }, "tray helper spawn failed (non-fatal)");
       });

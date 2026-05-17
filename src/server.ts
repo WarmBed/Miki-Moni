@@ -97,17 +97,23 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       // the first quoted arg as the program name and fails with
       // "Windows can't find 'X'".
       const isWin = process.platform === "win32";
+      // MIKI_NO_TRAY_SPAWN: tell the respawned daemon to skip spawning its
+      // own tray helper — the current tray follows our pid via /admin/pid
+      // polling and stays alive across the respawn. Without this, restart/
+      // rotate ends up with two cat icons (old tray that survived + new
+      // tray spawned by replacement daemon).
+      const childEnv = { ...process.env, MIKI_FORCE_RESTART: "1", MIKI_NO_TRAY_SPAWN: "1" };
       const child = isWin
         ? spawn("cmd.exe", ["/c", "start", "", "/MIN", process.argv[0]!, ...process.argv.slice(1)], {
             detached: true,
             stdio: "ignore",
-            env: { ...process.env, MIKI_FORCE_RESTART: "1" },
+            env: childEnv,
             windowsHide: false,
           })
         : spawn(process.argv[0]!, process.argv.slice(1), {
             detached: true,
             stdio: "ignore",
-            env: { ...process.env, MIKI_FORCE_RESTART: "1" },
+            env: childEnv,
           });
       child.unref();
     } catch (err) {
@@ -117,6 +123,13 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     // FORCE_RESTART path that takes over PORT_FILE without dueling.
     setTimeout(() => process.exit(0), 400);
   }
+
+  // Used by tray.ps1's watcher to detect daemon respawn (after rotate/restart).
+  // Without this, the tray watches the OLD pid, sees it die, and exits — leaving
+  // the user with no tray icon even though a new daemon is now alive.
+  app.get("/admin/pid", (_req, res) => {
+    res.json({ pid: process.pid });
+  });
 
   app.post("/admin/restart", async (_req, res) => {
     res.json({ ok: true });
