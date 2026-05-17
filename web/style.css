@@ -136,6 +136,18 @@ input:focus, textarea:focus, select:focus {
 
 textarea { resize: vertical; }
 
+/* iOS Safari auto-zooms when a focused input's computed font-size is < 16px.
+   On touch devices, force inputs/textareas/selects to 16px so focus doesn't
+   shift the viewport. Desktop keeps the denser 13px (above).
+   `!important` is required because many composers set inline `style={{
+   fontSize: 13 }}` which would otherwise win the cascade — inline styles
+   beat author CSS unless we mark the rule important. */
+@media (pointer: coarse) {
+  input, textarea, select {
+    font-size: 16px !important;
+  }
+}
+
 /* ── Buttons ───────────────────────────────────────────────────────── */
 
 .btn-ghost {
@@ -598,29 +610,32 @@ html, body { overflow-x: hidden; max-width: 100vw; }
 }
 
 /* Live activity indicator for wrapped sessions (Ideating / Using <tool> / Replying) */
+/* Activity indicator (e.g. "cooking…", "thinking…") — plain blue text that
+ * blinks. No chip background/border; per user feedback the boxed "purple
+ * pill" was visually noisy. The whole tag blinks so peripheral vision picks
+ * it up even when the user is reading the transcript. */
 .cell-activity {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   margin-left: 6px;
-  padding: 2px 8px;
-  border-radius: 10px;
+  padding: 0;
   font-size: 10px;
   font-weight: 500;
-  color: #5a2db8;
-  background: rgba(110, 60, 200, 0.10);
-  border: 1px solid rgba(110, 60, 200, 0.25);
+  color: #3b82f6;
+  background: transparent;
+  border: none;
   white-space: nowrap;
+  animation: cell-activity-text-blink 1.4s ease-in-out infinite;
 }
 .cell-activity-dot {
   width: 6px; height: 6px;
   border-radius: 50%;
-  background: #6e3cc8;
-  animation: cell-activity-pulse 1.1s ease-in-out infinite;
+  background: #3b82f6;
 }
-@keyframes cell-activity-pulse {
-  0%, 100% { opacity: 0.4; transform: scale(0.85); }
-  50%      { opacity: 1;   transform: scale(1.15); }
+@keyframes cell-activity-text-blink {
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 1;    }
 }
 
 /* Cell update-flash: brief blue pulse when a turn timestamp changes
@@ -812,6 +827,7 @@ html, body { overflow-x: hidden; max-width: 100vw; }
   right: 0;
   z-index: 30;
   min-width: 260px;
+  max-width: calc(100vw - 16px);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -821,6 +837,15 @@ html, body { overflow-x: hidden; max-width: 100vw; }
   flex-direction: column;
   gap: 1px;
   font-family: inherit;
+}
+/* Variant: anchor to the chip's LEFT edge instead of right. Used by the
+ * ModelChip, which sits at the left of the status-line cluster — the
+ * default right-anchored menu would extend off the left side of the
+ * viewport on phones. */
+.pmode-menu.pmode-menu-left {
+  right: auto;
+  left: 0;
+  min-width: 220px;
 }
 .pmode-menu-head {
   font-size: 11px;
@@ -936,6 +961,48 @@ html, body { overflow-x: hidden; max-width: 100vw; }
 .turn-bg-user { background: var(--turn-bg-user); }
 .turn-bg-assistant { background: var(--turn-bg-assistant); }
 .turn-bg-tool { background: var(--turn-bg-tool); }
+
+/* ── Chat-bubble transcript layout ──────────────────────────────────────
+ *
+ * Turns are now anchored: user on the right, assistant/system/tool on the
+ * left. Each turn is a row (.turn-row) whose flex justification picks the
+ * side; the bubble (.turn-bubble) is a constrained-width card with a
+ * single "tail" corner pointing at its side.
+ *
+ * Dark mode needs explicit bubble fills because the role-tinted vars
+ * (--turn-bg-*) are transparent there. Light mode keeps the gentle tints. */
+.turn-row {
+  display: flex;
+  padding: 5px 12px;
+}
+.turn-row.turn-row-user { justify-content: flex-end; }
+.turn-row.turn-row-other { justify-content: flex-start; }
+.turn-bubble {
+  max-width: 85%;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  /* Tighten the anchored corner so the bubble visually "points" at its
+   * side — mimics iMessage / Telegram speech-bubble cue. */
+}
+.turn-row-user .turn-bubble { border-top-right-radius: 4px; }
+.turn-row-other .turn-bubble { border-top-left-radius: 4px; }
+/* Tool turns are denser — the inner toolbox already brings its own padding. */
+.turn-bubble.turn-bubble-tool { padding: 4px 8px; }
+/* Explicit fills so bubbles read on both themes. Light reuses the soft
+ * --turn-bg-* tints; dark overrides with visible-but-quiet slate fills. */
+.turn-bubble.turn-bg-user      { background: var(--turn-bg-user); }
+.turn-bubble.turn-bg-assistant { background: var(--turn-bg-assistant); }
+.turn-bubble.turn-bg-tool      { background: var(--turn-bg-tool); }
+[data-theme="dark"] .turn-bubble.turn-bg-user      { background: #1f2937; }
+[data-theme="dark"] .turn-bubble.turn-bg-assistant { background: #0f1f1a; }
+[data-theme="dark"] .turn-bubble.turn-bg-tool      { background: #1f1b12; }
+/* Phone: a touch tighter so longer messages still fit. */
+@media (max-width: 640px) {
+  .turn-row { padding: 4px 8px; }
+  .turn-bubble { max-width: 92%; padding: 7px 11px; }
+}
 .cell-foot {
   display: flex; align-items: center; gap: 6px;
   margin-top: 6px;
@@ -1073,12 +1140,22 @@ html, body { overflow-x: hidden; max-width: 100vw; }
 .cell-modal-backdrop { overscroll-behavior: contain; }
 
 /* Narrow viewports (phone, side-panel-docked VSCode): modal fills the viewport
- * edge-to-edge so header chips don't wrap onto multiple lines. */
+ * edge-to-edge so header chips don't wrap onto multiple lines.
+ *
+ * Height uses 100dvh (dynamic viewport height) so when the on-screen keyboard
+ * pops up on iOS, the modal shrinks accordingly — the composer stays pinned
+ * above the keyboard and the transcript naturally scrolls upward instead of
+ * having its bottom half hidden behind the keyboard (which 100vh would do).
+ * 100vh is kept as a fallback for older browsers that don't grok dvh. */
 @media (max-width: 640px) {
   .cell-modal-backdrop { padding: 0; }
   .cell-modal {
-    width: 100%; height: 100%;
-    max-width: 100vw; max-height: 100vh;
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+    max-width: 100vw;
+    max-height: 100vh;
+    max-height: 100dvh;
     border: none; border-radius: 0;
     box-shadow: none;
   }
@@ -1095,6 +1172,15 @@ html, body { overflow-x: hidden; max-width: 100vw; }
   border: 1px solid transparent;
   border-radius: 4px;
   cursor: pointer;
+}
+/* Phone: shrink and tighten the × button so it doesn't reserve a tall
+ * gutter at the top of an already-compact header. */
+@media (max-width: 640px) {
+  .cell-modal-close {
+    top: 4px; right: 4px;
+    width: 24px; height: 24px;
+    font-size: 16px;
+  }
 }
 .cell-modal-close:hover { color: var(--fg); background: var(--bg-subtle); border-color: var(--border); }
 

@@ -184,12 +184,14 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     const wrapConns: Map<string, import("ws").WebSocket> | undefined = (deps as any).__wrapConnections;
     const wrapAct: Map<string, string> | undefined = (deps as any).__wrapActivity;
     const wrapMode: Map<string, string> | undefined = (deps as any).__wrapPermissionMode;
+    const wrapModelMap: Map<string, string> | undefined = (deps as any).__wrapModel;
     const wrapAskMap: Map<string, { question_id: string; questions: unknown[] }> | undefined = (deps as any).__wrapAsks;
     const list = deps.store.list().map((s) => ({
       ...s,
       wrapped: wrapConns?.has(s.session_uuid ?? "") ?? false,
       activity: s.session_uuid ? wrapAct?.get(s.session_uuid) ?? null : null,
       permission_mode: s.session_uuid ? wrapMode?.get(s.session_uuid) ?? null : null,
+      current_model: s.session_uuid ? wrapModelMap?.get(s.session_uuid) ?? null : null,
       pending_ask: s.session_uuid ? wrapAskMap?.get(s.session_uuid) ?? null : null,
     }));
     res.json(list);
@@ -508,6 +510,29 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     }
   });
 
+  app.post("/wrap/model", (req: Request, res: Response) => {
+    // model="" / null means "fall back to SDK default" — wrap.ts treats
+    // empty-string the same as undefined. We still accept and pass through.
+    const uuid = typeof req.body?.session_uuid === "string" ? req.body.session_uuid : null;
+    const modelRaw = req.body?.model;
+    const model: string = typeof modelRaw === "string" ? modelRaw : "";
+    if (!uuid) { res.status(400).json({ error: "missing session_uuid" }); return; }
+    const wrapConns: Map<string, import("ws").WebSocket> | undefined = (deps as any).__wrapConnections;
+    const wrapWs = wrapConns?.get(uuid);
+    if (!wrapWs || wrapWs.readyState !== wrapWs.OPEN) {
+      res.status(409).json({ error: "session not wrapped or wrap WS not connected" });
+      return;
+    }
+    try {
+      wrapWs.send(JSON.stringify({ type: "set_model", model }));
+      deps.log?.info({ route: "/wrap/model", session_uuid: uuid, model }, "pushed set_model to wrap");
+      res.status(202).json({ ok: true, queued: true, model });
+    } catch (err) {
+      deps.log?.error({ route: "/wrap/model", session_uuid: uuid, model, error: String(err) }, "push failed");
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   app.post("/wrap/permission-mode", (req: Request, res: Response) => {
     const uuid = typeof req.body?.session_uuid === "string" ? req.body.session_uuid : null;
     const mode = typeof req.body?.mode === "string" ? req.body.mode : null;
@@ -689,6 +714,12 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   // ("default" | "acceptEdits" | "bypassPermissions" | "plan"). Locked for the
   // wrap session lifetime — SDK doesn't expose a mid-session toggle.
   const wrapPermissionMode = new Map<string, string>();
+  // Active SDK model per wrapped session — sourced from wrap's `register`
+  // (initial --model flag) and updated on `model_changed` (post-setModel).
+  // Empty string sentinel reserved for "explicit default"; absence in the
+  // map means "wrap didn't pass a model" (same effective state, distinguished
+  // only for log clarity).
+  const wrapModel = new Map<string, string>();
   // Pending "downgrade to stale" timers per uuid. On wrap close we don't
   // immediately mark the session stale (because daemon hot-reload / network
   // blip causes transient closes that wrap auto-reconnects in 3s). Instead
@@ -708,6 +739,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       ...s,
       wrapped: wrapConnections.has(uuid),
       permission_mode: wrapPermissionMode.get(uuid) ?? null,
+      current_model: wrapModel.get(uuid) ?? null,
     };
     const msg = JSON.stringify({ type: "session_changed", session: enriched });
     for (const client of wss.clients) {
@@ -719,6 +751,10 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     let registeredUuid: string | null = null;
     let registeredCwd: string = "";
     let registeredPermissionMode: string | null = null;
+    // Initial model declared by wrap.ts at register time. Buffered like
+    // registeredPermissionMode so bind() can upsert wrapModel once the
+    // session_uuid arrives (either at register or via late-bind message).
+    let registeredModel: string | null = null;
     // PID reported by wrap.ts at register-time. Buffered here for the
     // late-bind case (`register` arrives with session_uuid:null, then a
     // separate `session_uuid` message lands once SDK init completes).
@@ -735,10 +771,12 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       if (detached) {
         wrapConnections.delete(detached);
         wrapPermissionMode.delete(detached);
+        wrapModel.delete(detached);
       }
       registeredUuid = uuid;
       wrapConnections.set(uuid, ws);
       if (registeredPermissionMode) wrapPermissionMode.set(uuid, registeredPermissionMode);
+      if (registeredModel !== null) wrapModel.set(uuid, registeredModel);
       // Cancel any pending stale-downgrade — we're back online for this uuid.
       const pending = wrapStaleTimers.get(uuid);
       if (pending) { clearTimeout(pending); wrapStaleTimers.delete(uuid); }
@@ -791,6 +829,13 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
         if (typeof m.permission_mode === "string") {
           registeredPermissionMode = m.permission_mode;
         }
+        // Wrap declared initial model (or null = SDK default). Stored as
+        // string ("" for null) since the Map type is string-only.
+        if (typeof m.model === "string") {
+          registeredModel = m.model;
+        } else if (m.model === null) {
+          registeredModel = "";
+        }
         // Capture node PID so wrap-process registry can tree-kill it on close
         // (Windows wt.exe doesn't propagate window-close to children).
         if (typeof m.pid === "number" && m.pid > 0) registeredPid = m.pid;
@@ -808,6 +853,13 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
         // rebroadcast so all browser clients pick up the new badge.
         wrapPermissionMode.set(m.session_uuid, m.mode);
         deps.log?.info({ route: "/wrap", session_uuid: m.session_uuid, mode: m.mode }, "wrap permission_mode changed");
+        rebroadcastSession(m.session_uuid);
+      } else if (m?.type === "model_changed" && typeof m.session_uuid === "string") {
+        // Wrap confirmed q.setModel() resolved. m.model may be null (SDK
+        // default), which we store as the empty-string sentinel.
+        const modelStr: string = typeof m.model === "string" ? m.model : "";
+        wrapModel.set(m.session_uuid, modelStr);
+        deps.log?.info({ route: "/wrap", session_uuid: m.session_uuid, model: modelStr || "(default)" }, "wrap model changed");
         rebroadcastSession(m.session_uuid);
       } else if (m?.type === "user_message" && typeof m.session_uuid === "string" && typeof m.text === "string") {
         // Optimistic user-text overlay. Wrap sends this the instant the user
@@ -884,6 +936,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
         wrapConnections.delete(uuid);
         wrapActivity.delete(uuid);
         wrapPermissionMode.delete(uuid);
+        wrapModel.delete(uuid);
         wrapAsks.delete(uuid);
         deps.log?.info({ route: "/wrap", session_uuid: uuid }, "wrap disconnected");
 
@@ -965,6 +1018,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   (deps as any).__wrapConnections = wrapConnections;
   (deps as any).__wrapActivity = wrapActivity;
   (deps as any).__wrapPermissionMode = wrapPermissionMode;
+  (deps as any).__wrapModel = wrapModel;
   (deps as any).__wrapAsks = wrapAsks;
 
   const registry = new ExtRegistry();
@@ -1047,6 +1101,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       ...session,
       wrapped: wrapConnections.has(uuid),
       permission_mode: wrapPermissionMode.get(uuid) ?? null,
+      current_model: wrapModel.get(uuid) ?? null,
     };
     const msg = JSON.stringify({ type: "session_changed", session: enriched });
     for (const client of wss.clients) {

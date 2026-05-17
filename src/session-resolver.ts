@@ -383,14 +383,19 @@ export async function readTranscriptTail(
 
     // For multi-block messages: emit ONE turn per "interesting block" so the
     // dashboard can render text vs tool_use vs tool_result distinctly.
-    // (Most messages have a single block anyway.)
-    let added = false;
-    for (const block of content) {
+    //
+    // BUG NOTE: iterating blocks in FORWARD order while iterating entries
+    // BACKWARD then calling `turns.reverse()` at the end inverts the
+    // block-within-entry order. e.g. an assistant message with [B1, B2, B3]
+    // ended up rendered as [B3, B2, B1] — early text vanished behind a
+    // later tool, looking like "only one round shown". Fix: iterate blocks
+    // BACKWARD too so the outer reverse() restores correct order.
+    for (let bi = content.length - 1; bi >= 0; bi--) {
+      const block = content[bi];
       if (!block || typeof block !== "object") continue;
       if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
         const role: TranscriptTurn["role"] = injected ? "system" : rawRole;
         turns.push({ ts, role, text: block.text, raw_type: entry.type });
-        added = true;
       } else if (block.type === "tool_use") {
         const name = block.name ?? "?";
         const input = block.input ?? {};
@@ -407,7 +412,6 @@ export async function readTranscriptTail(
             input_summary: summarizeToolInput(name, input),
           },
         });
-        added = true;
       } else if (block.type === "tool_result") {
         const full = stringifyResult(block.content);
         const truncated = full.length > MAX_TOOL_RESULT_BYTES;
@@ -420,13 +424,14 @@ export async function readTranscriptTail(
             is_error: block.is_error === true,
           },
         });
-        added = true;
       }
-      if (turns.length >= limit) break;
     }
-    // (no else — we already added at least one turn or skipped)
-    void added;
   }
 
-  return turns.reverse();
+  // We pushed entries newest-first AND blocks-within-entry latest-first.
+  // Trim to the requested limit (drops oldest blocks of the oldest visible
+  // entry first — desired behavior: keep latest content visible), then
+  // reverse for chronological order. The previous in-loop limit check
+  // could chop off MID-entry, causing single-message data loss.
+  return turns.slice(0, limit).reverse();
 }

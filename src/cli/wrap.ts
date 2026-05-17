@@ -306,6 +306,12 @@ async function main(): Promise<void> {
   // Also tracked: current mode so we can echo it back after each setPermissionMode.
   let currentQ: Query | null = null;
   let currentMode: NonNullable<WrapArgs["permissionMode"]> = args.permissionMode ?? "default";
+  // Track the active SDK model (set on init from --model flag, mutated via
+  // q.setModel from the dashboard model-chip). undefined = SDK default
+  // (whatever CLAUDE_DEFAULT_MODEL / Anthropic default resolves to). We
+  // echo this back to the daemon so it can populate /sessions for the
+  // dashboard chip.
+  let currentModel: string | undefined = args.model;
 
   function connect(): void {
     if (!port) return;
@@ -319,6 +325,9 @@ async function main(): Promise<void> {
         cwd: args.cwd,
         pid: process.pid,
         permission_mode: currentMode,
+        // model is optional; daemon treats null as "SDK default" for chip
+        // labelling. Sent at register so reconnects re-seed the daemon map.
+        model: currentModel ?? null,
       }));
       // If we already had a session_uuid from SDK init (i.e., this is a
       // RECONNECT after init already happened), tell daemon right away.
@@ -360,6 +369,31 @@ async function main(): Promise<void> {
             }
           }).catch((err: unknown) => {
             process.stdout.write(`${yellow(`[wrap] setPermissionMode failed: ${(err as Error).message}`)}\n`);
+          });
+        } else if (m?.type === "set_model") {
+          // Dashboard requested a model switch. SDK's q.setModel() works in
+          // streaming-input mode (same as setPermissionMode). Empty string
+          // or null means "fall back to SDK default" — we forward as
+          // undefined since that's setModel's contract.
+          const newModelRaw = m.model;
+          const newModel: string | undefined = (typeof newModelRaw === "string" && newModelRaw.length > 0)
+            ? newModelRaw
+            : undefined;
+          const q = currentQ;
+          if (!q) {
+            process.stdout.write(`${yellow(`[wrap] set_model received but SDK query not ready yet`)}\n`);
+            return;
+          }
+          q.setModel(newModel).then(() => {
+            currentModel = newModel;
+            process.stdout.write(`${cyan(`[hub] model → ${newModel ?? "(default)"}`)}\n`);
+            const live = getWs();
+            if (live && live.readyState === live.OPEN && resumeUuid) {
+              try { live.send(JSON.stringify({ type: "model_changed", session_uuid: resumeUuid, model: newModel ?? null })); }
+              catch { /* ignore */ }
+            }
+          }).catch((err: unknown) => {
+            process.stdout.write(`${yellow(`[wrap] setModel failed: ${(err as Error).message}`)}\n`);
           });
         } else if (m?.type === "interrupt") {
           // Dashboard pressed the ⏹ button. Stop whatever the model is doing.

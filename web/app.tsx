@@ -19,6 +19,9 @@ interface Session {
   wrapped?: boolean;  // true if a `miki claude` wrapper is actively connected
   activity?: string | null;  // "Ideating" / "Using Bash" / "Replying" / null — live wrapper state
   permission_mode?: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "auto" | null;
+  // Active SDK model the wrap session is running on. Empty string = SDK
+  // default (no --model override). null = not wrapped / unknown.
+  current_model?: string | null;
   pending_ask?: PendingAsk | null;
 }
 
@@ -92,7 +95,10 @@ function fmtDateTime(ts: number | string): string {
   return d.toLocaleString("zh-TW", { hour12: false });
 }
 function fmtRelative(ts: number): string {
-  const ms = Date.now() - ts;
+  // Clamp negative deltas to 0. Server clock skew, just-fired events whose
+  // ts is "now + a few ms", or post-set state reads can otherwise produce
+  // "-1 秒前" which looks broken.
+  const ms = Math.max(0, Date.now() - ts);
   if (ms < 60_000) return t("time.secondsAgo", { n: Math.floor(ms / 1000) });
   if (ms < 3_600_000) return t("time.minutesAgo", { n: Math.floor(ms / 60_000) });
   if (ms < 86_400_000) return t("time.hoursAgo", { n: Math.floor(ms / 3_600_000) });
@@ -257,6 +263,33 @@ function IconTerminalPlus({ size = 13 }: { size?: number }) {
     </svg>
   );
 }
+function IconSliders({ size = 13 }: { size?: number }) {
+  // Three horizontal sliders — signals "view options / settings for the
+  // current panel" without pulling the heavier gear icon (which already
+  // means global Settings elsewhere in the app).
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="4" y1="6" x2="20" y2="6" />
+      <line x1="4" y1="12" x2="20" y2="12" />
+      <line x1="4" y1="18" x2="20" y2="18" />
+      <circle cx="9" cy="6" r="2" fill="var(--bg)" />
+      <circle cx="15" cy="12" r="2" fill="var(--bg)" />
+      <circle cx="7" cy="18" r="2" fill="var(--bg)" />
+    </svg>
+  );
+}
+function IconImagePlus({ size = 13 }: { size?: number }) {
+  // Picture frame with a small `+` overlay — signals "attach image".
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="3" width="14" height="14" rx="2" />
+      <circle cx="8" cy="8" r="1.5" />
+      <polyline points="3 14 8 10 13 14 17 11" />
+      <line x1="19" y1="15" x2="19" y2="21" />
+      <line x1="16" y1="18" x2="22" y2="18" />
+    </svg>
+  );
+}
 function IconLayers({ size = 13 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -342,6 +375,18 @@ interface AttachedImage {
 
 // Read all image items off a ClipboardEvent. Returns an array of base64-encoded
 // images suitable for Anthropic's image content blocks. Non-image items skipped.
+async function blobToAttachedImage(blob: Blob): Promise<AttachedImage> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const r = new FileReader();
+    r.onerror = () => reject(r.error);
+    r.onload = () => resolve(r.result as string);
+    r.readAsDataURL(blob);
+  });
+  const [meta, data] = dataUrl.split(",");
+  const media_type = meta?.match(/^data:([^;]+);/)?.[1] ?? "image/png";
+  return { media_type, data: data ?? "", preview: dataUrl, bytes: blob.size };
+}
+
 async function extractImagesFromClipboard(e: ClipboardEvent): Promise<AttachedImage[]> {
   const items = e.clipboardData?.items;
   if (!items) return [];
@@ -351,15 +396,22 @@ async function extractImagesFromClipboard(e: ClipboardEvent): Promise<AttachedIm
     if (!item.type.startsWith("image/")) continue;
     const blob = item.getAsFile();
     if (!blob) continue;
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const r = new FileReader();
-      r.onerror = () => reject(r.error);
-      r.onload = () => resolve(r.result as string);
-      r.readAsDataURL(blob);
-    });
-    const [meta, data] = dataUrl.split(",");
-    const media_type = meta?.match(/^data:([^;]+);/)?.[1] ?? "image/png";
-    out.push({ media_type, data: data ?? "", preview: dataUrl, bytes: blob.size });
+    out.push(await blobToAttachedImage(blob));
+  }
+  return out;
+}
+
+// Convert files chosen by an <input type="file" accept="image/*"> picker into
+// AttachedImage records. Mobile-friendly counterpart to clipboard-paste —
+// gives the phone UI an explicit upload button (the only realistic way to
+// attach an image when you don't have a system clipboard with image content).
+async function filesToAttachedImages(files: FileList | File[] | null): Promise<AttachedImage[]> {
+  if (!files) return [];
+  const arr = Array.from(files);
+  const out: AttachedImage[] = [];
+  for (const f of arr) {
+    if (!f.type.startsWith("image/")) continue;
+    out.push(await blobToAttachedImage(f));
   }
   return out;
 }
@@ -586,7 +638,7 @@ function ToolResultBox({ turn }: { turn: TranscriptTurn }) {
 }
 
 function TurnView({ turn }: { turn: TranscriptTurn }) {
-  const isUser = turn.role === "user";
+  const isUser = turn.role === "user" && !turn.tool_result;
   const isSystem = turn.role === "system";
   const isTool = !!(turn.tool_use || turn.tool_result);
   const roleLabel = isSystem ? "system" : isUser ? "user" : "claude";
@@ -598,26 +650,30 @@ function TurnView({ turn }: { turn: TranscriptTurn }) {
       : isUser
         ? "var(--neutral)"
         : "var(--pass)";
-  const bgClass = isTool ? "turn-bg-tool" : isSystem ? "turn-bg-tool" : isUser ? "turn-bg-user" : "turn-bg-assistant";
-  // Tool turns: tighter padding + smaller header margin since the embedded tool box has its own padding.
-  const pad = isTool ? "4px 12px" : "10px 14px";
+  const bgClass = isTool || isSystem ? "turn-bg-tool" : isUser ? "turn-bg-user" : "turn-bg-assistant";
   const headerMb = isTool ? 3 : 6;
   const headerFontSize = isTool ? 11 : 12;
+  // Chat-bubble layout: user anchored right, everyone else (assistant /
+  // system / tool) anchored left. The outer .turn-row picks the side via
+  // justify-content; the inner .turn-bubble is the constrained-width card.
+  // System messages share the assistant side per user spec; tool turns too.
   return (
-    <div class={bgClass} style={{ padding: pad, borderTop: "1px solid var(--border)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: headerMb }}>
-        <span style={{ color: roleColor, fontWeight: 600, fontSize: headerFontSize }}>{roleLabel}</span>
-        <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>{fmtDateTime(turn.ts)}</span>
-        {turn.tool_use && (
-          <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>· 🔧 {turn.tool_use.name}</span>
-        )}
-        {turn.tool_result && (
-          <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>· 📤 tool result</span>
-        )}
+    <div class={`turn-row ${isUser ? "turn-row-user" : "turn-row-other"}`}>
+      <div class={`turn-bubble ${bgClass}${isTool ? " turn-bubble-tool" : ""}`}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: headerMb, flexWrap: "wrap" }}>
+          <span style={{ color: roleColor, fontWeight: 600, fontSize: headerFontSize }}>{roleLabel}</span>
+          <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>{fmtDateTime(turn.ts)}</span>
+          {turn.tool_use && (
+            <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>· 🔧 {turn.tool_use.name}</span>
+          )}
+          {turn.tool_result && (
+            <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>· 📤 tool result</span>
+          )}
+        </div>
+        {turn.text && <MD text={turn.text} />}
+        {turn.tool_use && <ToolUseBox turn={turn} />}
+        {turn.tool_result && <ToolResultBox turn={turn} />}
       </div>
-      {turn.text && <MD text={turn.text} />}
-      {turn.tool_use && <ToolUseBox turn={turn} />}
-      {turn.tool_result && <ToolResultBox turn={turn} />}
     </div>
   );
 }
@@ -633,15 +689,23 @@ function SingleColumnTranscript({ turns }: { turns: TranscriptTurn[] }) {
   // ref (not state) so toggling doesn't re-render; only the scroll effect reads it.
   const sticky = useRef(true);
 
-  // After each render (i.e., when turns change), pin to bottom if user is still following.
+  // Auto-tail: pin to bottom on content change only (not every parent
+  // re-render). Without the contentKey dep, this fires after EVERY render
+  // — incidental updates from activity/streaming/peer events would snap
+  // the user back to bottom before they could finish a single touchmove.
+  const contentKey = turns.length === 0
+    ? "0"
+    : `${turns.length}|${turns[turns.length - 1]!.ts}|${turns[turns.length - 1]!.text.length}`;
   useEffect(() => {
     if (sticky.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  });
+  }, [contentKey]);
 
-  // Tolerance for "at bottom": some browsers report fractional scroll positions.
-  const TAIL_TOL = 24;
+  // Tolerance for "at bottom". 64px so a single touchmove on iOS reliably
+  // crosses the threshold and disengages auto-tail; the original 24px was
+  // too tight — short transcripts couldn't outpace it.
+  const TAIL_TOL = 64;
   function onScroll(ev: Event) {
     const el = ev.currentTarget as HTMLDivElement;
     sticky.current = el.scrollHeight - el.scrollTop - el.clientHeight < TAIL_TOL;
@@ -651,7 +715,10 @@ function SingleColumnTranscript({ turns }: { turns: TranscriptTurn[] }) {
     return <div style={{ padding: "12px 14px", color: "var(--fg-subtle)", fontSize: 12 }}>{t("transcript.empty")}</div>;
   }
   return (
-    <div ref={scrollRef} onScroll={onScroll} style={{ overflowY: "auto", height: "100%", minHeight: 0 }}>
+    // overscrollBehavior:contain — when this scroller hits its top/bottom on
+    // iOS, the touchmove momentum stops here instead of chaining up to the
+    // dashboard underneath the modal.
+    <div ref={scrollRef} onScroll={onScroll} style={{ overflowY: "auto", height: "100%", minHeight: 0, overscrollBehavior: "contain", WebkitOverflowScrolling: "touch" }}>
       <div style={{ position: "sticky", top: 0, zIndex: 1, padding: "6px 14px", fontSize: 10, fontWeight: 600, color: "var(--fg-subtle)", textTransform: "uppercase", letterSpacing: "0.08em", background: "var(--sl2)", borderBottom: "1px solid var(--border)" }}>
         {t("transcript.conversation")} · {turns.length}
       </div>
@@ -664,7 +731,7 @@ function SingleColumnTranscript({ turns }: { turns: TranscriptTurn[] }) {
 
 type ActionResult = { ok: boolean; label: string; url?: string; reply?: string; durationMs?: number; diag?: string; error?: string; ts: number } | null;
 
-function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend, sendKey, modalMode, onAfterSend, activity, transcript, transcriptLoading, transcriptError, transcriptLimit, onSetTranscriptLimit, onReloadTranscript, showTools, onSetShowTools, streamingText, userOverlayText, userOverlayTs }: {
+function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend, sendKey, modalMode, onAfterSend, activity, transcript, transcriptLoading, transcriptError, transcriptLimit, onSetTranscriptLimit, onReloadTranscript, showTools, onSetShowTools, streamingText, streamingStartTs, userOverlayText, userOverlayTs }: {
   s: Session;
   defaultExpanded: boolean;
   clientType: ClientType;
@@ -692,6 +759,7 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
   //   streamingText  is cleared on `assistant_delta_end` by the WS handler.
   //   userOverlayTs  is dropped by loadPreviews when last_user_ts >= ts.
   streamingText?: string;
+  streamingStartTs?: number;
   userOverlayText?: string;
   userOverlayTs?: number;
 }) {
@@ -707,6 +775,48 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
   const [collapsed, setCollapsed] = useState(!defaultExpanded);
   const [draft, setDraft] = useState("");
   const [draftImages, setDraftImages] = useState<AttachedImage[]>([]);
+  // Textarea ref + auto-resize.
+  //
+  // OLD BUG: auto-resize ran inline in onInput (set height="auto" then
+  // scrollHeight). On iOS that produced visible vibration on each keystroke
+  // — the "auto" step momentarily collapsed the box to one line (because
+  // overflow:hidden) before re-expanding, jiggling the entire modal layout
+  // since the composer flex-shrinks the transcript above.
+  //
+  // FIX: run auto-resize in a useEffect[draft] so React commits the new
+  // value first, then we measure + apply height in one paint cycle. Also
+  // skips the resize when `draft` is empty (just clears inline height,
+  // returning to CSS min-height — the post-send shrink case).
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    if (draft === "") {
+      el.style.height = "";
+      return;
+    }
+    // Two-step measure: height=auto so scrollHeight reflects intrinsic
+    // size, then clamp to maxHeight from the inline style. rAF defers
+    // the work to next paint so we don't fight React's commit phase.
+    requestAnimationFrame(() => {
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, modalMode ? 160 : 260)}px`;
+    });
+  }, [draft, modalMode]);
+  // In modalMode the inline "show TOOL / 20 條 / load-all / reload" bar is
+  // hidden to declutter the phone view; the same controls live in a popover
+  // toggled by an icon button in the header. State + ref managed here so
+  // outside-click closes it.
+  const [transcriptMenuOpen, setTranscriptMenuOpen] = useState(false);
+  const transcriptMenuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!transcriptMenuOpen) return;
+    function onDoc(e: MouseEvent) {
+      if (!transcriptMenuRef.current?.contains(e.target as Node)) setTranscriptMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [transcriptMenuOpen]);
   const imagesSupported = isWrapped;  // only wrap-push can carry image blocks
   // Default = prefill (free, uses your already-running VSCode panel session).
   // For wrapped sessions, server-side intercepts ANY mode and routes via WS push,
@@ -787,12 +897,21 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
       : undefined;
   return (
     <div class="card" style={cardStyle}>
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+      {/* Header — in modalMode (phone) we keep this minimal: just dot + name
+          + wrap/client badge. Status label, relative time, activity, and the
+          permission-mode chip move down to a thin status line directly above
+          the composer (rendered later in this component). Rationale: on a
+          narrow viewport those chips wrap onto 2-3 rows and visually drown
+          the project name; users glance at the composer when typing, so the
+          status belongs *there* (matches Happy CLI's "cooking…" pattern).
+          Padding is tighter in modal mode — vertical real-estate is precious
+          on phones, and 12px top/bottom was eating ~8% of the visible card
+          for whitespace alone. */}
+      <div style={{ display: "flex", alignItems: "center", gap: modalMode ? 8 : 10, padding: modalMode ? "6px 12px" : "12px 14px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
         <span class={STATUS_DOT[s.status]} />
         <button
           class="btn-ghost"
-          style={{ fontWeight: 600, fontSize: 15, padding: "2px 6px" }}
+          style={{ fontWeight: 600, fontSize: modalMode ? 14 : 15, padding: modalMode ? "0 4px" : "2px 6px" }}
           onClick={handleFocus}
           title={isCli ? t("focus.cliNotSupported") : t("focus.bringVSCode")}
           disabled={isCli}
@@ -806,15 +925,103 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
             size="md"
           />
         )}
-        <span style={{ color: "var(--fg-muted)", fontSize: 12 }}>{statusLabel(s.status)}</span>
-        {activity && (
-          <span class="cell-activity" title={t("focus.wrapperRunning", { activity })}>
-            <span class="cell-activity-dot" /> {activity}…
-          </span>
+        {/* Desktop (non-modal): keep the original chips in the header.
+            Phone (modalMode): omit them — they move to the composer status line. */}
+        {!modalMode && (
+          <>
+            <span style={{ color: "var(--fg-muted)", fontSize: 12 }}>{statusLabel(s.status)}</span>
+            {activity && (
+              <span class="cell-activity" title={t("focus.wrapperRunning", { activity })}>
+                {activity}…
+              </span>
+            )}
+            <span style={{ color: "var(--fg-subtle)", fontSize: 11, marginLeft: 8 }}>{fmtRelative(s.last_event_at)}</span>
+            {s.wrapped && <PermissionModeChip sessionUuid={s.session_uuid} mode={s.permission_mode ?? "default"} />}
+          </>
         )}
-        <span style={{ color: "var(--fg-subtle)", fontSize: 11, marginLeft: 8 }}>{fmtRelative(s.last_event_at)}</span>
-        {s.wrapped && <PermissionModeChip sessionUuid={s.session_uuid} mode={s.permission_mode ?? "default"} />}
-        <button class="btn-ghost" style={{ marginLeft: "auto" }} onClick={() => setCollapsed(true)} title={t("expand.collapse")}>▴</button>
+        {/* Collapse button only makes sense for the inline (grid) expanded card.
+            In modalMode the big card is opened in an overlay that has its own
+            close affordance — a second "collapse" button is redundant and on
+            mobile crowds the header. */}
+        {!modalMode && (
+          <button class="btn-ghost" style={{ marginLeft: "auto" }} onClick={() => setCollapsed(true)} title={t("expand.collapse")}>▴</button>
+        )}
+        {/* Phone: single sliders button — collapses the entire transcript
+            controls bar (show-TOOL / 20條 / load-all / reload) into a popover
+            so the header doesn't grow another row of chips. Anchored to the
+            wrapped/client badge area (pushed right with marginLeft:auto). */}
+        {modalMode && (
+          // marginRight reserves space for the absolutely-positioned
+          // .cell-modal-close (×) button at top:8 right:8 — without it the
+          // sliders icon sits underneath the close button.
+          <div ref={transcriptMenuRef} style={{ marginLeft: "auto", marginRight: 36, position: "relative" }}>
+            <button
+              class="btn-ghost icon-btn"
+              style={{ padding: "4px 6px" }}
+              onClick={() => setTranscriptMenuOpen((v) => !v)}
+              title={t("transcript.viewOptions")}
+              aria-label={t("transcript.viewOptions")}
+              aria-expanded={transcriptMenuOpen}
+            ><IconSliders size={15} /></button>
+            {transcriptMenuOpen && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 6px)",
+                  right: 0,
+                  zIndex: 50,
+                  background: "var(--bg)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  padding: "10px 12px",
+                  boxShadow: "0 6px 24px rgba(0,0,0,0.18)",
+                  minWidth: 200,
+                  display: "flex", flexDirection: "column", gap: 8,
+                }}
+              >
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--fg-muted)", cursor: "pointer", userSelect: "none" }}>
+                  <input
+                    type="checkbox"
+                    checked={showTools}
+                    onChange={(e) => onSetShowTools((e.currentTarget as HTMLInputElement).checked)}
+                    style={{ margin: 0 }}
+                  />
+                  {t("transcript.showTool")}
+                </label>
+                <select
+                  value={transcriptLimit}
+                  onChange={(e) => onSetTranscriptLimit(parseInt((e.currentTarget as HTMLSelectElement).value, 10))}
+                  style={{ width: "100%" }}
+                >
+                  <option value={10}>{t("transcript.items10")}</option>
+                  <option value={20}>{t("transcript.items20")}</option>
+                  <option value={50}>{t("transcript.items50")}</option>
+                  <option value={100}>{t("transcript.items100")}</option>
+                  <option value={200}>{t("transcript.items200")}</option>
+                  <option value={500}>{t("transcript.items500")}</option>
+                  <option value={10000}>{t("transcript.itemsAll")}</option>
+                </select>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button
+                    class="btn-outline"
+                    style={{ flex: 1, height: 30, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 12 }}
+                    onClick={() => { onSetTranscriptLimit(10000); setTranscriptMenuOpen(false); }}
+                    disabled={transcriptLoading}
+                    title={t("transcript.loadAllTitle")}
+                  ><IconLayers size={13} /> {t("transcript.loadAll")}</button>
+                  <button
+                    class="btn-outline"
+                    style={{ height: 30, padding: "0 10px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                    onClick={() => { onReloadTranscript(); setTranscriptMenuOpen(false); }}
+                    disabled={transcriptLoading}
+                    title={transcriptLoading ? t("transcript.loading") : t("transcript.reload")}
+                    aria-label={transcriptLoading ? t("transcript.loading") : t("transcript.reload")}
+                  ><IconRefresh size={13} spinning={transcriptLoading} /></button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Transcript section — flex:1, scrollable */}
@@ -822,45 +1029,49 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
         ? { display: "flex", flexDirection: "column", flex: 1, minHeight: 0, borderBottom: "1px solid var(--border)" }
         : { borderBottom: "1px solid var(--border)" }
       }>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", flexShrink: 0 }}>
-              <label style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--fg-subtle)", cursor: "pointer", userSelect: "none" }}>
-                <input
-                  type="checkbox"
-                  checked={showTools}
-                  onChange={(e) => onSetShowTools((e.currentTarget as HTMLInputElement).checked)}
-                  style={{ margin: 0 }}
-                />
-                {t("transcript.showTool")}
-              </label>
-              <select
-                value={transcriptLimit}
-                onChange={(e) => onSetTranscriptLimit(parseInt((e.currentTarget as HTMLSelectElement).value, 10))}
-              >
-                <option value={10}>{t("transcript.items10")}</option>
-                <option value={20}>{t("transcript.items20")}</option>
-                <option value={50}>{t("transcript.items50")}</option>
-                <option value={100}>{t("transcript.items100")}</option>
-                <option value={200}>{t("transcript.items200")}</option>
-                <option value={500}>{t("transcript.items500")}</option>
-                <option value={10000}>{t("transcript.itemsAll")}</option>
-              </select>
-              <button
-                class="btn-outline"
-                style={{ height: 28, padding: "0 8px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
-                onClick={() => onSetTranscriptLimit(10000)}
-                disabled={transcriptLoading}
-                title={t("transcript.loadAllTitle")}
-                aria-label={t("transcript.loadAll")}
-              ><IconLayers size={14} /></button>
-              <button
-                class="btn-outline"
-                style={{ height: 28, padding: "0 8px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
-                onClick={onReloadTranscript}
-                disabled={transcriptLoading}
-                title={transcriptLoading ? t("transcript.loading") : t("transcript.reload")}
-                aria-label={transcriptLoading ? t("transcript.loading") : t("transcript.reload")}
-              ><IconRefresh size={14} spinning={transcriptLoading} /></button>
-            </div>
+        {/* Inline transcript controls bar — hidden in modalMode where the
+            same controls live in the header's sliders popover. */}
+        {!modalMode && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", flexShrink: 0 }}>
+                <label style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--fg-subtle)", cursor: "pointer", userSelect: "none" }}>
+                  <input
+                    type="checkbox"
+                    checked={showTools}
+                    onChange={(e) => onSetShowTools((e.currentTarget as HTMLInputElement).checked)}
+                    style={{ margin: 0 }}
+                  />
+                  {t("transcript.showTool")}
+                </label>
+                <select
+                  value={transcriptLimit}
+                  onChange={(e) => onSetTranscriptLimit(parseInt((e.currentTarget as HTMLSelectElement).value, 10))}
+                >
+                  <option value={10}>{t("transcript.items10")}</option>
+                  <option value={20}>{t("transcript.items20")}</option>
+                  <option value={50}>{t("transcript.items50")}</option>
+                  <option value={100}>{t("transcript.items100")}</option>
+                  <option value={200}>{t("transcript.items200")}</option>
+                  <option value={500}>{t("transcript.items500")}</option>
+                  <option value={10000}>{t("transcript.itemsAll")}</option>
+                </select>
+                <button
+                  class="btn-outline"
+                  style={{ height: 28, padding: "0 8px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                  onClick={() => onSetTranscriptLimit(10000)}
+                  disabled={transcriptLoading}
+                  title={t("transcript.loadAllTitle")}
+                  aria-label={t("transcript.loadAll")}
+                ><IconLayers size={14} /></button>
+                <button
+                  class="btn-outline"
+                  style={{ height: 28, padding: "0 8px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                  onClick={onReloadTranscript}
+                  disabled={transcriptLoading}
+                  title={transcriptLoading ? t("transcript.loading") : t("transcript.reload")}
+                  aria-label={transcriptLoading ? t("transcript.loading") : t("transcript.reload")}
+                ><IconRefresh size={14} spinning={transcriptLoading} /></button>
+              </div>
+        )}
             {transcriptError && (
               <div style={{ padding: "8px 14px", color: "var(--accent)", fontSize: 12 }}>{transcriptError}</div>
             )}
@@ -899,16 +1110,31 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
                   });
                 }
               }
-              // Append in-flight assistant streaming buffer. WS handler clears
-              // this on `assistant_delta_end`, so by the time the canonical
-              // turn lands in JSONL there's no double-render.
+              // Append in-flight assistant streaming buffer. We keep this
+              // buffer alive past assistant_delta_end (see WS handler) to
+              // avoid the "blank flash" between delta_end and canonical
+              // JSONL landing. The guard below prevents a brief duplicate:
+              // if the latest canonical assistant turn is newer than the
+              // stream's startTs, canonical has caught up and we suppress
+              // the overlay (loadPreviews will clear it from state shortly
+              // after for memory hygiene).
               if (streamingText && streamingText.length > 0) {
-                extras.push({
-                  ts: new Date().toISOString(),
-                  role: "assistant",
-                  text: streamingText,
-                  raw_type: "synthetic-streaming",
-                });
+                let latestAssistantTs = 0;
+                for (const tn of transcript.turns) {
+                  if (tn.role !== "assistant" || tn.tool_use) continue;
+                  const ts = Date.parse(tn.ts) || 0;
+                  if (ts > latestAssistantTs) latestAssistantTs = ts;
+                }
+                const startedAt = streamingStartTs ?? 0;
+                const canonicalCaughtUp = startedAt > 0 && latestAssistantTs >= startedAt;
+                if (!canonicalCaughtUp) {
+                  extras.push({
+                    ts: new Date().toISOString(),
+                    role: "assistant",
+                    text: streamingText,
+                    raw_type: "synthetic-streaming",
+                  });
+                }
               }
               const renderTurns = extras.length > 0 ? baseTurns.concat(extras) : baseTurns;
               return (
@@ -934,6 +1160,41 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
 
         {/* Send composer */}
         <div style={{ padding: "8px 14px 12px", display: "flex", flexDirection: "column", gap: 6, borderTop: "1px solid var(--border)" }}>
+          {/* Phone status line — moved out of header. Single row that wraps
+              gracefully; permission-mode chip stays clickable. Inspired by
+              Happy CLI where "cooking…" sits inline above the input. */}
+          {modalMode && (
+            // Status line layout — left cluster is STABLE (status dot + label +
+            // chips), right cluster holds the volatile bits (relative time,
+            // cooking… activity). Time text width changes as seconds tick
+            // ("9 秒前" → "10 秒前" → "1 分鐘前") which previously rippled
+            // through the flex row and made the default/bypass chips
+            // visibly drift. Pushing the volatile group to the right with
+            // marginLeft:auto pins the chips in place.
+            <div style={{
+              display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+              fontSize: 11, color: "var(--fg-subtle)", marginBottom: 2,
+            }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <span class={STATUS_DOT[s.status]} style={{ width: 7, height: 7 }} />
+                <span style={{ color: "var(--fg-muted)" }}>{statusLabel(s.status)}</span>
+              </span>
+              {s.wrapped && (
+                <>
+                  <ModelChip sessionUuid={s.session_uuid} current={s.current_model} />
+                  <PermissionModeChip sessionUuid={s.session_uuid} mode={s.permission_mode ?? "default"} />
+                </>
+              )}
+              <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 8 }}>
+                {activity && (
+                  <span class="cell-activity" title={t("focus.wrapperRunning", { activity })}>
+                    {activity}…
+                  </span>
+                )}
+                <span>{fmtRelative(s.last_event_at)}</span>
+              </span>
+            </div>
+          )}
           <AttachedImageStrip images={draftImages} onRemove={(i) => setDraftImages((prev) => prev.filter((_, j) => j !== i))} dimmed={!imagesSupported && draftImages.length > 0} />
           {!imagesSupported && draftImages.length > 0 && (
             <div style={{ fontSize: 10, color: "var(--warn)" }}>
@@ -942,15 +1203,28 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
           )}
           <div style={{ display: "flex", gap: 8 }}>
             <textarea
+              ref={textareaRef}
               autoFocus={modalMode}
-              style={{ flex: 1, minHeight: 38, fontSize: 13 }}
-              rows={2}
+              // minWidth:0: canonical flex-child shrink fix (without it,
+              // placeholder text intrinsically widens the textarea on
+              // phones and pushes send/upload icons off-screen).
+              //
+              // Phone: halve the visible height — "輸入訊息…" only needs
+              // one line, the original rows={2} ate too much screen.
+              // Desktop keeps the 2-row affordance for longer prompts.
+              //
+              // overflow:hidden + resize:none + auto-resize-in-onInput
+              // lets the textarea grow line-by-line as the user types
+              // multi-line prompts (capped at maxHeight). The native
+              // corner grabber would fight that, so we hide it.
+              style={{ flex: 1, minWidth: 0, minHeight: modalMode ? 20 : 38, maxHeight: modalMode ? 160 : 260, fontSize: 13, overflow: "hidden", resize: "none" }}
+              rows={modalMode ? 1 : 2}
               placeholder={
                 sendBlocked
                   ? (isCli
-                      ? t("composer.cliNotWrapped", { short: sessionUuid.slice(0, 8) })
-                      : t("composer.vscodeDisabledWrap", { short: sessionUuid.slice(0, 8) }))
-                  : t("composer.inputPrompt")
+                      ? t(modalMode ? "composer.cliNotWrappedShort" : "composer.cliNotWrapped", { short: sessionUuid.slice(0, 8) })
+                      : t(modalMode ? "composer.vscodeDisabledShort" : "composer.vscodeDisabledWrap", { short: sessionUuid.slice(0, 8) }))
+                  : t(modalMode ? "composer.inputPromptShort" : "composer.inputPrompt")
               }
               value={draft}
               onInput={(e) => setDraft((e.currentTarget as HTMLTextAreaElement).value)}
@@ -963,6 +1237,36 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
               }}
               disabled={busy || sendBlocked}
             />
+            {/* Image upload — explicit button so mobile users (who don't have
+                clipboard image paste) can still attach screenshots. Hidden
+                native <input type=file> triggered by the icon button. */}
+            <label
+              class="btn-ghost icon-btn"
+              style={{
+                height: 34, width: 34, padding: 0, display: "inline-flex",
+                alignItems: "center", justifyContent: "center",
+                cursor: imagesSupported && !busy ? "pointer" : "not-allowed",
+                opacity: imagesSupported && !busy ? 1 : 0.5,
+              }}
+              title={t("composer.uploadImage")}
+              aria-label={t("composer.uploadImage")}
+            >
+              <IconImagePlus size={14} />
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                style={{ display: "none" }}
+                disabled={!imagesSupported || busy}
+                onChange={async (e) => {
+                  const el = e.currentTarget as HTMLInputElement;
+                  const got = await filesToAttachedImages(el.files);
+                  if (got.length > 0) setDraftImages((prev) => [...prev, ...got]);
+                  // Reset so picking the same file again still fires onChange.
+                  el.value = "";
+                }}
+              />
+            </label>
             {isWrapped && (
               <button
                 class="btn-ghost icon-btn"
@@ -1368,7 +1672,12 @@ function PermissionModeChip({ sessionUuid, mode }: { sessionUuid: string | null;
   return (
     <div ref={ref} class="pmode-chip-wrap" onClick={stop} onMouseDown={stop}>
       <button
-        class="pmode-chip pmode-chip-neutral"
+        // Apply the per-mode color class (pmode-chip-bypass / -plan / etc)
+        // so the chip itself tints by mode — red for bypass, blue for plan,
+        // green for accept-edits, etc. Previously stuck on the neutral
+        // grey, which hid the safety signal (bypass especially deserves
+        // to be visually loud).
+        class={`pmode-chip ${PMODE_STATIC[pending ?? mode].cls}`}
         title={cfg.title + t("mode.switchHint")}
         onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
         onMouseDown={stop}
@@ -1397,6 +1706,198 @@ function PermissionModeChip({ sessionUuid, mode }: { sessionUuid: string | null;
               {m === mode && <span class="pmode-check">✓</span>}
             </button>
           ))}
+          {err && <div class="pmode-err">{err}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Active-model chip — sister of PermissionModeChip, sits one slot to its
+// left in the modal status line. Click → popover with the four canonical
+// Anthropic models + the implicit "(default)" fallback (which delegates to
+// whatever the SDK / CLAUDE_DEFAULT_MODEL resolves to at runtime).
+// Picking a model POSTs to /wrap/model; daemon forwards to wrap.ts which
+// calls q.setModel(). The current_model field on Session is updated by the
+// server's model_changed handler and re-broadcast via session_changed so
+// every connected dashboard repaints.
+//
+// Model list is intentionally short — most users only switch between these
+// few. Tier-3-style fine-grained pinning ("claude-opus-4-7-20251122") is
+// available by typing in the textbox at the bottom; freeform takes
+// precedence over the preset buttons.
+const MODEL_PRESETS: { key: string; label: string; aliasFor: string }[] = [
+  { key: "default", label: "default", aliasFor: "" },           // empty = SDK default
+  { key: "sonnet",  label: "Sonnet",  aliasFor: "sonnet"  },
+  { key: "opus",    label: "Opus",    aliasFor: "opus"    },
+  { key: "haiku",   label: "Haiku",   aliasFor: "haiku"   },
+];
+
+function modelLabel(current: string | null | undefined): string {
+  if (!current) return "default";
+  const preset = MODEL_PRESETS.find((p) => p.aliasFor === current);
+  if (preset) return preset.label;
+  // Custom model id — show a compact suffix instead of full
+  // "claude-opus-4-7-20251122" to avoid bloating the status line.
+  // Strip "claude-" prefix and trailing date if present.
+  return current.replace(/^claude-/, "").replace(/-\d{8}$/, "");
+}
+
+function ModelChip({ sessionUuid, current }: { sessionUuid: string | null; current: string | null | undefined }) {
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [custom, setCustom] = useState("");
+  const ref = useRef<HTMLDivElement | null>(null);
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  // Fixed-position popover coords. CSS-only anchoring (right:0 / left:0
+  // relative to the chip) was unreliable on phones because the chip sits
+  // mid-row in the status line — neither anchor stays inside the viewport.
+  // We measure the chip rect on open + resize and clamp the popover into
+  // the viewport (left 8px gutter, width = min(content, vw-16)).
+  const [popPos, setPopPos] = useState<{ left: number; bottom: number; width: number } | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) { setPopPos(null); return; }
+    function measure() {
+      const r = btnRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      // Prefer 300px wide; cap so the popover always fits with 8px gutters
+      // on both sides regardless of chip horizontal position.
+      const width = Math.min(300, vw - 16);
+      // Try aligning left edge to chip's left. If that would overflow the
+      // right gutter, slide left until it fits. If chip is to the right of
+      // the available room, this becomes "anchor right gutter".
+      const desiredLeft = r.left;
+      const maxLeft = vw - width - 8;
+      const left = Math.max(8, Math.min(desiredLeft, maxLeft));
+      // Distance from viewport bottom to where the popover bottom edge
+      // should sit (i.e. the chip's top - 6px gap). Using `bottom` instead
+      // of `top` so menu grows upward and never extends below the chip.
+      const bottom = vh - r.top + 6;
+      setPopPos({ left, bottom, width });
+    }
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [open]);
+
+  async function pick(modelId: string) {
+    if (!sessionUuid || pending !== null) return;
+    setPending(modelId); setErr(null);
+    try {
+      const r = await apiFetch("/wrap/model", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ session_uuid: sessionUuid, model: modelId }),
+      });
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        setErr(body?.error ?? `HTTP ${r.status}`);
+      } else {
+        setOpen(false);
+        setCustom("");
+      }
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setPending(null);
+    }
+  }
+
+  const label = pending !== null
+    ? `${modelLabel(pending || null)}…`
+    : modelLabel(current);
+
+  const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
+  return (
+    <div ref={ref} class="pmode-chip-wrap" onClick={stop} onMouseDown={stop}>
+      <button
+        ref={btnRef}
+        // Same shape/skin as a permission-mode chip (e.g. bypass) — neutral
+        // colour because model isn't a safety signal, but identical metrics
+        // (height/padding/font) so the row of chips reads as one unit.
+        class="pmode-chip pmode-chip-neutral"
+        title={t("model.switchHint")}
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        onMouseDown={stop}
+        disabled={!sessionUuid}
+      >
+        <span>{label}</span>
+      </button>
+      {open && popPos && (
+        // position: fixed with measured coords — see effect above. We
+        // bypass .pmode-menu's CSS anchoring entirely (no left:0 / right:0)
+        // so the popover is guaranteed to stay inside the viewport on any
+        // chip position. Width is min(300, vw-16).
+        <div
+          class="pmode-menu"
+          onClick={stop}
+          onMouseDown={stop}
+          style={{
+            position: "fixed",
+            left: popPos.left,
+            bottom: popPos.bottom,
+            top: "auto",
+            right: "auto",
+            width: popPos.width,
+            maxWidth: "none",
+            minWidth: 0,
+          }}
+        >
+          <div class="pmode-menu-head">{t("model.menuTitle")}</div>
+          {MODEL_PRESETS.map((p) => {
+            const isCurrent = (current ?? "") === p.aliasFor;
+            return (
+              <button
+                key={p.key}
+                class={"pmode-menu-item " + (isCurrent ? "is-current" : "")}
+                onClick={(e) => { e.stopPropagation(); pick(p.aliasFor); }}
+                onMouseDown={stop}
+                disabled={pending !== null}
+                title={p.label}
+              >
+                <div class="pmode-menu-text">
+                  <div class="pmode-menu-label">{p.label}</div>
+                  <div class="pmode-menu-desc">
+                    {p.aliasFor === "" ? t("model.defaultDesc") : t("model.aliasDesc", { id: p.aliasFor })}
+                  </div>
+                </div>
+                {isCurrent && <span class="pmode-check">✓</span>}
+              </button>
+            );
+          })}
+          <div style={{ padding: "8px 10px", borderTop: "1px solid var(--border)", display: "flex", gap: 6 }}>
+            <input
+              type="text"
+              placeholder={t("model.customPlaceholder")}
+              value={custom}
+              onInput={(e) => setCustom((e.currentTarget as HTMLInputElement).value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && custom.trim()) { e.preventDefault(); void pick(custom.trim()); } }}
+              style={{ flex: 1, minWidth: 0, fontSize: 12, fontFamily: "ui-monospace, monospace" }}
+            />
+            <button
+              class="btn-primary"
+              style={{ height: 28, padding: "0 10px", fontSize: 11 }}
+              disabled={!custom.trim() || pending !== null}
+              onClick={(e) => { e.stopPropagation(); if (custom.trim()) void pick(custom.trim()); }}
+            >{t("model.applyCustom")}</button>
+          </div>
           {err && <div class="pmode-err">{err}</div>}
         </div>
       )}
@@ -1809,6 +2310,30 @@ function NewCliButton({ recentCwds }: { recentCwds: string[] }) {
             <datalist id="newcli-cwd-suggestions">
               {recentCwds.map((c) => <option key={c} value={c} />)}
             </datalist>
+          )}
+          {/* Mobile-friendly dropdown: <datalist> requires tapping a tiny
+              caret on iOS Safari and is hidden on most Android browsers.
+              A native <select> opens the OS picker on tap — much easier on
+              touch. Picking an entry mirrors it back into the input above. */}
+          {recentCwds.length > 0 && (
+            <select
+              value=""
+              onChange={(e) => {
+                const v = (e.currentTarget as HTMLSelectElement).value;
+                if (v) {
+                  setCwd(v);
+                  // Reset the select back to placeholder so the user can
+                  // pick the same entry again after edits.
+                  (e.currentTarget as HTMLSelectElement).value = "";
+                  queueMicrotask(() => inputRef.current?.focus());
+                }
+              }}
+              aria-label={t("newCli.recentCwds")}
+              style={{ width: "100%", marginTop: 6, fontFamily: "ui-monospace, Consolas, monospace", fontSize: 12 }}
+            >
+              <option value="">{t("newCli.recentCwds")}…</option>
+              {recentCwds.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
           )}
           <div style={{ fontSize: 10, color: "var(--fg-subtle)", marginTop: 6, lineHeight: 1.45 }}>
             {t("newCli.hint")}
@@ -2239,6 +2764,33 @@ function Popover({ s, x, y, clientType, onSetClientType, onClose, onSend, sendKe
           style={{ width: "100%", minHeight: 80, fontSize: 13, fontFamily: "inherit", marginBottom: 8 }}
         />
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {/* Mobile-friendly image upload — see matching button in <Card>. */}
+          <label
+            class="btn-ghost"
+            style={{
+              height: 32, padding: "0 10px", display: "inline-flex",
+              alignItems: "center", justifyContent: "center",
+              cursor: imagesSupported && !busy ? "pointer" : "not-allowed",
+              opacity: imagesSupported && !busy ? 1 : 0.5,
+            }}
+            title={t("composer.uploadImage")}
+            aria-label={t("composer.uploadImage")}
+          >
+            <IconImagePlus size={14} />
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              style={{ display: "none" }}
+              disabled={!imagesSupported || busy}
+              onChange={async (e) => {
+                const el = e.currentTarget as HTMLInputElement;
+                const got = await filesToAttachedImages(el.files);
+                if (got.length > 0) setImages((prev) => [...prev, ...got]);
+                el.value = "";
+              }}
+            />
+          </label>
           {isWrapped && (
             <button
               class="btn-ghost"
@@ -2311,7 +2863,7 @@ function ActivityLog({ entries, onClear }: { entries: LogEntry[]; onClear: () =>
 // composer) in a centered modal. Closes on backdrop click, Esc key, or after
 // a successful send (via Card's onAfterSend hook).
 
-function CellModal({ s, onClose, clientType, onSetClientType, onFocus, onSend, sendKey, pendingAsk, askDismissed, onReopenAsk, activity, transcript, transcriptLoading, transcriptError, transcriptLimit, onSetTranscriptLimit, onReloadTranscript, showTools, onSetShowTools, streamingText, userOverlayText, userOverlayTs }: {
+function CellModal({ s, onClose, clientType, onSetClientType, onFocus, onSend, sendKey, pendingAsk, askDismissed, onReopenAsk, activity, transcript, transcriptLoading, transcriptError, transcriptLimit, onSetTranscriptLimit, onReloadTranscript, showTools, onSetShowTools, streamingText, streamingStartTs, userOverlayText, userOverlayTs }: {
   s: Session;
   onClose: () => void;
   clientType: ClientType;
@@ -2332,6 +2884,7 @@ function CellModal({ s, onClose, clientType, onSetClientType, onFocus, onSend, s
   showTools: boolean;
   onSetShowTools: (v: boolean) => void;
   streamingText?: string;
+  streamingStartTs?: number;
   userOverlayText?: string;
   userOverlayTs?: number;
 }) {
@@ -2343,18 +2896,152 @@ function CellModal({ s, onClose, clientType, onSetClientType, onFocus, onSend, s
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // Lock body scroll while modal is open — otherwise wheel events over the
-  // backdrop (or wheel events that hit the modal's scroll boundary) chain up
-  // and scroll the dashboard underneath.
+  // Lock body scroll while modal is open. On desktop `overflow: hidden` is
+  // enough, but iOS Safari ignores it during momentum/touch scroll — the
+  // page underneath still scrolls when a touch inside the modal hits the
+  // scroll boundary. The reliable iOS fix is to flip body to `position:
+  // fixed` and offset it by the current scrollY; on unmount we restore the
+  // styles AND scrollTo the saved offset so the dashboard ends up exactly
+  // where the user left it.
   useEffect(() => {
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = prev; };
+    const body = document.body;
+    const prev = {
+      position: body.style.position,
+      top: body.style.top,
+      left: body.style.left,
+      right: body.style.right,
+      width: body.style.width,
+      overflow: body.style.overflow,
+    };
+    const scrollY = window.scrollY || window.pageYOffset || 0;
+    body.style.position = "fixed";
+    body.style.top = `-${scrollY}px`;
+    body.style.left = "0";
+    body.style.right = "0";
+    body.style.width = "100%";
+    body.style.overflow = "hidden";
+    return () => {
+      body.style.position = prev.position;
+      body.style.top = prev.top;
+      body.style.left = prev.left;
+      body.style.right = prev.right;
+      body.style.width = prev.width;
+      body.style.overflow = prev.overflow;
+      // Restore exact scroll position. Without this the dashboard jumps to
+      // the top when the modal closes.
+      window.scrollTo(0, scrollY);
+    };
   }, []);
+
+  // Swipe-right-to-close gesture (back gesture, matches iOS convention).
+  //
+  // The previous attempt used React synthetic onTouchStart/End on the modal
+  // panel. Those handlers never fired reliably because the transcript
+  // scroll container (which fills most of the modal) captures touch
+  // sequences for its own vertical scroll handling on iOS, swallowing the
+  // bubble path. Document-level native listeners get every touch
+  // unconditionally — including the ones that started inside the scroller.
+  //
+  // We also drag the modal panel along with the finger for visual
+  // feedback (transform: translateX) so the user can SEE that the gesture
+  // is being recognised. If the gesture aborts (lifted finger short of
+  // threshold, or vertical motion dominates), we snap back to 0.
+  const modalPanelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const panel = modalPanelRef.current;
+    if (!panel) return;
+    let startX = 0, startY = 0;
+    let active = false;
+    let armed = false;       // true once we're sure this is a horizontal gesture
+    let onInteractive = false;
+    function reset() {
+      active = false; armed = false; onInteractive = false;
+      panel!.style.transition = "transform 0.18s ease-out";
+      panel!.style.transform = "";
+    }
+    function isInteractive(target: EventTarget | null): boolean {
+      const el = target as HTMLElement | null;
+      if (!el) return false;
+      if (el.closest("textarea, input, select")) return true;
+      // Anything inside an open popover menu (model / permission mode picker).
+      if (el.closest(".pmode-menu")) return true;
+      return false;
+    }
+    function onStart(e: TouchEvent) {
+      if (e.touches.length !== 1) { active = false; return; }
+      const t = e.touches[0]!;
+      // Only consider touches that started inside the modal panel.
+      if (!panel!.contains(t.target as Node)) { active = false; return; }
+      startX = t.clientX; startY = t.clientY;
+      active = true; armed = false;
+      onInteractive = isInteractive(t.target);
+      panel!.style.transition = "none";  // follow finger 1:1 during drag
+    }
+    function onMove(e: TouchEvent) {
+      if (!active || onInteractive) return;
+      const t = e.touches[0]; if (!t) return;
+      const dx = t.clientX - startX;
+      const dy = t.clientY - startY;
+      if (!armed) {
+        // Disambiguate gesture once motion is ~8px. If clearly vertical
+        // (likely a transcript scroll), abandon — vertical scroll proceeds
+        // normally because we don't preventDefault.
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        if (Math.abs(dy) > Math.abs(dx)) { active = false; return; }
+        armed = true;
+      }
+      if (dx > 0) {
+        // Drag follows finger rightward. Cap leftward drag at 0 (don't
+        // let the modal slide off the left edge — left-swipe isn't a
+        // close gesture in this app).
+        panel!.style.transform = `translateX(${dx}px)`;
+        // Once we own the gesture, prevent the page from also reacting
+        // (e.g. iOS native swipe-to-go-back when starting near the left
+        // edge — same direction, would race us).
+        if (e.cancelable) e.preventDefault();
+      } else {
+        panel!.style.transform = "";
+      }
+    }
+    function onEnd(e: TouchEvent) {
+      if (!active) { reset(); return; }
+      const t = e.changedTouches[0];
+      if (!t) { reset(); return; }
+      const dx = t.clientX - startX;
+      const dy = t.clientY - startY;
+      // Threshold: travelled ≥80px right AND horizontal-dominant.
+      if (armed && dx > 80 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+        // Animate the rest of the way off-screen then close.
+        panel!.style.transition = "transform 0.16s ease-out";
+        panel!.style.transform = `translateX(100%)`;
+        // Wait for the slide before calling onClose so the user perceives
+        // continuity. If anything ever races, the modal still unmounts.
+        window.setTimeout(() => { onClose(); }, 160);
+      } else {
+        reset();
+      }
+    }
+    // passive:false on touchmove so we can preventDefault when horizontal-
+    // dominant; touchstart/end stay passive (cheaper, no preventDefault).
+    document.addEventListener("touchstart", onStart, { passive: true });
+    document.addEventListener("touchmove", onMove, { passive: false });
+    document.addEventListener("touchend", onEnd, { passive: true });
+    document.addEventListener("touchcancel", reset, { passive: true });
+    return () => {
+      document.removeEventListener("touchstart", onStart);
+      document.removeEventListener("touchmove", onMove);
+      document.removeEventListener("touchend", onEnd);
+      document.removeEventListener("touchcancel", reset);
+    };
+  }, [onClose]);
 
   return (
     <div class="cell-modal-backdrop" onClick={onClose}>
-      <div class="cell-modal" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={modalPanelRef}
+        class="cell-modal"
+        onClick={(e) => e.stopPropagation()}
+      >
         <button class="cell-modal-close" onClick={onClose} title={t("session.modalClose")}>×</button>
         {pendingAsk && askDismissed && (
           <div class="cell-modal-ask-banner">
@@ -2385,6 +3072,7 @@ function CellModal({ s, onClose, clientType, onSetClientType, onFocus, onSend, s
           showTools={showTools}
           onSetShowTools={onSetShowTools}
           streamingText={streamingText}
+          streamingStartTs={streamingStartTs}
           userOverlayText={userOverlayText}
           userOverlayTs={userOverlayTs}
         />
@@ -2564,10 +3252,17 @@ function App() {
   // Live activity label per wrapped session ("Ideating" / "Using Bash" / null).
   const [activities, setActivities] = useState<Record<string, string>>({});
   // Live streaming assistant text per session — populated by assistant_delta WS
-  // messages while a turn is in progress. Cleared on assistant_delta_end. When
-  // present, overrides preview.last_assistant_text so the cell preview / modal
-  // shows token-by-token output instead of waiting for full turn.
+  // messages while a turn is in progress. Cleared not on assistant_delta_end
+  // (that left a blank gap until canonical JSONL landed ~300ms later — the
+  // user-visible "flash"), but in loadPreviews once last_assistant_ts proves
+  // canonical has caught up. Render-time logic uses streamingStartTs to skip
+  // the overlay when canonical already has the assistant turn, avoiding both
+  // the flash AND a brief duplicate render.
   const [streaming, setStreaming] = useState<Record<string, string>>({});
+  // Wall-clock timestamp recorded on assistant_delta_start; used as the
+  // "is canonical caught up?" reference. Parallel to `streaming` so we can
+  // keep that state shape compatible with existing consumers.
+  const [streamingStartTs, setStreamingStartTs] = useState<Record<string, number>>({});
   // Optimistic user-message overlay per session — populated by user_message WS
   // (wrap.ts emits this the instant Enter is pressed, before SDK flushes to
   // JSONL). The small card's "user" line reads this first; we drop it once the
@@ -2738,6 +3433,29 @@ function App() {
         }
         return mutated ? next : prev;
       });
+      // Drop streaming buffers once canonical JSONL has caught up (its
+      // last_assistant_ts ≥ the streamingStartTs we recorded on
+      // assistant_delta_start). Mirrors the userOverlay cleanup above and
+      // closes the "flash" loop — render kept the overlay visible during
+      // the gap, this clears it now that canonical owns the turn.
+      setStreamingStartTs((prevStartTs) => {
+        const muted = new Set<string>();
+        const nextStartTs: Record<string, number> = {};
+        for (const [uuid, startTs] of Object.entries(prevStartTs)) {
+          const p = map[uuid];
+          const aTs = p?.last_assistant_ts ? Date.parse(p.last_assistant_ts) : 0;
+          if (aTs >= startTs) { muted.add(uuid); continue; }
+          nextStartTs[uuid] = startTs;
+        }
+        if (muted.size > 0) {
+          setStreaming((prev) => {
+            const next = { ...prev };
+            for (const uuid of muted) delete next[uuid];
+            return next;
+          });
+        }
+        return muted.size > 0 ? nextStartTs : prevStartTs;
+      });
       addLog("info", `previews loaded`, { count: arr.length });
     } catch (e) {
       addLog("error", "previews fetch throw", { error: String(e) });
@@ -2891,24 +3609,28 @@ function App() {
         });
       } else if (msg.type === "assistant_delta_start") {
         // New assistant text block starting — reset the streaming buffer
-        // (covers the case where a turn has multiple text blocks).
+        // (covers the case where a turn has multiple text blocks). Record
+        // a wall-clock startTs so render + loadPreviews can decide later
+        // when canonical JSONL has caught up.
         const uuid = msg.session_uuid as string;
         addLog("info", "WS assistant_delta_start", { uuid: uuid.slice(0, 8) });
         setStreaming((prev) => ({ ...prev, [uuid]: "" }));
+        setStreamingStartTs((prev) => ({ ...prev, [uuid]: Date.now() }));
       } else if (msg.type === "assistant_delta") {
         const uuid = msg.session_uuid as string;
         const chunk = typeof msg.text === "string" ? msg.text : "";
         if (!chunk) return;
         setStreaming((prev) => ({ ...prev, [uuid]: (prev[uuid] ?? "") + chunk }));
       } else if (msg.type === "assistant_delta_end") {
-        // Turn complete — drop the streaming buffer. The next preview poll
-        // (within ~2s) replaces it with the canonical text from JSONL, so
-        // there's no visual gap. Also schedule a unified refresh so the
-        // modal transcript snaps to the canonical JSONL state without
-        // waiting for the followup hook-driven session_changed.
+        // Turn complete. Crucially we do NOT drop the streaming buffer here
+        // anymore — that used to leave the dashboard blank for the 300ms+
+        // gap between delta_end and canonical JSONL landing (the "flash"
+        // the user reported). The buffer survives until loadPreviews sees
+        // last_assistant_ts >= streamingStartTs[uuid] and clears it; the
+        // render-time check in <Card> uses the same comparison to skip
+        // the overlay once canonical has the turn, so there's no duplicate.
         const uuid = msg.session_uuid as string;
         addLog("info", "WS assistant_delta_end", { uuid: uuid.slice(0, 8) });
-        setStreaming((prev) => { const next = { ...prev }; delete next[uuid]; return next; });
         scheduleRefresh();
       } else if (msg.type === "user_message") {
         // Wrap-side optimistic user-text overlay. Stash it so the small card's
@@ -3283,6 +4005,7 @@ function App() {
           showTools={showTools}
           onSetShowTools={setShowTools}
           streamingText={modalFor.session_uuid ? streaming[modalFor.session_uuid] : undefined}
+          streamingStartTs={modalFor.session_uuid ? streamingStartTs[modalFor.session_uuid] : undefined}
           userOverlayText={modalFor.session_uuid ? userOverlay[modalFor.session_uuid]?.text : undefined}
           userOverlayTs={modalFor.session_uuid ? userOverlay[modalFor.session_uuid]?.ts : undefined}
         />
