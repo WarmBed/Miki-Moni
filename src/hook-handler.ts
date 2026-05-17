@@ -62,8 +62,12 @@ export class HookHandler {
     // for a transcript that actually lived in d--code/.
     const cwdToStore = existing?.cwd ?? cwd;
     const next: Session = {
-      // TODO(Phase 2.3): replace with existing?.agent ?? ev.agent
-      agent: "claude",
+      // agent is IMMUTABLE once the row exists — same reasoning as cwd. The agent
+      // (claude vs codex) is part of session identity: the wrap-process dispatcher
+      // chooses the right SDK / CLI based on this field. If a later hook event
+      // arrives claiming a different agent for the same uuid, we keep the original
+      // (last-write-wins applies only to per-event mutable fields).
+      agent: existing?.agent ?? ev.agent,
       cwd: cwdToStore,
       session_uuid: sessionUuid,
       project_name: existing?.project_name ?? basename(cwdToStore),

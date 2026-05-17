@@ -140,6 +140,45 @@ describe("HookHandler", () => {
   });
 });
 
+describe("HookHandler — agent immutability", () => {
+  it("preserves agent across upsert and lets Claude + Codex coexist on the same cwd", async () => {
+    const store = new SessionStore(":memory:");
+    const resolver = new StubResolver();
+    const handler = new HookHandler(store, resolver as any);
+
+    await handler.handle(ev({
+      agent: "claude",
+      event_type: "session_start", cwd: "d:\\x", session_uuid: "u-claude", timestamp: 1,
+    }));
+    await handler.handle(ev({
+      agent: "codex",
+      event_type: "session_start", cwd: "d:\\x", session_uuid: "u-codex", timestamp: 2,
+    }));
+
+    expect(store.get("u-claude")?.agent).toBe("claude");
+    expect(store.get("u-codex")?.agent).toBe("codex");
+    expect(store.getByCwd("d:\\x").length).toBe(2);
+    store.close();
+  });
+
+  it("agent is immutable once set — a later event with a different agent does not change the row", async () => {
+    const store = new SessionStore(":memory:");
+    const resolver = new StubResolver();
+    const handler = new HookHandler(store, resolver as any);
+
+    await handler.handle(ev({
+      agent: "claude",
+      event_type: "session_start", cwd: "d:\\x", session_uuid: "u", timestamp: 1,
+    }));
+    await handler.handle(ev({
+      agent: "codex", // wrong agent for same uuid — should be ignored, row stays claude
+      event_type: "user_prompt", cwd: "d:\\x", session_uuid: "u", timestamp: 2,
+    }));
+    expect(store.get("u")?.agent).toBe("claude");
+    store.close();
+  });
+});
+
 describe("HookHandler + Notifier", () => {
   it("notifies when session transitions to waiting", async () => {
     const store = new SessionStore(":memory:");
