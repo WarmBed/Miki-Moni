@@ -41,9 +41,21 @@ Miki-Moni gives you **one dashboard** that aggregates every Claude Code session 
 
 ## Install
 
+> ⚠️ Not yet published to npm. For now, install from source:
+
 ```bash
-npm install -g miki-moni
+git clone https://github.com/WarmBed/Miki-Moni
+cd Miki-Moni
+pnpm install
+pnpm build:all
+pnpm link --global       # makes `miki` available on PATH
 miki start
+```
+
+Once published, the one-liner will be:
+
+```bash
+npm install -g miki-moni && miki start
 ```
 
 On first run, a setup wizard asks:
@@ -225,7 +237,7 @@ Source tree:
 
 ## License
 
-TBD.
+MIT — see [LICENSE](LICENSE).
 
 ## Credits
 
