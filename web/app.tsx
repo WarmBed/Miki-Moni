@@ -2305,8 +2305,8 @@ const THEME_LS_KEY = "miki-moni:theme";
 function loadThemeFromLS(): Theme {
   try {
     const raw = localStorage.getItem(THEME_LS_KEY);
-    return raw === "dark" || raw === "light" || raw === "system" ? raw : "system";
-  } catch { return "system"; }
+    return raw === "dark" || raw === "light" || raw === "system" ? raw : "light";
+  } catch { return "light"; }
 }
 function saveThemeToLS(v: Theme) {
   try { localStorage.setItem(THEME_LS_KEY, v); } catch { /* quota / disabled */ }
@@ -2337,10 +2337,10 @@ function loadSortModeFromLS(): SortMode {
   try {
     const raw = localStorage.getItem(SORT_MODE_LS_KEY);
     // Migrate the old "cwd" value (renamed to "uuid" 2026-05-17) so existing
-    // localStorage entries don't fall back to "priority" and surprise the user.
+    // localStorage entries don't fall back to the new default.
     if (raw === "cwd") return "uuid";
-    return raw === "uuid" || raw === "recent" || raw === "priority" ? raw : "priority";
-  } catch { return "priority"; }
+    return raw === "uuid" || raw === "recent" || raw === "priority" ? raw : "uuid";
+  } catch { return "uuid"; }
 }
 function saveSortModeToLS(v: SortMode): void {
   try { localStorage.setItem(SORT_MODE_LS_KEY, v); } catch { /* quota / disabled */ }
@@ -2960,10 +2960,18 @@ function App() {
         </div>
         {showSettings && (
           <div
+            class="settings-popover"
             style={{
               position: "absolute", top: "100%", right: 0, marginTop: 6, zIndex: 50,
               background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 6,
               padding: "12px 14px", minWidth: 280, boxShadow: "0 6px 24px rgba(0,0,0,0.18)",
+              // Constrain to viewport so a tall popover (multi-section settings)
+              // doesn't overflow off-screen on mobile / short viewports / when
+              // there's no card content to push the page taller. 100px leaves
+              // room for the header above + a few px breathing room.
+              maxHeight: "calc(100vh - 100px)",
+              overflowY: "auto",
+              overscrollBehavior: "contain",
             }}
           >
             <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>{t("settings.sendKeySection")}</div>
