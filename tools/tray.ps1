@@ -128,6 +128,7 @@ $notify.Visible = $true
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $openItem    = $menu.Items.Add("Open dashboard")
 $pairItem    = $menu.Items.Add("Show pairing QR")
+$rotateItem  = $menu.Items.Add("Rotate pairing token (new QR / password)")
 $restartItem = $menu.Items.Add("Restart daemon")
 $null = $menu.Items.Add("-")  # separator
 $quitItem    = $menu.Items.Add("Quit daemon")
@@ -169,6 +170,35 @@ $pairItem.Add_Click({
   } catch {
     [System.Windows.Forms.MessageBox]::Show(
       "Could not open pairing page: $_",
+      "miki-moni", "OK", "Error") | Out-Null
+  }
+})
+
+$rotateItem.Add_Click({
+  # Confirm before rotating — old QR / URL / 16-char code immediately invalid.
+  # Already-paired phones still work (signing key, not token, re-auths them).
+  $confirm = [System.Windows.Forms.MessageBox]::Show(
+    "Generate a new pairing token? The current QR / URL / 16-char code will stop working immediately. Already-paired phones are unaffected.",
+    "miki-moni · rotate pairing token",
+    "OKCancel", "Question")
+  if ($confirm -ne "OK") { return }
+  try {
+    $r = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/admin/rotate-pair" `
+      -Method Post -TimeoutSec 5 -ContentType "application/json"
+    $token = $r.token
+    $relay = $r.worker_url
+    $pwa   = if ($r.phone_pwa_url) { $r.phone_pwa_url } else { "https://miki-moni.pages.dev/" }
+    Add-Type -AssemblyName System.Web
+    $q = "t=" + [System.Web.HttpUtility]::UrlEncode($token) +
+         "&r=" + [System.Web.HttpUtility]::UrlEncode($relay) +
+         "&pwa=" + [System.Web.HttpUtility]::UrlEncode($pwa)
+    # Daemon restarts itself after rotate so RelayClient re-registers the new
+    # token. Give it ~2s to come back up, then open the new QR page.
+    Start-Sleep -Seconds 2
+    Start-Process "http://127.0.0.1:$Port/pair-info.html?$q" | Out-Null
+  } catch {
+    [System.Windows.Forms.MessageBox]::Show(
+      "Rotate failed: $_",
       "miki-moni", "OK", "Error") | Out-Null
   }
 })

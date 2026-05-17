@@ -83,27 +83,22 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     deps.log?.info({ route: "/admin/quit" }, "admin/quit received — exiting");
     setTimeout(() => process.exit(0), 100);
   });
-  // Restart: spawn a detached replacement that re-execs whatever invocation
-  // started us (node + tsx + cli/miki.ts, or `miki start`, etc.) and then
-  // exit ourselves. The child runs with MIKI_FORCE_RESTART=1 so the
-  // singleton guard in src/index.ts lets it through while our PORT_FILE /
-  // socket is still being released. unref() so we don't keep the child
-  // attached to our event loop.
-  app.post("/admin/restart", async (_req, res) => {
-    res.json({ ok: true });
-    deps.log?.info({ route: "/admin/restart" }, "admin/restart received — respawning");
+  // Spawn a detached replacement daemon and schedule our exit. Shared by
+  // /admin/restart and /admin/rotate-pair (rotate must restart so RelayClient
+  // re-registers the new token with the relay coordinator).
+  async function scheduleRespawn(): Promise<void> {
     try {
       const { spawn } = await import("node:child_process");
       // Windows quirk: a `detached + stdio:"ignore" + windowsHide:true` respawn
-      // inherits no console, and the new daemon dies silently the moment
-      // spawnTrayHelper runs `cmd /c start /B powershell` (reproducible —
-      // 3/3 times in local diag). Workaround: go through `cmd start /MIN`
-      // which forces CREATE_NEW_CONSOLE so the respawned daemon owns a real
-      // (minimized) console window and the tray spawn doesn't blow up.
-      // The minimized cmd window is the visible cost of a clean restart.
+      // inherits no console, and the new daemon dies silently. Going through
+      // `cmd /c start "" /MIN program args` forces CREATE_NEW_CONSOLE so the
+      // respawned daemon owns its own (minimized) console window. The empty
+      // "" is the mandatory window title slot — without it `start` treats
+      // the first quoted arg as the program name and fails with
+      // "Windows can't find 'X'".
       const isWin = process.platform === "win32";
       const child = isWin
-        ? spawn("cmd.exe", ["/c", "start", "/MIN", "miki-moni", process.argv[0]!, ...process.argv.slice(1)], {
+        ? spawn("cmd.exe", ["/c", "start", "", "/MIN", process.argv[0]!, ...process.argv.slice(1)], {
             detached: true,
             stdio: "ignore",
             env: { ...process.env, MIKI_FORCE_RESTART: "1" },
@@ -121,6 +116,47 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     // 400ms buys time for the child to start its own bind attempt with the
     // FORCE_RESTART path that takes over PORT_FILE without dueling.
     setTimeout(() => process.exit(0), 400);
+  }
+
+  app.post("/admin/restart", async (_req, res) => {
+    res.json({ ok: true });
+    deps.log?.info({ route: "/admin/restart" }, "admin/restart received — respawning");
+    void scheduleRespawn();
+  });
+
+  // Rotate the persistent pair token. New QR/URL/code; old phones still work
+  // (signing key, not token, is what re-auths them — but the *next* phone you
+  // try to pair with the old QR will be rejected). Restarts the daemon so
+  // RelayClient registers the new token with the relay coordinator on next
+  // connect. Tray menu's "Rotate pairing token" hits this.
+  app.post("/admin/rotate-pair", async (_req, res) => {
+    try {
+      const { loadOrInitConfig, saveConfig } = await import("./config.js");
+      const { generateNewPairingToken } = await import("./pairing.js");
+      const { CONFIG_FILE } = await import("./data-dir.js");
+      const cfg = await loadOrInitConfig(CONFIG_FILE);
+      if (!cfg.remote?.worker_url) {
+        res.status(400).json({ error: "no remote configured — run `miki setup` first" });
+        return;
+      }
+      const token = generateNewPairingToken();
+      const next = {
+        ...cfg,
+        remote: { ...cfg.remote, pair_token: token },
+      };
+      await saveConfig(CONFIG_FILE, next);
+      deps.log?.info({ route: "/admin/rotate-pair" }, "rotated pair token — respawning to re-register with relay");
+      res.json({
+        token,
+        worker_url: cfg.remote.worker_url,
+        phone_pwa_url: cfg.remote.phone_pwa_url ?? null,
+      });
+      // Respawn so RelayClient picks up the new token on reconnect.
+      void scheduleRespawn();
+    } catch (err) {
+      deps.log?.error({ err: String(err) }, "/admin/rotate-pair failed");
+      if (!res.headersSent) res.status(500).json({ error: String(err) });
+    }
   });
 
   app.get("/sessions", (_req, res) => {
