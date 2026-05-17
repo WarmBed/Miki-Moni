@@ -1,8 +1,8 @@
 {
-  "name": "cc-hub-worker",
+  "name": "miki-relay",
   "version": "0.1.0",
   "private": true,
-  "description": "Cloudflare Worker + Durable Objects for cc-hub E2E relay",
+  "description": "Cloudflare Worker + Durable Objects for miki-moni E2E relay",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",

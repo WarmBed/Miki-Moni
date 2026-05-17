@@ -1,0 +1,4 @@
+{"type":"summary","sessionId":"00000000-0000-0000-0000-000000000000","cwd":"d:\\code\\test"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_x","content":"some tool output"}]},"timestamp":"2026-05-17T08:00:00Z"}
+{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","content":"No response requested."},"timestamp":"2026-05-17T08:00:01Z"}
+{"type":"user","message":{"role":"user","content":""},"timestamp":"2026-05-17T08:00:02Z"}

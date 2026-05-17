@@ -13,8 +13,8 @@ import type { MsgSubmit, MsgSubmitAck, ExtMessage } from "./protocol-ext.js";
  * then read the actual cwd from the JSONL itself (entries carry a `cwd` field
  * with the real workspace path).
  *
- * Why not decode the folder name (e.g. "D--code-cc-hub-tests"): Claude Code
- * encodes both `\` and `-` as `-`, so the encoding is lossy — "cc-hub" inside
+ * Why not decode the folder name (e.g. "D--code-miki-moni-tests"): Claude Code
+ * encodes both `\` and `-` as `-`, so the encoding is lossy — "miki-moni" inside
  * the path becomes ambiguous. The JSONL `cwd` field is the source of truth.
  *
  * Falls back to the caller-provided cwd if nothing is found.
@@ -187,21 +187,21 @@ public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 [DllImport("user32.dll")] public static extern bool LockSetForegroundWindow(uint uLockCode);
 [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(uint dwProcessId);
 '@
-Add-Type -MemberDefinition $sig -Name 'U' -Namespace 'CcHub'
+Add-Type -MemberDefinition $sig -Name 'U' -Namespace 'MikiMoni'
 
 $candidates = New-Object System.Collections.ArrayList
-$proc = [CcHub.U+EnumWindowsProc]{
+$proc = [MikiMoni.U+EnumWindowsProc]{
   param([IntPtr]$h, [IntPtr]$l)
-  if (-not [CcHub.U]::IsWindowVisible($h)) { return $true }
+  if (-not [MikiMoni.U]::IsWindowVisible($h)) { return $true }
   $sb = New-Object System.Text.StringBuilder 512
-  [CcHub.U]::GetWindowText($h, $sb, 512) | Out-Null
+  [MikiMoni.U]::GetWindowText($h, $sb, 512) | Out-Null
   $title = $sb.ToString()
   if ($title -match 'Visual Studio Code') {
     [void]$candidates.Add(@{ Hwnd = $h; Title = $title })
   }
   return $true
 }
-[CcHub.U]::EnumWindows($proc, [IntPtr]::Zero) | Out-Null
+[MikiMoni.U]::EnumWindows($proc, [IntPtr]::Zero) | Out-Null
 
 # Pick: (1) workspace-folder-hint match preferred, (2) current foreground if VSCode,
 # (3) first VSCode window.
@@ -211,7 +211,7 @@ if ($hint -ne '') {
   $best = $candidates | Where-Object { $_.Title -match [regex]::Escape($hint) } | Select-Object -First 1
 }
 if (-not $best) {
-  $fg = [CcHub.U]::GetForegroundWindow()
+  $fg = [MikiMoni.U]::GetForegroundWindow()
   $best = $candidates | Where-Object { $_.Hwnd -eq $fg } | Select-Object -First 1
 }
 if (-not $best -and $candidates.Count -gt 0) { $best = $candidates[0] }
@@ -224,12 +224,12 @@ if (-not $best) {
   exit 2
 }
 
-$fgBefore = [CcHub.U]::GetForegroundWindow()
+$fgBefore = [MikiMoni.U]::GetForegroundWindow()
 $hwnd = $best.Hwnd
 Write-Output ("picked hwnd=" + $hwnd + " title=" + $best.Title)
 Write-Output ("fg-before hwnd=" + $fgBefore)
 
-if ([CcHub.U]::IsIconic($hwnd)) { [CcHub.U]::ShowWindow($hwnd, 9) | Out-Null }  # SW_RESTORE
+if ([MikiMoni.U]::IsIconic($hwnd)) { [MikiMoni.U]::ShowWindow($hwnd, 9) | Out-Null }  # SW_RESTORE
 
 # Defeat Win10/11 foreground lock — proven AutoHotkey recipe:
 #   1. LockSetForegroundWindow(LSFW_UNLOCK=2) — explicit unlock
@@ -238,21 +238,21 @@ if ([CcHub.U]::IsIconic($hwnd)) { [CcHub.U]::ShowWindow($hwnd, 9) | Out-Null }  
 #   3. AttachThreadInput to target VSCode thread (defeats ownership check)
 #   4. SetForegroundWindow + BringWindowToTop
 #   5. SwitchToThisWindow as belt-and-suspenders (undocumented but bypasses lock)
-[CcHub.U]::LockSetForegroundWindow(2) | Out-Null  # LSFW_UNLOCK
-[CcHub.U]::keybd_event(0x12, 0, 0, [IntPtr]::Zero)             # VK_MENU down
-[CcHub.U]::keybd_event(0x12, 0, 2, [IntPtr]::Zero)             # VK_MENU up (KEYEVENTF_KEYUP=2)
+[MikiMoni.U]::LockSetForegroundWindow(2) | Out-Null  # LSFW_UNLOCK
+[MikiMoni.U]::keybd_event(0x12, 0, 0, [IntPtr]::Zero)             # VK_MENU down
+[MikiMoni.U]::keybd_event(0x12, 0, 2, [IntPtr]::Zero)             # VK_MENU up (KEYEVENTF_KEYUP=2)
 Start-Sleep -Milliseconds 30
 
-$targetTid = [CcHub.U]::GetWindowThreadProcessId($hwnd, [IntPtr]::Zero)
-$myTid     = [CcHub.U]::GetCurrentThreadId()
-$attachOk  = [CcHub.U]::AttachThreadInput($myTid, $targetTid, $true)
-$setFgOk   = [CcHub.U]::SetForegroundWindow($hwnd)
-[CcHub.U]::BringWindowToTop($hwnd) | Out-Null
-[CcHub.U]::SwitchToThisWindow($hwnd, $true)
-[CcHub.U]::AttachThreadInput($myTid, $targetTid, $false) | Out-Null
+$targetTid = [MikiMoni.U]::GetWindowThreadProcessId($hwnd, [IntPtr]::Zero)
+$myTid     = [MikiMoni.U]::GetCurrentThreadId()
+$attachOk  = [MikiMoni.U]::AttachThreadInput($myTid, $targetTid, $true)
+$setFgOk   = [MikiMoni.U]::SetForegroundWindow($hwnd)
+[MikiMoni.U]::BringWindowToTop($hwnd) | Out-Null
+[MikiMoni.U]::SwitchToThisWindow($hwnd, $true)
+[MikiMoni.U]::AttachThreadInput($myTid, $targetTid, $false) | Out-Null
 Start-Sleep -Milliseconds 200
 
-$fgAfter = [CcHub.U]::GetForegroundWindow()
+$fgAfter = [MikiMoni.U]::GetForegroundWindow()
 Write-Output ("attach=" + $attachOk + " setFg=" + $setFgOk + " fg-after=" + $fgAfter + " match=" + ($fgAfter -eq $hwnd))
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -313,7 +313,7 @@ export class VscodeBridge {
     }
     const delayMs = opts.delayMs ?? 1000;
     // Workspace folder name hint for title matching.
-    // "d:\code\cc-hub" → "cc-hub" ; "d:\code" → "code"
+    // "d:\code\miki-moni" → "miki-moni" ; "d:\code" → "code"
     const folderHint = (opts.cwd ?? "").split(/[\\/]/).filter(Boolean).pop() ?? "";
     const parts: string[] = [];
     if (sessionUuid) parts.push(`session=${encodeURIComponent(sessionUuid)}`);
@@ -363,7 +363,7 @@ export class VscodeBridge {
     if (!ws) {
       return {
         ok: false,
-        error: `no cc-hub-helper extension registered for workspace covering ${args.cwd}; install the VSIX into that VSCode window: npm run install-helper`,
+        error: `no miki-helper extension registered for workspace covering ${args.cwd}; install the VSIX into that VSCode window: npm run install-helper`,
       };
     }
     const requestId = randomUUID();

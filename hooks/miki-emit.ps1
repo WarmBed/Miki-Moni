@@ -1,5 +1,5 @@
-# cc-hub hook emitter — invoked by ~/.claude/settings.json hooks
-# Usage: cc-hub-emit.ps1 <event_type>
+# miki-moni hook emitter — invoked by ~/.claude/settings.json hooks
+# Usage: miki-emit.ps1 <event_type>
 # Reads hook payload from stdin (Claude Code convention).
 # Fails silently on any error to never block Claude.
 
@@ -13,7 +13,7 @@ try {
   if ($stdin) { $payload = $stdin | ConvertFrom-Json }
 
   # Resolve port (falls back to 8765 if port file missing)
-  $portFile = Join-Path $HOME ".cc-hub\port"
+  $portFile = Join-Path $HOME ".miki-moni\port"
   $port = 8765
   if (Test-Path $portFile) {
     $portFromFile = Get-Content $portFile -ErrorAction SilentlyContinue

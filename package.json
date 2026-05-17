@@ -1,12 +1,26 @@
 {
-  "name": "cc-hub",
-  "version": "0.1.0",
-  "private": true,
+  "name": "miki-moni",
+  "version": "0.0.0",
   "type": "module",
-  "description": "Loom / 織機 — weave multiple VSCode Claude Code panel sessions into one local dashboard, with optional encrypted relay to a phone client. (Working-title package name; see docs/naming.md.)",
+  "description": "Miki-Moni / 巫女 — weave multiple VSCode Claude Code panel sessions into one local dashboard, with optional encrypted relay to a phone client. See docs/naming.md.",
   "engines": {
     "node": ">=20"
   },
+  "bin": {
+    "miki": "./bin/miki.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "hooks/miki-emit.ps1",
+    "dist/web",
+    "dist/web-phone",
+    "worker/src",
+    "worker/wrangler.toml",
+    "worker/wrangler-selfhost.toml",
+    "worker/package.json",
+    "README.md"
+  ],
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
@@ -19,20 +33,24 @@
     "install:hooks": "tsx src/install-hooks.ts",
     "install-helper": "node scripts/install-helper.mjs",
     "pair": "tsx src/cli/pair.ts",
-    "cch": "tsx src/cli/cch.ts",
+    "miki": "tsx src/cli/miki.ts",
     "wrap": "tsx src/cli/wrap.ts",
     "mock-worker": "tsx tools/mock-worker/server.ts",
     "dev:all": "tsx tools/dev/start-all.ts",
-    "verify": "tsx tools/dev/verify-relay.ts"
+    "verify": "tsx tools/dev/verify-relay.ts",
+    "prepublishOnly": "pnpm build:web"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.143",
+    "@inquirer/prompts": "^8.4.3",
     "better-sqlite3": "^11.3.0",
     "express": "^5.0.0",
+    "jsqr": "^1.4.0",
     "marked": "^18.0.3",
     "node-notifier": "^10.0.1",
     "pino": "^9.4.0",
     "qrcode-terminal": "^0.12.0",
+    "tsx": "^4.19.1",
     "tweetnacl": "^1.0.3",
     "tweetnacl-util": "^0.15.1",
     "ws": "^8.18.0"
@@ -51,7 +69,6 @@
     "preact": "^10.24.0",
     "supertest": "^7.0.0",
     "tailwindcss": "^3.4.13",
-    "tsx": "^4.19.1",
     "typescript": "^5.6.2",
     "vite": "^5.4.8",
     "vitest": "^2.1.1"

@@ -3,5 +3,11 @@ dist/
 coverage/
 *.log
 .cc-hub/
+.miki-moni/
 build/
 .npmrc
+*.vsix
+*.tgz
+.wrangler/
+.dev.vars
+.env.local

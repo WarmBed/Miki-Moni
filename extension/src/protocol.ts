@@ -1,5 +1,5 @@
-// Wire protocol between cc-hub daemon (WS server at /ws_ext) and
-// cc-hub-helper VSCode extension (WS client). One JSON object per WS frame.
+// Wire protocol between miki-moni daemon (WS server at /ws_ext) and
+// miki-helper VSCode extension (WS client). One JSON object per WS frame.
 
 // ── Extension → Daemon ─────────────────────────────────────────────────────
 export interface MsgRegister {

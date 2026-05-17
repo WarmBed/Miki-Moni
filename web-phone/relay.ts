@@ -125,6 +125,9 @@ export async function performPairing(
         ws.send(JSON.stringify({
           type: "pair_offer",
           phone_pubkey: identity.encryption_pubkey,
+          // Signing pubkey is the one the worker stores for reconnect-sig
+          // verification; daemon uses encryption pubkey for shared secret.
+          phone_sign_pubkey: identity.signing_pubkey,
         }));
         return;
       }
@@ -140,6 +143,18 @@ export async function performPairing(
       }
     };
   });
+}
+
+/** Compute the addressable peer_id for this phone — must match
+ *  src/pairing.ts:computePeerId exactly (daemon uses the same algo to address
+ *  envelopes via `to: "phone:<peer_id>"`). */
+export async function computePeerIdFromB64(peerPubkeyBase64: string): Promise<string> {
+  const buf = new TextEncoder().encode(peerPubkeyBase64);
+  const hashBuf = await crypto.subtle.digest("SHA-256", buf);
+  const bytes = new Uint8Array(hashBuf);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/[+/=]/g, "").slice(0, 16);
 }
 
 /** Connect using stored pair credentials (reconnect mode). */

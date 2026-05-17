@@ -68,15 +68,44 @@ describe("PairingCoordinator", () => {
     });
   });
 
-  describe("rate limit on register (10/hour/daemon_id)", () => {
-    it("11th register from same daemon_id within 1h returns rate_limited", async () => {
+  describe("persistent tokens", () => {
+    it("survive claim — same token can be claimed by multiple devices", async () => {
+      await callDO(coord, "register", { token: "PERSIST123456789", daemon_id: "d-persist", persistent: true });
+      const r1 = await callDO(coord, "claim", { token: "PERSIST123456789" });
+      expect(r1).toEqual({ ok: true, daemon_id: "d-persist" });
+      // Second claim of the same persistent token still works.
+      const r2 = await callDO(coord, "claim", { token: "PERSIST123456789" });
+      expect(r2).toEqual({ ok: true, daemon_id: "d-persist" });
+      // And third, and so on.
+      const r3 = await callDO(coord, "claim", { token: "PERSIST123456789" });
+      expect(r3.ok).toBe(true);
+    });
+
+    it("survive the TTL sweep alarm", async () => {
+      await callDO(coord, "register", { token: "ALWAYSALIVE12345", daemon_id: "d-alive", persistent: true });
+      await coord.alarm();
+      const r = await callDO(coord, "claim", { token: "ALWAYSALIVE12345" });
+      expect(r).toEqual({ ok: true, daemon_id: "d-alive" });
+    });
+
+    it("non-persistent (default) still consumed on first claim", async () => {
+      await callDO(coord, "register", { token: "EPHEMERAL1234567", daemon_id: "d-eph" });
+      const r1 = await callDO(coord, "claim", { token: "EPHEMERAL1234567" });
+      expect(r1.ok).toBe(true);
+      const r2 = await callDO(coord, "claim", { token: "EPHEMERAL1234567" });
+      expect(r2).toEqual({ ok: false, reason: "unknown" });
+    });
+  });
+
+  describe("rate limit on register (100/hour/daemon_id)", () => {
+    it("101st register from same daemon_id within 1h returns rate_limited", async () => {
       const did = "d-spam";
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 100; i++) {
         const r = await callDO(coord, "register", { token: `SPAM${i.toString().padStart(12, "0")}`, daemon_id: did });
         expect(r.ok).toBe(true);
       }
-      const r11 = await callDO(coord, "register", { token: "SPAMOVERFLOW1234", daemon_id: did });
-      expect(r11).toEqual({ ok: false, reason: "rate_limited" });
+      const r101 = await callDO(coord, "register", { token: "SPAMOVERFLOW1234", daemon_id: did });
+      expect(r101).toEqual({ ok: false, reason: "rate_limited" });
     });
   });
 });

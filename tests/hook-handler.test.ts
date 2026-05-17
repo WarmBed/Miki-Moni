@@ -95,6 +95,28 @@ describe("HookHandler", () => {
     expect(store.get("u1")?.status).toBe("active");
   });
 
+  it("cwd is immutable after first set — subsequent hook events don't overwrite", async () => {
+    // Bug repro: agent at session_start in d:\code cd's into d:\code\cc-hub,
+    // later hooks fire with the new cwd. DB.cwd used to flip to the
+    // subdirectory, but the SDK's projects-dir encoding is keyed on the
+    // ORIGINAL cwd. /wrap/start would then look in the wrong projects
+    // folder → "No conversation found with session ID" crash.
+    await handler.handle({
+      event_type: "session_start", cwd: "d:\\code", session_uuid: "u-shift", timestamp: 1,
+    });
+    expect(store.get("u-shift")?.cwd).toBe("d:\\code");
+    expect(store.get("u-shift")?.project_name).toBe("code");
+    // Subsequent event from a subdirectory should NOT overwrite cwd.
+    await handler.handle({
+      event_type: "pre_tool_use", cwd: "d:\\code\\cc-hub", session_uuid: "u-shift", timestamp: 2,
+    });
+    expect(store.get("u-shift")?.cwd).toBe("d:\\code");
+    expect(store.get("u-shift")?.project_name).toBe("code");
+    // Status / last_event_at DO update normally.
+    expect(store.get("u-shift")?.status).toBe("active");
+    expect(store.get("u-shift")?.last_event_at).toBe(2);
+  });
+
   it("project_name uses basename of cwd; normalizes drive letter and slashes", async () => {
     await handler.handle({
       event_type: "session_start",

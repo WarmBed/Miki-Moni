@@ -1,4 +1,4 @@
-# cc-hub Quick Start (local dev)
+# miki-moni Quick Start (local dev)
 
 End-to-end local verification of Phase 2's encrypted remote relay,
 without a Cloudflare account.

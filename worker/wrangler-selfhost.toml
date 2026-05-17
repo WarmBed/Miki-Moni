@@ -1,0 +1,36 @@
+# Self-host wrangler config — used by `miki setup` self-host wizard.
+#
+# Same as wrangler.toml, but WITHOUT the routes/custom_domain block. Self-host
+# users get the default <worker-name>.<account>.workers.dev URL; they're free
+# to attach their own custom domain via the CF dashboard afterwards.
+#
+# DO NOT add a routes block here — it would attach to whichever domain you
+# write and risk hijacking the author's hosted instance if the user happens
+# to share a CF account.
+
+name = "miki-relay"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Explicitly enable workers.dev URL so wrangler prints it after deploy.
+workers_dev = true
+
+[[durable_objects.bindings]]
+name = "PAIRING"
+class_name = "PairingCoordinator"
+
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "DaemonRelay"
+
+[[migrations]]
+tag = "v1"
+# Free tier requires new_sqlite_classes (SQLite-backed DO). Paid tier could use new_classes (KV-backed).
+new_sqlite_classes = ["PairingCoordinator", "DaemonRelay"]
+
+[[unsafe.bindings]]
+name = "RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1"
+simple = { limit = 30, period = 60 }

@@ -2,12 +2,16 @@ import type { Env } from "./env.js";
 
 export const PAIRING_TTL_MS = 10 * 60 * 1000;   // 10 min
 const REGISTER_RATE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-const REGISTER_RATE_LIMIT = 10;
+const REGISTER_RATE_LIMIT = 100;
 const ALARM_INTERVAL_MS = 60_000;               // sweep every 60s
 
 interface PendingEntry {
   daemon_id: string;
   expires_at_ms: number;
+  /** Persistent tokens never expire (sweep skips them) and are not consumed on
+   *  claim — multiple phones can use the same QR over time, until the user
+   *  rotates via `pnpm pair --rotate`. Default false = legacy ephemeral. */
+  persistent?: boolean;
 }
 
 interface RateEntry {
@@ -39,7 +43,8 @@ export class PairingCoordinator implements DurableObject {
     if (path === "register") {
       const token = String(body.token ?? "");
       const daemon_id = String(body.daemon_id ?? "");
-      return this.json(await this.register(token, daemon_id));
+      const persistent = body.persistent === true;
+      return this.json(await this.register(token, daemon_id, persistent));
     }
     if (path === "claim") {
       const token = String(body.token ?? "");
@@ -57,7 +62,11 @@ export class PairingCoordinator implements DurableObject {
     return new Response(JSON.stringify(o), { headers: { "content-type": "application/json" } });
   }
 
-  async register(token: string, daemon_id: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+  async register(
+    token: string,
+    daemon_id: string,
+    persistent: boolean = false,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
     if (!token || !daemon_id) return { ok: false, reason: "bad_input" };
     if (this.pending.size > 10000) return { ok: false, reason: "coordinator_full" };
 
@@ -71,7 +80,10 @@ export class PairingCoordinator implements DurableObject {
     }
     await this.state.storage.put("rates", this.rateLimits);
 
-    this.pending.set(token, { daemon_id, expires_at_ms: now + PAIRING_TTL_MS });
+    // Persistent: never expires. Sentinel via Number.MAX_SAFE_INTEGER so the
+    // existing `Date.now() > expires_at_ms` checks naturally fail.
+    const expires_at_ms = persistent ? Number.MAX_SAFE_INTEGER : now + PAIRING_TTL_MS;
+    this.pending.set(token, { daemon_id, expires_at_ms, persistent: persistent || undefined });
     await this.state.storage.put("pending", this.pending);
     return { ok: true };
   }
@@ -84,8 +96,12 @@ export class PairingCoordinator implements DurableObject {
       await this.state.storage.put("pending", this.pending);
       return { ok: false, reason: "expired" };
     }
-    this.pending.delete(token);
-    await this.state.storage.put("pending", this.pending);
+    // Persistent tokens stay in the map — same QR keeps working for the next
+    // device. Ephemeral tokens are consumed once.
+    if (!entry.persistent) {
+      this.pending.delete(token);
+      await this.state.storage.put("pending", this.pending);
+    }
     return { ok: true, daemon_id: entry.daemon_id };
   }
 
@@ -105,6 +121,9 @@ export class PairingCoordinator implements DurableObject {
     const now = Date.now();
     let changed = false;
     for (const [token, entry] of this.pending) {
+      // Persistent tokens never expire (they have expires_at_ms set to
+      // Number.MAX_SAFE_INTEGER, but check the flag too in case of legacy data).
+      if (entry.persistent) continue;
       if (entry.expires_at_ms < now) {
         this.pending.delete(token);
         changed = true;

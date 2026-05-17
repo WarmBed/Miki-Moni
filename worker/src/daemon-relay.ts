@@ -12,7 +12,8 @@ import nacl from "tweetnacl";
 
 interface DaemonAttachment {
   role: "daemon";
-  pubkey_b64: string;
+  pubkey_b64: string;          // Ed25519 signing pubkey (challenge-response + daemon_id derivation)
+  enc_pubkey_b64?: string;     // X25519 encryption pubkey (sent to phones for ECDH in pair_init)
   challenge?: Challenge;
   authed: boolean;
   daemon_id: string;
@@ -20,7 +21,8 @@ interface DaemonAttachment {
 
 interface PhoneAttachment {
   role: "phone";
-  phone_id: string;
+  phone_id: string;                  // signing pubkey b64 (reconnect-mode auth + revoke_self routing)
+  peer_id?: string;                  // computePeerId(encryption_pubkey) — addresses daemon→phone envelopes
   pairing_token?: string;
   authed: boolean;
 }
@@ -47,6 +49,10 @@ export class DaemonRelay implements DurableObject {
     } catch {
       return new Response("bad X-Daemon-Pubkey", { status: 400 });
     }
+    // X-Daemon-Enc-Pubkey: daemon's X25519 encryption pubkey. Required for
+    // phones to derive a working shared secret in pair_offer — without this
+    // they'd ECDH against the signing key (different curve) and get garbage.
+    const enc_pubkey_b64 = req.headers.get("X-Daemon-Enc-Pubkey") ?? undefined;
     const daemon_id = this.state.id.name ?? await deriveDaemonId(pubkey);
 
     const pair = new WebSocketPair();
@@ -54,7 +60,7 @@ export class DaemonRelay implements DurableObject {
 
     const challenge = generateChallenge();
     const att: DaemonAttachment = {
-      role: "daemon", pubkey_b64,
+      role: "daemon", pubkey_b64, enc_pubkey_b64,
       challenge, authed: false, daemon_id,
     };
 
@@ -90,7 +96,11 @@ export class DaemonRelay implements DurableObject {
       this.state.acceptWebSocket(server, ["phone", phone_id]);
       server.serializeAttachment(att);
 
-      const daemonPubkey = await this.state.storage.get<string>("daemon_pubkey_b64");
+      // Prefer the X25519 encryption pubkey (post-fix daemons). Older daemons
+      // only stored the signing pubkey — phones paired against those have
+      // broken shared secrets and must re-pair after the daemon upgrades.
+      const daemonEncPubkey = await this.state.storage.get<string>("daemon_enc_pubkey_b64");
+      const daemonPubkey = daemonEncPubkey ?? await this.state.storage.get<string>("daemon_pubkey_b64");
       const pending = await this.state.storage.get<{ token: string; expires_at_ms: number }>("pending_pair");
       if (!daemonPubkey || !pending || pending.token !== pairing_token || Date.now() > pending.expires_at_ms) {
         server.close(4002, "pairing_token_invalid");
@@ -169,22 +179,30 @@ export class DaemonRelay implements DurableObject {
       att.challenge = undefined;
       ws.serializeAttachment(att);
       await this.state.storage.put("daemon_pubkey_b64", att.pubkey_b64);
+      // Store the X25519 encryption pubkey separately so pair_init returns the
+      // right key for phone-side ECDH. Older daemons that don't send the
+      // header → field stays undefined and we fall back in acceptPhone.
+      if (att.enc_pubkey_b64) {
+        await this.state.storage.put("daemon_enc_pubkey_b64", att.enc_pubkey_b64);
+      }
       ws.send(JSON.stringify({ type: "ready", daemon_id: att.daemon_id }));
       return;
     }
 
     if (msg.type === "register_pairing") {
       const token = String(msg.token ?? "");
-      await this.state.storage.put("pending_pair", {
-        token, expires_at_ms: Date.now() + 10 * 60 * 1000,
-      });
-      // Also tell the coordinator so phones can claim it
+      // `persistent: true` makes the token survive both TTL sweeps and claims,
+      // so the QR can be permanent until the user rotates. DO storage gets the
+      // same flag for its own consistency check in acceptPhone().
+      const persistent = msg.persistent === true;
+      const expires_at_ms = persistent ? Number.MAX_SAFE_INTEGER : Date.now() + 10 * 60 * 1000;
+      await this.state.storage.put("pending_pair", { token, expires_at_ms, persistent });
       if (this.env.PAIRING) {
         const coordId = this.env.PAIRING.idFromName("coordinator");
         const coordStub = this.env.PAIRING.get(coordId);
         await coordStub.fetch("https://x/register", {
           method: "POST",
-          body: JSON.stringify({ token, daemon_id: att.daemon_id }),
+          body: JSON.stringify({ token, daemon_id: att.daemon_id, persistent }),
           headers: { "content-type": "application/json" },
         });
       }
@@ -195,17 +213,60 @@ export class DaemonRelay implements DurableObject {
       for (const phone of this.state.getWebSockets("phone")) {
         const p = phone.deserializeAttachment() as PhoneAttachment;
         if (p && p.pairing_token) {
-          phone.send(JSON.stringify({ type: "pair_ack" }));
+          // Forward the WHOLE message so daemon_id flows through to phone.
+          phone.send(JSON.stringify(msg));
           p.authed = true;
           p.pairing_token = undefined;
           phone.serializeAttachment(p);
         }
       }
-      await this.state.storage.delete("pending_pair");
+      // Persistent tokens are kept — same QR can pair the next device.
+      // Ephemeral tokens are consumed once.
+      const pending = await this.state.storage.get<{ token: string; expires_at_ms: number; persistent?: boolean }>("pending_pair");
+      if (!pending?.persistent) {
+        await this.state.storage.delete("pending_pair");
+      }
       return;
     }
 
-    // envelope or other: broadcast to all authed phones
+    if (msg.type === "revoke_phone") {
+      // Daemon kicks a previously-paired phone: drop from paired_phones map and
+      // close any live WS for that phone.
+      const signPk = String(msg.phone_pubkey_b64 ?? "");
+      if (signPk) {
+        const paired = (await this.state.storage.get<Record<string, string>>("paired_phones")) ?? {};
+        if (paired[signPk]) {
+          delete paired[signPk];
+          await this.state.storage.put("paired_phones", paired);
+        }
+        for (const ph of this.state.getWebSockets("phone")) {
+          const p = ph.deserializeAttachment() as PhoneAttachment | undefined;
+          if (p && p.phone_id === signPk) {
+            try { ph.send(JSON.stringify({ type: "phone_revoked", by: "daemon" })); } catch { /* */ }
+            try { ph.close(4003, "revoked"); } catch { /* */ }
+          }
+        }
+      }
+      return;
+    }
+
+    // Envelope or other daemon-originated message. Route by `to` field if it
+    // identifies a specific phone; otherwise broadcast to all authed phones.
+    //   to: "phone:<peer_id>"  → only the matching phone (avoids decryption noise
+    //                            on other paired phones that share this DO)
+    //   to: anything else / absent → broadcast (back-compat for unaddressed sends)
+    const target = typeof msg?.to === "string" ? msg.to : "";
+    const peerMatch = /^phone:(.+)$/.exec(target);
+    if (peerMatch) {
+      const targetPeerId = peerMatch[1];
+      for (const phone of this.state.getWebSockets("phone")) {
+        const p = phone.deserializeAttachment() as PhoneAttachment;
+        if (p && p.authed && p.peer_id === targetPeerId) {
+          phone.send(JSON.stringify(msg));
+        }
+      }
+      return;
+    }
     for (const phone of this.state.getWebSockets("phone")) {
       const p = phone.deserializeAttachment() as PhoneAttachment;
       if (p && p.authed) phone.send(JSON.stringify(msg));
@@ -215,22 +276,66 @@ export class DaemonRelay implements DurableObject {
   private async handlePhoneMessage(ws: WebSocket, att: PhoneAttachment, msg: any): Promise<void> {
     if (!att.authed) {
       if (msg.type === "pair_offer" && att.pairing_token) {
-        const pk = String(msg.phone_pubkey ?? "");
-        const paired = (await this.state.storage.get<Record<string, string>>("paired_phones")) ?? {};
-        paired[pk] = String(Date.now());
-        await this.state.storage.put("paired_phones", paired);
-
-        const daemon = this.daemonWs();
-        if (daemon) daemon.send(JSON.stringify(msg));
+        const signPk = String(msg.phone_sign_pubkey ?? msg.phone_pubkey ?? "");
+        if (signPk) {
+          const paired = (await this.state.storage.get<Record<string, string>>("paired_phones")) ?? {};
+          paired[signPk] = String(Date.now());
+          await this.state.storage.put("paired_phones", paired);
+          // Re-key attachment to the signing pubkey so a later revoke_self on
+          // this same socket can identify itself without a disconnect+reconnect.
+          att.phone_id = signPk;
+          ws.serializeAttachment(att);
+        }
+        this.broadcastToDaemons(msg);
         return;
       }
       ws.close(1008, "expected_pair_offer");
       return;
     }
 
-    const daemon = this.daemonWs();
-    if (!daemon) { ws.close(4011, "daemon_offline"); return; }
-    daemon.send(JSON.stringify(msg));
+    if (msg.type === "register_peer_id") {
+      // Phone tells the relay its addressable peer_id so daemon→phone envelopes
+      // addressed `to: "phone:<peer_id>"` can be routed precisely instead of
+      // broadcast-and-discard-noise on every other paired phone.
+      const peer_id = String(msg.peer_id ?? "");
+      if (peer_id) {
+        att.peer_id = peer_id;
+        ws.serializeAttachment(att);
+      }
+      return;
+    }
+
+    if (msg.type === "revoke_self") {
+      // Phone wants to unpair. att.phone_id IS the signing pubkey in reconnect mode.
+      const signPk = att.phone_id;
+      if (signPk) {
+        const paired = (await this.state.storage.get<Record<string, string>>("paired_phones")) ?? {};
+        if (paired[signPk]) {
+          delete paired[signPk];
+          await this.state.storage.put("paired_phones", paired);
+        }
+        // Tell daemon to clean up its local config too.
+        this.broadcastToDaemons({ type: "phone_revoked", phone_pubkey_b64: signPk });
+      }
+      try { ws.send(JSON.stringify({ type: "revoked_ok" })); } catch { /* */ }
+      ws.close(1000, "revoked");
+      return;
+    }
+
+    this.broadcastToDaemons(msg);
+  }
+
+  /** Multiple daemon WSes can accumulate (e.g. pair CLI restarts before the prior WS is GC'd).
+   *  Broadcast to all — only the live process replies. Dead sockets either no-op or get cleaned up
+   *  in webSocketClose. */
+  /** Broadcast to every daemon WS in the tag. Stale sockets from crashed CLI
+   *  sessions can accumulate; sending to a dead one throws and is ignored. The
+   *  live daemon(s) — typically one — receive and respond. */
+  private broadcastToDaemons(msg: any): void {
+    const payload = JSON.stringify(msg);
+    for (const d of this.state.getWebSockets("daemon")) {
+      try { d.send(payload); } catch { /* dead socket; CF GCs on close */ }
+    }
   }
 
   async webSocketClose(_ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): Promise<void> {}

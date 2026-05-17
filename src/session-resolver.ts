@@ -69,11 +69,30 @@ export interface ToolResultInfo {
 
 export interface TranscriptTurn {
   ts: string;
-  role: "user" | "assistant";
+  /**
+   * "user" / "assistant" = real conversation turns.
+   * "system" = harness-injected meta entries (skill content, task-notification,
+   * tool-originated user turns). Stored in the JSONL as role:"user" but should
+   * NOT be displayed as if the human typed them.
+   */
+  role: "user" | "assistant" | "system";
   text: string;                  // free-form markdown content
   tool_use?: ToolUseInfo;
   tool_result?: ToolResultInfo;
   raw_type?: string;
+}
+
+/**
+ * True if a JSONL entry with role:"user" is harness-injected (skill content,
+ * task notifications, tool-originated user turns) rather than something the
+ * human typed.
+ */
+function isInjectedUserEntry(e: any): boolean {
+  if (!e) return false;
+  if (e.isMeta === true) return true;
+  if (typeof e.sourceToolUseID === "string") return true;
+  if (e.origin && typeof e.origin.kind === "string") return true;
+  return false;
 }
 
 const MAX_TOOL_RESULT_BYTES = 8 * 1024;
@@ -106,8 +125,11 @@ export interface SessionPreview {
   session_uuid: string;
   ai_title: string | null;
   last_assistant_text: string | null;
+  last_assistant_ts: string | null;
   last_user_text: string | null;
+  last_user_ts: string | null;
   last_tool_use: { name: string; description?: string } | null;
+  last_tool_use_ts: string | null;
   last_modified_ms: number;
   transcript_path: string;
 }
@@ -128,8 +150,11 @@ export async function readSessionPreview(
 
   let ai_title: string | null = null;
   let last_assistant_text: string | null = null;
+  let last_assistant_ts: string | null = null;
   let last_user_text: string | null = null;
+  let last_user_ts: string | null = null;
   let last_tool_use: { name: string; description?: string } | null = null;
+  let last_tool_use_ts: string | null = null;
 
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
@@ -137,9 +162,28 @@ export async function readSessionPreview(
     let e: any;
     try { e = JSON.parse(line); } catch { continue; }
 
+    const entryTs = typeof e.timestamp === "string" ? e.timestamp : null;
+
     // ai-title is a special non-message entry
     if (!ai_title && e.type === "ai-title" && typeof e.aiTitle === "string") {
       ai_title = e.aiTitle;
+    }
+
+    // Slash commands (type:"system", subtype:"local_command") are NOT message
+    // entries but they ARE conversation in the user's eyes. Treat them as
+    // last_user_text / last_assistant_text for the card preview.
+    if (e.type === "system" && e.subtype === "local_command" && typeof e.content === "string") {
+      const raw = e.content;
+      const out = raw.match(/^<local-command-stdout>([\s\S]*)<\/local-command-stdout>$/);
+      if (out) {
+        const text = (out[1] ?? "").trim();
+        if (text && !last_assistant_text) { last_assistant_text = `↪ ${text}`; last_assistant_ts = entryTs; }
+      } else {
+        const text = raw.trim();
+        if (text && !last_user_text) { last_user_text = `⚡ ${text}`; last_user_ts = entryTs; }
+      }
+      if (ai_title && last_assistant_text && last_user_text && last_tool_use) break;
+      continue;
     }
 
     const msg = e.message;
@@ -160,6 +204,7 @@ export async function readSessionPreview(
         } else if (!last_tool_use && block?.type === "tool_use" && typeof block.name === "string") {
           const desc = typeof block.input?.description === "string" ? block.input.description : undefined;
           last_tool_use = { name: block.name, description: desc };
+          last_tool_use_ts = entryTs;
         }
       }
     }
@@ -171,10 +216,17 @@ export async function readSessionPreview(
 
       if (msg.role === "assistant" && !last_assistant_text) {
         last_assistant_text = textPart;
+        last_assistant_ts = entryTs;
       }
       if (msg.role === "user" && !last_user_text) {
-        // skip tool_result-only messages (no text block)
-        last_user_text = textPart;
+        // Skip harness-injected user turns (skill content, Skill tool output,
+        // task notifications, system reminders). They contain real text blocks
+        // so the textPart filter above won't catch them — they'd otherwise
+        // shadow the actual most-recent user message in the reverse scan.
+        if (!isInjectedUserEntry(e)) {
+          last_user_text = textPart;
+          last_user_ts = entryTs;
+        }
       }
     }
 
@@ -185,11 +237,88 @@ export async function readSessionPreview(
     session_uuid: sessionUuid,
     ai_title,
     last_assistant_text,
+    last_assistant_ts,
     last_user_text,
+    last_user_ts,
     last_tool_use,
+    last_tool_use_ts,
     last_modified_ms: stat.mtimeMs,
     transcript_path: transcriptPath,
   };
+}
+
+/**
+ * Read the original cwd that the session was started with — what's stored on
+ * the very first JSONL entry that carries a `cwd` field. The SDK encodes the
+ * projects directory from THIS cwd, so `query({ resume: uuid, cwd })` only
+ * works if you pass exactly this value. DB.cwd can drift if hook events fire
+ * from subdirectories — never trust DB.cwd for wrap resume.
+ *
+ * Returns null when the file is missing or no cwd field is found in the
+ * first ~50 lines (defensive cap; in practice cwd shows up by line 2-3).
+ */
+export async function readOriginalCwd(transcriptPath: string): Promise<string | null> {
+  let raw: string;
+  try { raw = await fs.readFile(transcriptPath, "utf8"); }
+  catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw e;
+  }
+  const lines = raw.split(/\r?\n/).slice(0, 50);
+  for (const line of lines) {
+    if (!line || !line.includes('"cwd"')) continue;
+    try {
+      const e: any = JSON.parse(line);
+      if (typeof e.cwd === "string" && e.cwd) return e.cwd;
+    } catch { /* skip unparseable */ }
+  }
+  return null;
+}
+
+/**
+ * Cheap check: does this session's transcript contain ANY real user/assistant
+ * turn? Used by daemon to decide if a wrap-spawned session that closed without
+ * activity should be auto-deleted (vs. left as stale).
+ *
+ * "Real" means: text content from role=user (typed by human) OR role=assistant
+ * with non-synthetic content. Tool_result blocks (which appear as role=user)
+ * and synthetic placeholders ("No response requested.") are ignored.
+ *
+ * Returns false if the file doesn't exist (treated as "no turns yet").
+ */
+export async function sessionHasAnyTurns(transcriptPath: string): Promise<boolean> {
+  let raw: string;
+  try { raw = await fs.readFile(transcriptPath, "utf8"); }
+  catch (e: unknown) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return false;
+    throw e;
+  }
+  const lines = raw.split(/\r?\n/);
+  for (const line of lines) {
+    if (!line) continue;
+    let e: any; try { e = JSON.parse(line); } catch { continue; }
+    // Real user typing or any non-synthetic assistant output counts.
+    const msg = e.message;
+    if (!msg) continue;
+    if (msg.model === "<synthetic>") continue;
+    if (msg.role !== "user" && msg.role !== "assistant") continue;
+    if (typeof msg.content === "string") {
+      const t = msg.content.trim();
+      if (t && t !== "No response requested." && t !== "(no content)") return true;
+      continue;
+    }
+    if (!Array.isArray(msg.content)) continue;
+    for (const block of msg.content) {
+      if (!block || typeof block !== "object") continue;
+      // Text from either role = real turn. tool_use only on assistant side =
+      // a real turn (model decided to act). tool_result we deliberately skip
+      // (it's just the wrapper's first SDK-init artifact in many cases).
+      if (block.type === "text" && typeof block.text === "string" && block.text.trim()) return true;
+      if (block.type === "tool_use" && msg.role === "assistant") return true;
+    }
+  }
+  return false;
 }
 
 /** Read last `limit` "interesting" turns from a Claude Code JSONL transcript. */
@@ -208,19 +337,45 @@ export async function readTranscriptTail(
     try { entry = JSON.parse(line); } catch { continue; }
 
     const ts = entry.timestamp ?? "";
+
+    // Slash commands (e.g. /model, /clear) are stored as type:"system" entries:
+    //   - subtype:"local_command", content:"/model sonnet4.5"   ← user typed
+    //   - subtype:"local_command", content:"<local-command-stdout>...</local-command-stdout>"  ← SDK response
+    // They never appear as message.role=user/assistant, so the dashboard
+    // dropped them silently. Surface them in the conversation column.
+    if (entry.type === "system" && entry.subtype === "local_command" && typeof entry.content === "string") {
+      const raw = entry.content;
+      const out = raw.match(/^<local-command-stdout>([\s\S]*)<\/local-command-stdout>$/);
+      if (out) {
+        const text = (out[1] ?? "").trim();
+        if (text) turns.push({ ts, role: "assistant", text: `↪ ${text}`, raw_type: "local_command_stdout" });
+      } else {
+        const text = raw.trim();
+        if (text) turns.push({ ts, role: "user", text: `⚡ ${text}`, raw_type: "local_command_input" });
+      }
+      continue;
+    }
+
     const msg = entry.message;
     if (!msg) continue;
-    const role = msg.role;
-    if (role !== "user" && role !== "assistant") continue;
+    const rawRole = msg.role;
+    if (rawRole !== "user" && rawRole !== "assistant") continue;
 
     // Skip synthetic placeholder messages
     if (msg.model === "<synthetic>") continue;
+
+    // Harness-injected user-role entries (skill content, task-notification,
+    // tool-originated turns) should be surfaced as "system" so the modal
+    // doesn't mislabel them as something the human typed. tool_result blocks
+    // keep role "user" (they're conceptually the tool's reply lane).
+    const injected = rawRole === "user" && isInjectedUserEntry(entry);
 
     const content = msg.content;
     if (typeof content === "string") {
       const trimmed = content.trim();
       if (!trimmed) continue;
       if (trimmed === "No response requested." || trimmed === "(no content)") continue;
+      const role: TranscriptTurn["role"] = injected ? "system" : rawRole;
       turns.push({ ts, role, text: content, raw_type: entry.type });
       continue;
     }
@@ -233,6 +388,7 @@ export async function readTranscriptTail(
     for (const block of content) {
       if (!block || typeof block !== "object") continue;
       if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
+        const role: TranscriptTurn["role"] = injected ? "system" : rawRole;
         turns.push({ ts, role, text: block.text, raw_type: entry.type });
         added = true;
       } else if (block.type === "tool_use") {
@@ -242,7 +398,7 @@ export async function readTranscriptTail(
           ? (input as any).description
           : undefined;
         turns.push({
-          ts, role, text: "", raw_type: entry.type,
+          ts, role: rawRole, text: "", raw_type: entry.type,
           tool_use: {
             id: block.id ?? "",
             name,
@@ -256,7 +412,7 @@ export async function readTranscriptTail(
         const full = stringifyResult(block.content);
         const truncated = full.length > MAX_TOOL_RESULT_BYTES;
         turns.push({
-          ts, role, text: "", raw_type: entry.type,
+          ts, role: rawRole, text: "", raw_type: entry.type,
           tool_result: {
             tool_use_id: block.tool_use_id,
             content: truncated ? full.slice(0, MAX_TOOL_RESULT_BYTES) + "\n…[truncated]" : full,

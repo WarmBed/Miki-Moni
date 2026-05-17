@@ -1,7 +1,7 @@
 /**
  * tools/dev/start-all.ts — dev launcher
  *
- * Starts the cc-hub daemon and mock-worker concurrently with prefixed output.
+ * Starts the miki-moni daemon and mock-worker concurrently with prefixed output.
  * Ctrl+C (SIGINT) kills both cleanly.
  *
  * Usage:
@@ -112,7 +112,7 @@ async function waitOrForce(procs: Proc[], timeoutMs = 5000): Promise<void> {
 // ── Main ───────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  console.log(color(BOLD, "\ncc-hub dev launcher"));
+  console.log(color(BOLD, "\nmiki-moni dev launcher"));
   console.log(color(DIM, "Ctrl+C to stop both processes\n"));
 
   const procs: Proc[] = [

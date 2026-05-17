@@ -14,7 +14,7 @@ export class Notifier {
 
   async notify(args: NotifyArgs): Promise<void> {
     this.send({
-      title: `cc-hub · ${args.project}`,
+      title: `miki-moni · ${args.project}`,
       message: args.message,
     });
   }

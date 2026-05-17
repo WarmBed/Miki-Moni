@@ -9,7 +9,7 @@
  * Children are spawned via `pnpm exec tsx` so TypeScript sources run
  * directly without a compile step. The daemon's HOME / USERPROFILE env
  * vars are redirected to a temp dir so it picks up a synthetic config
- * instead of the user's real ~/.cc-hub/config.json.
+ * instead of the user's real ~/.miki-moni/config.json.
  *
  * Usage:
  *   pnpm verify
@@ -265,7 +265,7 @@ function waitForMessage(
 // ── Main ───────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  console.log(c(BOLD + CYAN, "\ncc-hub E2E relay verifier\n"));
+  console.log(c(BOLD + CYAN, "\nmiki-moni E2E relay verifier\n"));
 
   // ── Step 1: Generate keypairs + derive shared secret ──────────────────
 
@@ -290,9 +290,9 @@ async function main(): Promise<void> {
   // ── Step 4: Write synthetic config to temp dir ───────────────────────
 
   const ts = Date.now();
-  const tempDir = path.join(os.tmpdir(), `cc-hub-verify-${ts}`);
+  const tempDir = path.join(os.tmpdir(), `miki-moni-verify-${ts}`);
   const tempHome = path.join(tempDir, "home");
-  const hubDir = path.join(tempHome, ".cc-hub");
+  const hubDir = path.join(tempHome, ".miki-moni");
   await fs.mkdir(hubDir, { recursive: true });
 
   const configPath = path.join(hubDir, "config.json");
@@ -408,7 +408,7 @@ async function main(): Promise<void> {
 
   // ── Step 8: Trigger a session_start via POST /event ─────────────────
 
-  const testCwd = "/tmp/cc-hub-verify-workspace";
+  const testCwd = "/tmp/miki-moni-verify-workspace";
   const testUuid = `verify-uuid-${ts}`;
 
   console.log(c(CYAN, "Posting session_start event..."));

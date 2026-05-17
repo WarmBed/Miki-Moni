@@ -1,12 +1,12 @@
 {
-  "name": "cc-hub-helper",
-  "displayName": "cc-hub helper",
-  "publisher": "cc-hub",
+  "name": "miki-helper",
+  "displayName": "miki-moni helper",
+  "publisher": "miki-moni",
   "version": "0.1.0",
-  "description": "Companion VSCode extension for cc-hub daemon — receives prompt-submit commands and dispatches them to the local Claude panel.",
+  "description": "Companion VSCode extension for miki-moni daemon — receives prompt-submit commands and dispatches them to the local Claude panel.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/cc-hub/cc-hub.git"
+    "url": "https://github.com/miki-moni/miki-moni.git"
   },
   "engines": {
     "vscode": "^1.85.0"
@@ -18,19 +18,19 @@
   "contributes": {
     "commands": [
       {
-        "command": "cc-hub-helper.showStatus",
-        "title": "cc-hub helper: Show status"
+        "command": "miki-helper.showStatus",
+        "title": "miki-moni helper: Show status"
       }
     ],
     "configuration": {
-      "title": "cc-hub helper",
+      "title": "miki-moni helper",
       "properties": {
-        "cc-hub-helper.daemonUrl": {
+        "miki-helper.daemonUrl": {
           "type": "string",
           "default": "ws://127.0.0.1:8765/ws_ext",
-          "description": "WebSocket URL of the cc-hub daemon"
+          "description": "WebSocket URL of the miki-moni daemon"
         },
-        "cc-hub-helper.prefillDelayMs": {
+        "miki-helper.prefillDelayMs": {
           "type": "number",
           "default": 500,
           "description": "Milliseconds to wait after firing the vscode:// URI before pressing Enter"

@@ -8,7 +8,7 @@ import naclUtil from "tweetnacl-util";
 
 // ─── LocalStorage: paired phone state ────────────────────────────────────────
 
-const STORAGE_KEY = "cc-hub-phone-state";
+const STORAGE_KEY = "miki-moni-phone-state";
 
 export interface PhoneState {
   /** Legacy field: direct worker WebSocket URL (ws:// or wss://) */
@@ -46,7 +46,7 @@ export function clearState(): void {
 
 // ─── IndexedDB: dual keypair identity ────────────────────────────────────────
 
-const DB_NAME = "cc-hub-phone";
+const DB_NAME = "miki-moni-phone";
 const DB_VERSION = 1;
 const STORE = "identity";
 const KEY = "self";

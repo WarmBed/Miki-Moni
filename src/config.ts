@@ -6,14 +6,25 @@ import { generateKeypair, generateSigningKeypair, toBase64 } from "./crypto.js";
 export interface PairedPeer {
   peer_id: string;
   peer_name: string;
-  peer_pubkey: string;     // base64
-  shared_secret: string;   // base64 (32 bytes)
+  peer_pubkey: string;          // X25519 encryption pubkey (base64) — for shared secret
+  peer_sign_pubkey?: string;    // Ed25519 signing pubkey (base64) — keys the relay's
+                                // paired_phones map; required for revoke_phone RPC
+  shared_secret: string;        // base64 (32 bytes)
   paired_at: number;
   last_seen_at: number | null;
 }
 
 export interface RemoteEndpoint {
   worker_url: string;          // wss://...
+  /** Where the QR points. Defaults to the hosted PWA (https://miki-moni.pages.dev/);
+   *  self-hosters get their own *.pages.dev written here by the setup wizard. */
+  phone_pwa_url?: string;
+  /** Persistent pairing token. Once set, the daemon registers this same token
+   *  with the relay coordinator every restart, so the QR is permanent until
+   *  the user explicitly rotates it with `pnpm pair --rotate`. 16-char
+   *  Crockford base32. Optional for back-compat with old configs and for users
+   *  who prefer ephemeral pair tokens via `pnpm pair --new`. */
+  pair_token?: string;
 }
 
 export interface Config {

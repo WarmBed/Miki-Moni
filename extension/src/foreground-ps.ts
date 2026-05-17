@@ -55,21 +55,21 @@ public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 [DllImport("user32.dll")] public static extern bool LockSetForegroundWindow(uint uLockCode);
 [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(uint dwProcessId);
 '@
-Add-Type -MemberDefinition $sig -Name 'U' -Namespace 'CcHubHelper'
+Add-Type -MemberDefinition $sig -Name 'U' -Namespace 'MikiMoniHelper'
 
 $candidates = New-Object System.Collections.ArrayList
-$proc = [CcHubHelper.U+EnumWindowsProc]{
+$proc = [MikiMoniHelper.U+EnumWindowsProc]{
   param([IntPtr]$h, [IntPtr]$l)
-  if (-not [CcHubHelper.U]::IsWindowVisible($h)) { return $true }
+  if (-not [MikiMoniHelper.U]::IsWindowVisible($h)) { return $true }
   $sb = New-Object System.Text.StringBuilder 512
-  [CcHubHelper.U]::GetWindowText($h, $sb, 512) | Out-Null
+  [MikiMoniHelper.U]::GetWindowText($h, $sb, 512) | Out-Null
   $title = $sb.ToString()
   if ($title -match 'Visual Studio Code') {
     [void]$candidates.Add(@{ Hwnd = $h; Title = $title })
   }
   return $true
 }
-[CcHubHelper.U]::EnumWindows($proc, [IntPtr]::Zero) | Out-Null
+[MikiMoniHelper.U]::EnumWindows($proc, [IntPtr]::Zero) | Out-Null
 
 $best = $null
 $hint = '${h}'
@@ -77,7 +77,7 @@ if ($hint -ne '') {
   $best = $candidates | Where-Object { $_.Title -match [regex]::Escape($hint) } | Select-Object -First 1
 }
 if (-not $best) {
-  $fg = [CcHubHelper.U]::GetForegroundWindow()
+  $fg = [MikiMoniHelper.U]::GetForegroundWindow()
   $best = $candidates | Where-Object { $_.Hwnd -eq $fg } | Select-Object -First 1
 }
 if (-not $best -and $candidates.Count -gt 0) { $best = $candidates[0] }
@@ -90,28 +90,28 @@ if (-not $best) {
   exit 2
 }
 
-$fgBefore = [CcHubHelper.U]::GetForegroundWindow()
+$fgBefore = [MikiMoniHelper.U]::GetForegroundWindow()
 $hwnd = $best.Hwnd
 Write-Output ("picked hwnd=" + $hwnd + " title=" + $best.Title)
 Write-Output ("fg-before hwnd=" + $fgBefore)
 
-if ([CcHubHelper.U]::IsIconic($hwnd)) { [CcHubHelper.U]::ShowWindow($hwnd, 9) | Out-Null }
+if ([MikiMoniHelper.U]::IsIconic($hwnd)) { [MikiMoniHelper.U]::ShowWindow($hwnd, 9) | Out-Null }
 
-[CcHubHelper.U]::LockSetForegroundWindow(2) | Out-Null
-[CcHubHelper.U]::keybd_event(0x12, 0, 0, [IntPtr]::Zero)
-[CcHubHelper.U]::keybd_event(0x12, 0, 2, [IntPtr]::Zero)
+[MikiMoniHelper.U]::LockSetForegroundWindow(2) | Out-Null
+[MikiMoniHelper.U]::keybd_event(0x12, 0, 0, [IntPtr]::Zero)
+[MikiMoniHelper.U]::keybd_event(0x12, 0, 2, [IntPtr]::Zero)
 Start-Sleep -Milliseconds 30
 
-$targetTid = [CcHubHelper.U]::GetWindowThreadProcessId($hwnd, [IntPtr]::Zero)
-$myTid     = [CcHubHelper.U]::GetCurrentThreadId()
-$attachOk  = [CcHubHelper.U]::AttachThreadInput($myTid, $targetTid, $true)
-$setFgOk   = [CcHubHelper.U]::SetForegroundWindow($hwnd)
-[CcHubHelper.U]::BringWindowToTop($hwnd) | Out-Null
-[CcHubHelper.U]::SwitchToThisWindow($hwnd, $true)
-[CcHubHelper.U]::AttachThreadInput($myTid, $targetTid, $false) | Out-Null
+$targetTid = [MikiMoniHelper.U]::GetWindowThreadProcessId($hwnd, [IntPtr]::Zero)
+$myTid     = [MikiMoniHelper.U]::GetCurrentThreadId()
+$attachOk  = [MikiMoniHelper.U]::AttachThreadInput($myTid, $targetTid, $true)
+$setFgOk   = [MikiMoniHelper.U]::SetForegroundWindow($hwnd)
+[MikiMoniHelper.U]::BringWindowToTop($hwnd) | Out-Null
+[MikiMoniHelper.U]::SwitchToThisWindow($hwnd, $true)
+[MikiMoniHelper.U]::AttachThreadInput($myTid, $targetTid, $false) | Out-Null
 Start-Sleep -Milliseconds 200
 
-$fgAfter = [CcHubHelper.U]::GetForegroundWindow()
+$fgAfter = [MikiMoniHelper.U]::GetForegroundWindow()
 Write-Output ("attach=" + $attachOk + " setFg=" + $setFgOk + " fg-after=" + $fgAfter + " match=" + ($fgAfter -eq $hwnd))
 
 Add-Type -AssemblyName System.Windows.Forms

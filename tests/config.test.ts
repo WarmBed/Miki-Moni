@@ -15,12 +15,12 @@ import {
 let tmpPath: string;
 
 beforeEach(async () => {
-  tmpPath = path.join(os.tmpdir(), `cc-hub-test-${Date.now()}-${Math.random()}.json`);
+  tmpPath = path.join(os.tmpdir(), `miki-moni-test-${Date.now()}-${Math.random()}.json`);
 });
 
 // ── signing keypair migration tests ──────────────────────────────────────────
 
-const tmpDir = path.join(os.tmpdir(), `cc-hub-config-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+const tmpDir = path.join(os.tmpdir(), `miki-moni-config-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 const cfgPath = path.join(tmpDir, "config.json");
 
 beforeEach(async () => { await fs.mkdir(tmpDir, { recursive: true }); });

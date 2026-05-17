@@ -24,11 +24,21 @@ export interface PairingQrInput {
   pairing_token: string;
   daemon_pubkey: string;   // kept for backwards-compat; not used in new URL
   device_name: string;     // kept for backwards-compat; not used in new URL
+  /** Override the PWA URL — used by self-hosters whose Pages project isn't
+   *  at miki-moni.pages.dev. Defaults to the hosted convenience URL. */
+  phone_pwa_url?: string;
 }
 
+/** Hosted PWA URL — phone camera opens this directly. Self-hosters override via
+ *  Config.remote.phone_pwa_url + pass through the input. */
+export const PHONE_PWA_URL = "https://miki-moni.pages.dev/";
+
+/** HTTPS URL with token + relay in the URL fragment. Fragment is never sent to
+ *  the server, so the token doesn't leak into CF/Pages access logs. */
 export function pairingQrPayload(input: PairingQrInput): string {
-  const relay = encodeURIComponent(input.worker_url);
-  return `cch://pair?token=${input.pairing_token}&relay=${relay}`;
+  const fragment = `t=${input.pairing_token}&r=${encodeURIComponent(input.worker_url)}`;
+  const base = input.phone_pwa_url ?? PHONE_PWA_URL;
+  return `${base}#${fragment}`;
 }
 
 export function computePeerId(peerPubkeyBase64: string): string {

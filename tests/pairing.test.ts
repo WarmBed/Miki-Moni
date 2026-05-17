@@ -9,7 +9,7 @@ import {
 } from "../src/pairing.js";
 
 describe("pairingQrPayload", () => {
-  it("returns a cch://pair?token=...&relay=... URL format", () => {
+  it("returns an HTTPS URL pointing at the PWA, with token+relay in the URL fragment", () => {
     const kp = generateKeypair();
     const payload = pairingQrPayload({
       worker_url: "wss://example.workers.dev",
@@ -17,9 +17,9 @@ describe("pairingQrPayload", () => {
       daemon_pubkey: toBase64(kp.pubkey),
       device_name: "mike2-pc",
     });
-    expect(payload.startsWith("cch://pair?")).toBe(true);
-    expect(payload).toContain("token=tok123");
-    expect(payload).toContain("relay=wss%3A%2F%2Fexample.workers.dev");
+    expect(payload.startsWith("https://miki-moni.pages.dev/")).toBe(true);
+    expect(payload).toContain("#t=tok123");
+    expect(payload).toContain("r=wss%3A%2F%2Fexample.workers.dev");
   });
 });
 
@@ -91,17 +91,17 @@ describe("PairingSession", () => {
   });
 });
 
-describe("pairing QR payload (new cch:// format)", () => {
-  it("emits a cch://pair?token=...&relay=... URL", () => {
+describe("pairing QR payload (HTTPS + URL fragment)", () => {
+  it("emits an HTTPS PWA URL with t= and r= in the fragment", () => {
     const payload = pairingQrPayload({
       worker_url: "https://relay.f1telemetrystationpro.org",
       pairing_token: "K7H2X9PNRT4BMWQ8",
       daemon_pubkey: "(unused for now)",
       device_name: "(unused)",
     });
-    expect(payload.startsWith("cch://pair?")).toBe(true);
-    expect(payload).toContain("token=K7H2X9PNRT4BMWQ8");
-    expect(payload).toContain("relay=https%3A%2F%2Frelay.f1telemetrystationpro.org");
+    expect(payload.startsWith("https://miki-moni.pages.dev/")).toBe(true);
+    expect(payload).toContain("#t=K7H2X9PNRT4BMWQ8");
+    expect(payload).toContain("r=https%3A%2F%2Frelay.f1telemetrystationpro.org");
   });
 
   it("URL-encodes special characters in worker_url", () => {
@@ -111,7 +111,21 @@ describe("pairing QR payload (new cch:// format)", () => {
       daemon_pubkey: "x",
       device_name: "x",
     });
-    expect(payload).toContain("relay=https%3A%2F%2Frelay.example.com%3A8443");
+    expect(payload).toContain("r=https%3A%2F%2Frelay.example.com%3A8443");
+  });
+
+  it("keeps the secret token in the fragment, not the query string", () => {
+    // CF/Pages access logs see ?query but never #fragment — so the token
+    // never hits anyone's request log even if the URL is visited.
+    const payload = pairingQrPayload({
+      worker_url: "https://r.example.com",
+      pairing_token: "SECRET0000000000",
+      daemon_pubkey: "x",
+      device_name: "x",
+    });
+    const url = new URL(payload);
+    expect(url.search).toBe("");                  // no query
+    expect(url.hash).toContain("t=SECRET0000000000");
   });
 });
 

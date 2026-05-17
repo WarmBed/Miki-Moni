@@ -1,0 +1,4 @@
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-05-17T01:00:00Z","sessionId":"cwd-fixture"}
+{"parentUuid":null,"isSidechain":false,"type":"hook","sessionId":"cwd-fixture","timestamp":"2026-05-17T01:00:01Z"}
+{"type":"user","message":{"role":"user","content":"hi"},"cwd":"d:\\code\\dragonfly","sessionId":"cwd-fixture","timestamp":"2026-05-17T01:00:02Z"}
+{"type":"user","message":{"role":"user","content":"later message"},"cwd":"d:\\code\\dragonfly\\subdir","sessionId":"cwd-fixture","timestamp":"2026-05-17T01:00:03Z"}

@@ -1,10 +1,21 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 
 const SETTINGS_PATH = path.join(os.homedir(), ".claude", "settings.json");
-const HOOK_SCRIPT_ABS = path.resolve("hooks", "cc-hub-emit.ps1");
-const MARKER = "cc-hub-emit.ps1";
+// Resolve the hook script relative to THIS source file, not the current
+// working directory. After a global `npm install -g miki-moni` the user
+// will run `miki install-hooks` from anywhere — process.cwd() is no longer
+// the cc-hub repo so `path.resolve("hooks", ...)` would point at the wrong
+// place. Module-relative gives us the package's own hooks/ dir.
+const _moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const HOOK_SCRIPT_ABS = path.resolve(_moduleDir, "..", "hooks", "miki-emit.ps1");
+const MARKER = "miki-emit.ps1";
+// Legacy markers from pre-rename installs. Any hook group whose command
+// references one of these is stripped before we install the current entry —
+// otherwise upgrade-and-rerun produces two hooks firing per event.
+const LEGACY_MARKERS = ["cc-hub-emit.ps1"];
 
 const TARGETS: Array<{ key: string; matcher?: string }> = [
   { key: "SessionStart" },
@@ -41,6 +52,13 @@ async function writeSettings(s: Record<string, any>): Promise<void> {
   await fs.writeFile(SETTINGS_PATH, JSON.stringify(s, null, 2));
 }
 
+function isLegacyGroup(g: any): boolean {
+  if (!Array.isArray(g?.hooks)) return false;
+  return g.hooks.some((h: any) =>
+    typeof h?.command === "string" && LEGACY_MARKERS.some((m) => h.command.includes(m)),
+  );
+}
+
 function ensureHookEntry(
   hooks: Record<string, any[]>,
   key: string,
@@ -48,6 +66,8 @@ function ensureHookEntry(
   command: string,
 ): void {
   if (!Array.isArray(hooks[key])) hooks[key] = [];
+  // Drop legacy entries first so a re-install after rename doesn't double-fire.
+  hooks[key] = hooks[key].filter((g) => !isLegacyGroup(g));
   const groups = hooks[key];
 
   for (const g of groups) {
@@ -67,7 +87,7 @@ async function main(): Promise<void> {
   const settings = await readSettings();
 
   // Backup once
-  const backup = SETTINGS_PATH + ".cc-hub.bak";
+  const backup = SETTINGS_PATH + ".miki-moni.bak";
   try { await fs.access(backup); }
   catch { try { await fs.copyFile(SETTINGS_PATH, backup); } catch { /* no original yet */ } }
 

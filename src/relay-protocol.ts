@@ -22,7 +22,15 @@ export type Plaintext =
   | { kind: "pong"; echo: string }
   | { kind: "pair_offer"; phone_pk: string; phone_name: string }
   | { kind: "pair_ack"; ok: boolean }
-  | { kind: "pair_reject"; reason: string };
+  | { kind: "pair_reject"; reason: string }
+  // ─── Remote RPC tunnel — phone & remote-web clients proxy local server.ts ───
+  | { kind: "http_proxy"; request_id: string; method: string; path: string; headers?: Record<string, string>; body?: string }
+  | { kind: "http_proxy_response"; request_id: string; status: number; headers: Record<string, string>; body: string }
+  | { kind: "ws_proxy_open"; tunnel_ws_id: string; path: string }
+  | { kind: "ws_proxy_opened"; tunnel_ws_id: string }
+  | { kind: "ws_proxy_msg"; tunnel_ws_id: string; data: string }
+  | { kind: "ws_proxy_send"; tunnel_ws_id: string; data: string }
+  | { kind: "ws_proxy_close"; tunnel_ws_id: string; code?: number; reason?: string };
 
 export function encodeEnvelope(
   plaintext: Plaintext,

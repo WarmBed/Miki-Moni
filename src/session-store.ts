@@ -106,15 +106,23 @@ export class SessionStore extends EventEmitter {
   }
 
   /**
-   * Wipe all sessions. Called on daemon startup so the dashboard only shows
-   * sessions that are actually still firing hooks (= really in use right now).
-   * Old / closed panels won't re-fire and stay out. Returns the row count
-   * that was cleared.
+   * Wipe all sessions. Hard delete — last resort, prefer markAllStale().
    */
   truncate(): number {
     const before = (this.db.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number }).n;
     this.db.exec("DELETE FROM sessions;");
     return before;
+  }
+
+  /**
+   * Mark every session as "stale". Called on daemon startup — when the daemon
+   * was off we don't know what state anything is in; the next incoming hook
+   * will upgrade the row back to "active". Dashboard can use a filter to
+   * hide stale rows. Returns the count that was touched.
+   */
+  markAllStale(): number {
+    const r = this.db.prepare("UPDATE sessions SET status = 'stale'").run();
+    return r.changes;
   }
 
   close(): void {

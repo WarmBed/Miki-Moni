@@ -8,9 +8,11 @@ import {
   isValidPairingCode,
   performPairing,
   connectAuthed,
+  computePeerIdFromB64,
   type Envelope,
 } from "./relay";
 import { loadState, saveState, clearState, loadOrCreateIdentity, type PhoneState } from "./store";
+import { QrScanner } from "./qr-scanner";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -60,14 +62,61 @@ function appendQueryParam(url: string, key: string, value: string): string {
   return `${url}${sep}${key}=${encodeURIComponent(value)}`;
 }
 
+const DEFAULT_RELAY_URL = "https://relay.f1telemetrystationpro.org";
+
 /** Read relay URL from query param ?relay=... or fall back to production default. */
 function getRelayUrl(): string {
   try {
     const params = new URLSearchParams(window.location.search);
-    return params.get("relay") ?? "https://relay.f1telemetrystationpro.org";
+    return params.get("relay") ?? DEFAULT_RELAY_URL;
   } catch {
-    return "https://relay.f1telemetrystationpro.org";
+    return DEFAULT_RELAY_URL;
   }
+}
+
+/** Parse pair params from a URL fragment string (no leading '#').
+ *  Fragment is used (vs query) so neither Cloudflare nor any web server sees
+ *  the pairing token. Shared by hash auto-pair and the QR scanner. */
+function parsePairFragment(fragment: string): { token: string; relay: string } | null {
+  try {
+    const hash = fragment.replace(/^#/, "");
+    if (!hash) return null;
+    const params = new URLSearchParams(hash);
+    const token = params.get("t");
+    const relay = params.get("r");
+    if (!token || !relay) return null;
+    if (!isValidPairingCode(token)) return null;
+    return { token, relay };
+  } catch {
+    return null;
+  }
+}
+
+/** Read pair params from window.location.hash directly. */
+function parsePairFromHash(): { token: string; relay: string } | null {
+  return parsePairFragment(window.location.hash);
+}
+
+/** Pull pair params out of an arbitrary scanned URL or raw fragment.
+ *  Handles `https://host/#t=…&r=…` AND a bare `#t=…&r=…` AND a bare `t=…&r=…`. */
+function parsePairFromScannedText(text: string): { token: string; relay: string } | null {
+  try {
+    // Has a "#" in it → take everything after the last #.
+    const hashIdx = text.indexOf("#");
+    if (hashIdx >= 0) return parsePairFragment(text.slice(hashIdx + 1));
+    // No hash but has `t=` and `r=` → treat as raw fragment.
+    if (/^[\w-]+=/.test(text)) return parsePairFragment(text);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Strip the hash so a refresh doesn't try to pair again (or worse, replay the token). */
+function clearHash(): void {
+  try {
+    history.replaceState(null, "", window.location.pathname + window.location.search);
+  } catch { /* ignore */ }
 }
 
 // ── Pair Form ──────────────────────────────────────────────────────────────
@@ -75,24 +124,25 @@ function getRelayUrl(): string {
 interface PairFormProps {
   relayUrl: string;
   onPaired: (state: PhoneState) => void;
+  autoPairError?: string | null;
 }
 
-function PairForm({ relayUrl, onPaired }: PairFormProps) {
+function PairForm({ relayUrl, onPaired, autoPairError }: PairFormProps) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(autoPairError ?? null);
+  const [scanning, setScanning] = useState(false);
 
   const normalized = normalizePairingCode(input);
   const valid = isValidPairingCode(normalized);
 
-  async function handleSubmit() {
-    if (!valid) { setError("Code must be 16 chars from the Crockford base32 alphabet"); return; }
+  async function pair(token: string, useRelayUrl: string) {
     setBusy(true); setError(null);
     try {
       const identity = await loadOrCreateIdentity();
-      const peer = await performPairing(relayUrl, normalized, identity);
+      const peer = await performPairing(useRelayUrl, token, identity);
       const state: PhoneState = {
-        relay_url: relayUrl,
+        relay_url: useRelayUrl,
         daemon_id: peer.daemon_id,
         daemon_name: peer.daemon_id,          // display the daemon_id until we get a name
         daemon_pk_b64: peer.daemon_pubkey_b64,
@@ -108,6 +158,25 @@ function PairForm({ relayUrl, onPaired }: PairFormProps) {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function handleSubmit() {
+    if (!valid) { setError("Code must be 16 chars from the Crockford base32 alphabet"); return; }
+    await pair(normalized, relayUrl);
+  }
+
+  function handleScan(scannedText: string) {
+    setScanning(false);
+    const parsed = parsePairFromScannedText(scannedText);
+    if (!parsed) {
+      setError(`掃到了但不是配對 QR：${scannedText.slice(0, 60)}${scannedText.length > 60 ? "…" : ""}`);
+      return;
+    }
+    void pair(parsed.token, parsed.relay);
+  }
+
+  if (scanning) {
+    return <QrScanner onScan={handleScan} onCancel={() => setScanning(false)} />;
   }
 
   return (
@@ -158,6 +227,21 @@ function PairForm({ relayUrl, onPaired }: PairFormProps) {
             onClick={() => void handleSubmit()}
           >
             {busy ? "配對中…" : "開始配對"}
+          </button>
+
+          <div class="flex items-center gap-3 text-xs text-slate-500">
+            <div class="flex-1 h-px bg-slate-800" />
+            <span>或</span>
+            <div class="flex-1 h-px bg-slate-800" />
+          </div>
+
+          <button
+            class="rounded px-4 py-2 font-medium text-sm transition-colors text-slate-100 bg-slate-700 hover:bg-slate-600 flex items-center justify-center gap-2"
+            disabled={busy}
+            onClick={() => { setError(null); setScanning(true); }}
+          >
+            <span>📷</span>
+            <span>掃 QR Code</span>
           </button>
         </div>
 
@@ -252,11 +336,41 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
   const [sessions, setSessions] = useState<Session[]>([]);
   const [connStatus, setConnStatus] = useState<ConnStatus>("connecting");
   const [log, setLog] = useState<LogEntry[]>([]);
+  const [unpairing, setUnpairing] = useState(false);
+  const [myPeerId, setMyPeerId] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const backoffRef = useRef(1000);
   const mountedRef = useRef(true);
+  const unpairingRef = useRef(false);
 
   const sharedSecret = fromBase64(state.shared_secret_b64);
+
+  useEffect(() => {
+    void computePeerIdFromB64(state.phone_pk_b64).then(setMyPeerId);
+  }, [state.phone_pk_b64]);
+
+  function finalizeUnpair() {
+    if (!mountedRef.current) return;
+    unpairingRef.current = true;
+    try { wsRef.current?.close(); } catch { /* ignore */ }
+    onUnpair();
+  }
+
+  function requestUnpair() {
+    if (unpairingRef.current) return;
+    unpairingRef.current = true;
+    setUnpairing(true);
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      addLog("info", "送 revoke_self 給 relay");
+      try { ws.send(JSON.stringify({ type: "revoke_self" })); } catch { /* ignore */ }
+      // Safety net: if relay never replies, finalize anyway after 1.5s.
+      setTimeout(() => { if (mountedRef.current) finalizeUnpair(); }, 1500);
+    } else {
+      addLog("warn", "WS 未連線；直接清本地（relay 端可能仍有 paired_phones entry，下次連會被擋掉）");
+      finalizeUnpair();
+    }
+  }
 
   function addLog(level: "info" | "warn" | "error", msg: string, ctx?: Record<string, unknown>): void {
     const entry: LogEntry = { ts: Date.now(), level, msg, ctx };
@@ -312,15 +426,51 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
       if (!mountedRef.current) { ws.close(); return; }
       backoffRef.current = 1000;
       setConnStatus("connected");
+      // Register our peer_id so the relay can route daemon→phone envelopes
+      // precisely to us (no broadcast-noise on other paired phones).
+      void computePeerIdFromB64(state.phone_pk_b64).then((peer_id) => {
+        if (!mountedRef.current) return;
+        try {
+          ws.send(JSON.stringify({ type: "register_peer_id", peer_id }));
+          addLog("info", "送 register_peer_id", { peer_id });
+        } catch { /* ignore */ }
+      });
       addLog("info", "WS open — 送 request_snapshot");
       sendEncrypted({ kind: "request_snapshot" }, "request_snapshot");
     };
 
     ws.onmessage = (ev) => {
       if (!mountedRef.current) return;
-      let env: Envelope;
-      try { env = JSON.parse(ev.data as string); }
+      let raw: any;
+      try { raw = JSON.parse(ev.data as string); }
       catch { addLog("warn", "WS 收到非 JSON", { raw: String(ev.data).slice(0, 80) }); return; }
+
+      // Control-plane messages from relay/daemon (not encrypted envelopes):
+      if (raw && typeof raw.type === "string") {
+        if (raw.type === "revoked_ok") {
+          addLog("info", "relay 確認 revoke 完成，清除本地狀態");
+          finalizeUnpair();
+          return;
+        }
+        if (raw.type === "phone_revoked") {
+          // Daemon kicked us — clear local and bounce to pair screen.
+          addLog("warn", "daemon 主動解除配對，回到配對畫面", { by: raw.by ?? "unknown" });
+          finalizeUnpair();
+          return;
+        }
+      }
+
+      const env = raw as Envelope;
+
+      // If addressed to a different phone, silently drop. This is a defense in
+      // depth — Phase A relay routes by `to`, but during the brief window
+      // before our register_peer_id lands, or talking to an old worker
+      // version, the relay may still broadcast.
+      if (typeof env.to === "string" && env.to.startsWith("phone:")) {
+        const targetPeerId = env.to.slice("phone:".length);
+        if (myPeerId && targetPeerId !== myPeerId) return;
+      }
+
       const plain = decodeEnvelope(env, sharedSecret) as {
         kind?: string;
         sessions?: Session[];
@@ -389,19 +539,24 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
           <span class="text-xs text-slate-400">{CONN_LABEL[connStatus]}</span>
         </div>
         <button
-          class="bg-slate-700 hover:bg-slate-600 rounded px-3 py-1 text-sm ml-3 transition-colors"
-          onClick={onUnpair}
+          class="bg-slate-700 hover:bg-slate-600 disabled:opacity-60 rounded px-3 py-1 text-sm ml-3 transition-colors"
+          onClick={requestUnpair}
+          disabled={unpairing}
         >
-          解除配對
+          {unpairing ? "解除中…" : "解除配對"}
         </button>
       </header>
 
       <main class="max-w-2xl mx-auto p-4 flex flex-col gap-4">
         {sessions.length === 0 && connStatus === "connected" && (
-          <div class="text-slate-500 text-center py-10 text-sm">
-            <p>目前沒有任何 session。</p>
-            <p class="text-xs mt-2">在 VSCode 開 Claude Code panel 就會冒出來。</p>
-            <p class="text-xs mt-1">若 daemon 還沒裝 hooks，請在電腦執行 <code class="bg-slate-800 px-1 rounded">pnpm install:hooks</code></p>
+          <div class="text-slate-500 text-center py-10 text-sm space-y-2">
+            <p class="text-base">⚪ 連上 relay，但還沒有 session</p>
+            <p class="text-xs text-slate-600">兩個可能：</p>
+            <ul class="text-xs text-slate-500 list-disc list-inside text-left max-w-xs mx-auto space-y-1">
+              <li>電腦的 daemon 沒在跑 → 終端機跑 <code class="bg-slate-800 px-1 rounded">pnpm start</code></li>
+              <li>daemon 有跑，但你還沒開任何 Claude Code session → 開一個就會出現</li>
+            </ul>
+            <p class="text-[10px] text-slate-700 mt-3">若 hooks 還沒裝：<code class="bg-slate-800 px-1 rounded">pnpm install:hooks</code></p>
           </div>
         )}
         {sessions.length === 0 && connStatus !== "connected" && (
@@ -442,7 +597,41 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
 
 function App() {
   const [state, setState] = useState<PhoneState | null>(() => loadState());
+  const [autoPairError, setAutoPairError] = useState<string | null>(null);
+  const [autoPairing, setAutoPairing] = useState(false);
   const relayUrl = getRelayUrl();
+
+  // Auto-pair from URL fragment (#t=...&r=...) once on mount. Idempotent —
+  // hash is cleared after first attempt so refresh doesn't replay the token.
+  useEffect(() => {
+    if (state) return; // already paired; ignore any leftover hash
+    const fromHash = parsePairFromHash();
+    if (!fromHash) return;
+    clearHash();
+    setAutoPairing(true);
+    void (async () => {
+      try {
+        const identity = await loadOrCreateIdentity();
+        const peer = await performPairing(fromHash.relay, fromHash.token, identity);
+        const next: PhoneState = {
+          relay_url: fromHash.relay,
+          daemon_id: peer.daemon_id,
+          daemon_name: peer.daemon_id,
+          daemon_pk_b64: peer.daemon_pubkey_b64,
+          shared_secret_b64: peer.shared_secret_b64,
+          phone_pk_b64: identity.encryption_pubkey,
+          phone_privkey_b64: identity.encryption_privkey,
+          paired_at: Date.now(),
+        };
+        saveState(next);
+        setState(next);
+      } catch (e: unknown) {
+        setAutoPairError(e instanceof Error ? (e.message || "auto_pair_failed") : "auto_pair_failed");
+      } finally {
+        setAutoPairing(false);
+      }
+    })();
+  }, []);
 
   function handlePaired(s: PhoneState) {
     setState(s);
@@ -453,8 +642,18 @@ function App() {
     setState(null);
   }
 
+  if (autoPairing) {
+    return (
+      <div class="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
+        <div class="text-center">
+          <div class="text-lg font-medium mb-2">配對中…</div>
+          <div class="text-sm text-slate-500">正在跟 daemon 完成 handshake</div>
+        </div>
+      </div>
+    );
+  }
   if (!state) {
-    return <PairForm relayUrl={relayUrl} onPaired={handlePaired} />;
+    return <PairForm relayUrl={relayUrl} onPaired={handlePaired} autoPairError={autoPairError} />;
   }
   return <DashboardScreen state={state} onUnpair={handleUnpair} />;
 }

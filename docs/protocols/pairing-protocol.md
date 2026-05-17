@@ -1,4 +1,4 @@
-# cc-hub Pairing Protocol (v1)
+# miki-moni Pairing Protocol (v1)
 
 ## Goal
 
@@ -35,7 +35,7 @@ Securely establish a long-term X25519 shared secret between daemon and a phone, 
 5. Worker sees both daemon and phone connected with same `pairing_token` and routes the `pair_offer` to the daemon's WS.
 6. Daemon:
    - Computes `shared_secret = curve25519(daemon_sk, PPk)`.
-   - Persists `{peer_id, peer_name, peer_pubkey, shared_secret, paired_at}` to `~/.cc-hub/config.json` under `paired_peers[]`.
+   - Persists `{peer_id, peer_name, peer_pubkey, shared_secret, paired_at}` to `~/.miki-moni/config.json` under `paired_peers[]`.
    - `peer_id = base64(sha256(peer_pubkey)).replace(/[+/=]/g, '').slice(0,16)`.
    - Sends an **encrypted** envelope back containing:
      ```json

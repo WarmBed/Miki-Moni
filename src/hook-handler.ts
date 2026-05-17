@@ -50,10 +50,21 @@ export class HookHandler {
     const existing = this.store.get(sessionUuid);
     if (existing && existing.last_event_at > ev.timestamp) return;  // last-write-wins
 
+    // cwd is IMMUTABLE once the row exists. Claude Code's projects-dir
+    // encoding is derived from the cwd-at-session-start; the SDK's
+    // `resume: uuid` only works if you pass that same cwd. If we let later
+    // hook events overwrite (e.g. the agent cd'd into a subfolder, or a
+    // tool runs in a different working dir), /wrap/start later uses the
+    // wrong cwd → SDK throws "No conversation found with session ID".
+    // The very first event for a uuid sets cwd; every subsequent event
+    // keeps it. Bug repro: agent cd'd from d:\code into d:\code\cc-hub →
+    // hook events flipped DB.cwd → wrap-spawn looked in d--code-cc-hub/
+    // for a transcript that actually lived in d--code/.
+    const cwdToStore = existing?.cwd ?? cwd;
     const next: Session = {
-      cwd,
+      cwd: cwdToStore,
       session_uuid: sessionUuid,
-      project_name: basename(cwd),
+      project_name: existing?.project_name ?? basename(cwdToStore),
       status: STATUS_BY_EVENT[ev.event_type],
       last_event_at: ev.timestamp,
       last_message_preview: existing?.last_message_preview ?? "",

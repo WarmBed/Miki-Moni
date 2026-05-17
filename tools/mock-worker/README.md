@@ -1,7 +1,7 @@
 # Mock Worker (local dev)
 
 This is a Node.js stand-in for the user's Cloudflare Worker, used during local
-development of cc-hub so the whole daemon ↔ relay ↔ phone pipeline can be
+development of miki-moni so the whole daemon ↔ relay ↔ phone pipeline can be
 exercised on one machine without a Cloudflare account.
 
 **This is NOT production code.** Differences from the real Worker:

@@ -1,6 +1,6 @@
-# Deploying cc-hub Relay
+# Deploying miki-moni Relay
 
-cc-hub's remote control feature needs a tiny Cloudflare Worker between your daemon (laptop) and your phone/browser. You have two options.
+miki-moni's remote control feature needs a tiny Cloudflare Worker between your daemon (laptop) and your phone/browser. You have two options.
 
 ## Option A — Use the hosted relay (recommended for most users)
 
@@ -10,7 +10,7 @@ The hosted relay is end-to-end encrypted. Even the operator (us) literally canno
 
 ```bash
 # Your daemon already points at relay.f1telemetrystationpro.org by default. Just run:
-cch claude       # or whatever your CLI invocation is
+miki claude       # or whatever your CLI invocation is
 # Scan the QR or copy the 16-char code into the phone app.
 ```
 
@@ -26,8 +26,8 @@ Some users prefer their own infrastructure. Cloudflare Workers free tier (100k r
 ### Steps
 
 ```bash
-git clone https://github.com/cc-hub/cc-hub
-cd cc-hub/worker
+git clone https://github.com/miki-moni/miki-moni
+cd miki-moni/worker
 
 # 1. Log into Cloudflare
 wrangler login
@@ -39,12 +39,12 @@ wrangler login
 wrangler deploy
 ```
 
-Output will show your live URL — either `https://cch-relay.<your-account>.workers.dev` or `https://cch.your-domain.com`.
+Output will show your live URL — either `https://miki-relay.<your-account>.workers.dev` or `https://miki.your-domain.com`.
 
 ### Point your daemon at your own relay
 
 ```bash
-cch config set remote.worker_url https://cch-relay.<your-account>.workers.dev
+miki config set remote.worker_url https://miki-relay.<your-account>.workers.dev
 ```
 
 That's it. Same QR / 16-char pairing flow as the hosted version.

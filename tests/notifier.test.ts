@@ -7,7 +7,7 @@ describe("Notifier", () => {
     const n = new Notifier(sendImpl);
     await n.notify({ project: "dragonfly", message: "Claude is waiting" });
     expect(sendImpl).toHaveBeenCalledWith({
-      title: "cc-hub · dragonfly",
+      title: "miki-moni · dragonfly",
       message: "Claude is waiting",
     });
   });

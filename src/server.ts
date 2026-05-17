@@ -7,13 +7,25 @@ import type { VscodeBridge } from "./vscode-bridge.js";
 import type { Notifier } from "./notifier.js";
 import type { HookEvent, Session } from "./types.js";
 import { normalizeCwd } from "./hook-handler.js";
-import { readTranscriptTail, readSessionPreview, type SessionPreview } from "./session-resolver.js";
+import { readTranscriptTail, readSessionPreview, sessionHasAnyTurns, readOriginalCwd, type SessionPreview } from "./session-resolver.js";
 import path from "node:path";
 import os from "node:os";
 import { promises as fs } from "node:fs";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { ExtRegistry } from "./ext-registry.js";
 import type { ExtMessage } from "./protocol-ext.js";
 import { randomUUID } from "node:crypto";
+import { WrapProcessRegistry, killProcessTree, killOrphans } from "./wrap-process.js";
+
+// Miki repo root — derived from this file's location (src/server.ts → repo root).
+// `bin/miki.mjs` is the canonical CLI entry: it self-resolves tsx and avoids
+// Node 24's `.cmd`/`.bat` spawn ban (see bin/miki.mjs comment). /wrap/start
+// spawns it as `node <abs path> claude [args...]` — works whether or not the
+// user has run `npm link`, and doesn't depend on pnpm/npm being on the new
+// wt window's PATH.
+const MIKI_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const MIKI_BIN_JS = path.join(MIKI_REPO_ROOT, "bin", "miki.mjs");
 
 type Log = { info: (obj: Record<string, unknown>, msg?: string) => void; warn: (obj: Record<string, unknown>, msg?: string) => void; error: (obj: Record<string, unknown>, msg?: string) => void };
 
@@ -46,7 +58,14 @@ function parseHookEvent(body: unknown): HookEvent | null {
 
 export function createApp(deps: ServerDeps): { app: Express; server: http.Server; registry: ExtRegistry } {
   const app = express();
-  app.use(express.json({ limit: "1mb" }));
+  // 20mb to accommodate pasted images (base64) on /send. Hook payloads are tiny.
+  app.use(express.json({ limit: "20mb" }));
+
+  // Lifecycle registry for `miki claude` CLIs the daemon launched via
+  // /wrap/start. Owns: spawn record, reported PID, tree-kill on disconnect.
+  // External sessions (VSCode panels, user-started `miki claude`) are NOT in
+  // here — they manage their own lifetime.
+  const wrapProc = new WrapProcessRegistry(deps.log);
 
   app.post("/event", async (req: Request, res: Response) => {
     const ev = parseHookEvent(req.body);
@@ -58,11 +77,60 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
 
   app.get("/sessions", (_req, res) => {
     const wrapConns: Map<string, import("ws").WebSocket> | undefined = (deps as any).__wrapConnections;
+    const wrapAct: Map<string, string> | undefined = (deps as any).__wrapActivity;
+    const wrapMode: Map<string, string> | undefined = (deps as any).__wrapPermissionMode;
+    const wrapAskMap: Map<string, { question_id: string; questions: unknown[] }> | undefined = (deps as any).__wrapAsks;
     const list = deps.store.list().map((s) => ({
       ...s,
       wrapped: wrapConns?.has(s.session_uuid ?? "") ?? false,
+      activity: s.session_uuid ? wrapAct?.get(s.session_uuid) ?? null : null,
+      permission_mode: s.session_uuid ? wrapMode?.get(s.session_uuid) ?? null : null,
+      pending_ask: s.session_uuid ? wrapAskMap?.get(s.session_uuid) ?? null : null,
     }));
     res.json(list);
+  });
+
+  // Dashboard answer to an AskUserQuestion. Routes back to the wrapper's WS,
+  // which then turns it into a regular user message into the query stream.
+  app.post("/wrap/answer", (req: Request, res: Response) => {
+    const sessionUuid = typeof req.body?.session_uuid === "string" ? req.body.session_uuid : null;
+    const questionId = typeof req.body?.question_id === "string" ? req.body.question_id : null;
+    const answers = Array.isArray(req.body?.answers) ? req.body.answers : null;
+    if (!sessionUuid || !questionId || !answers) {
+      res.status(400).json({ error: "missing session_uuid / question_id / answers" });
+      return;
+    }
+    const wrapConns: Map<string, import("ws").WebSocket> | undefined = (deps as any).__wrapConnections;
+    const ws = wrapConns?.get(sessionUuid);
+    if (!ws || ws.readyState !== ws.OPEN) {
+      res.status(404).json({ error: "wrap not connected" });
+      return;
+    }
+    try {
+      ws.send(JSON.stringify({ type: "ask_question_answer", question_id: questionId, answers }));
+      res.status(200).json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // Interrupt the currently running SDK query() in the wrapper — calls
+  // Query.interrupt() inside wrap.ts. Used by the ⏹ button next to send.
+  app.post("/wrap/interrupt", (req: Request, res: Response) => {
+    const sessionUuid = typeof req.body?.session_uuid === "string" ? req.body.session_uuid : null;
+    if (!sessionUuid) { res.status(400).json({ error: "missing session_uuid" }); return; }
+    const wrapConns: Map<string, import("ws").WebSocket> | undefined = (deps as any).__wrapConnections;
+    const ws = wrapConns?.get(sessionUuid);
+    if (!ws || ws.readyState !== ws.OPEN) {
+      res.status(404).json({ error: "wrap not connected" });
+      return;
+    }
+    try {
+      ws.send(JSON.stringify({ type: "interrupt" }));
+      res.status(200).json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
   });
 
   // /sessions/previews MUST come before /sessions/:session_uuid (Express order)
@@ -205,9 +273,170 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     }
   });
 
+  // Dashboard click → spawn a Windows Terminal tab running `miki claude` so an
+  // unwrapped session becomes wrapped (or a brand-new session is started in a
+  // chosen folder) without the user needing to open a terminal manually.
+  //
+  // Body:
+  //   { session_uuid }            → attach to existing session: `miki claude -r <uuid>`
+  //   { cwd }                     → fresh session in that folder:  `miki claude --fresh`
+  //
+  // `--fresh` is critical for the no-uuid path: it tells wrap.ts to push a
+  // synthetic "hi" so the SDK init fires immediately and a session_uuid lands
+  // on the WS register — which is what wrap-process registry keys on for
+  // tree-kill / empty-row eviction.
+  app.post("/wrap/start", async (req: Request, res: Response) => {
+    const sessionUuid = typeof req.body?.session_uuid === "string" && req.body.session_uuid
+      ? req.body.session_uuid : null;
+    const cwdHint = typeof req.body?.cwd === "string" && req.body.cwd
+      ? req.body.cwd : null;
+
+    let cwd = cwdHint;
+    const mikiArgs: string[] = ["claude"];
+
+    if (sessionUuid) {
+      const s = deps.store.get(sessionUuid);
+      if (!s) {
+        res.status(404).json({ error: "session not found", session_uuid: sessionUuid });
+        return;
+      }
+      const wrapConns: Map<string, import("ws").WebSocket> | undefined = (deps as any).__wrapConnections;
+      if (wrapConns?.has(sessionUuid)) {
+        res.status(409).json({ error: "session already wrapped" });
+        return;
+      }
+      // For resume: cwd MUST be the cwd-at-session-start, not the DB.cwd,
+      // not the latest-hook cwd. The SDK encodes its projects-dir lookup
+      // from this exact value; mismatching it = "No conversation found
+      // with session ID" crash. Find the JSONL, read its first cwd field,
+      // and use that. Falls back to DB.cwd only when transcript missing.
+      const projectsRoot = path.join(os.homedir(), ".claude", "projects");
+      let tpath: string | null = null;
+      try {
+        const dirs = await fs.readdir(projectsRoot);
+        for (const d of dirs) {
+          const candidate = path.join(projectsRoot, d, `${sessionUuid}.jsonl`);
+          try { await fs.access(candidate); tpath = candidate; break; }
+          catch { /* keep looking */ }
+        }
+      } catch { /* projects root missing — fall through */ }
+      if (!tpath) {
+        res.status(404).json({
+          error: "no transcript file found for this session — cannot resume",
+          session_uuid: sessionUuid,
+        });
+        return;
+      }
+      const originalCwd = await readOriginalCwd(tpath);
+      if (!originalCwd) {
+        deps.log?.warn({ route: "/wrap/start", session_uuid: sessionUuid, tpath }, "transcript missing cwd metadata, falling back to DB.cwd");
+      } else if (originalCwd.toLowerCase() !== s.cwd.toLowerCase()) {
+        deps.log?.info({ route: "/wrap/start", session_uuid: sessionUuid, db_cwd: s.cwd, original_cwd: originalCwd }, "DB.cwd diverged from JSONL cwd — using JSONL");
+      }
+      cwd = originalCwd ?? s.cwd;
+      mikiArgs.push("-r", sessionUuid);
+    } else {
+      // Fresh-session path: ensure the wrap binds a uuid immediately so the
+      // lifecycle registry can track / kill it later. Without --fresh the
+      // SDK only inits after the user types something, leaving us blind to
+      // the wrap's true session_uuid if they close the window first.
+      mikiArgs.push("--fresh");
+    }
+
+    if (!cwd) {
+      res.status(400).json({ error: "missing session_uuid or cwd" });
+      return;
+    }
+
+    // Validate cwd exists and is a directory — otherwise wt -d would silently
+    // open the new tab in the user's home dir, which is confusing UX.
+    try {
+      const st = await fs.stat(cwd);
+      if (!st.isDirectory()) {
+        res.status(400).json({ error: "cwd is not a directory", cwd });
+        return;
+      }
+    } catch {
+      res.status(400).json({ error: "cwd does not exist", cwd });
+      return;
+    }
+
+    // `wt -w new new-tab -d <cwd> -- node <bin/miki.mjs> claude [-r <uuid> | --fresh]`
+    // -w new   = always a fresh wt window (avoids "where did my tab go" if user
+    //            already has wt open in a different virtual desktop)
+    // -d <cwd> = sets the tab's starting directory (W11 Terminal v1.7+)
+    // We invoke `node <abs path>` rather than `miki` so the spawn works:
+    //   - without `npm link` (miki may not be on PATH yet)
+    //   - across Node versions (24+ blocks .cmd spawn from Node, but here wt
+    //     opens a real shell so .cmd would work — node-direct just removes one
+    //     more failure mode)
+    const wtArgs = [
+      "-w", "new",
+      "new-tab",
+      "-d", cwd,
+      "--",
+      "node", MIKI_BIN_JS,
+      ...mikiArgs,
+    ];
+
+    try {
+      const child = spawn("wt.exe", wtArgs, {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: false,
+      });
+      child.on("error", (err) => {
+        deps.log?.error({ route: "/wrap/start", error: String(err) }, "wt.exe spawn error event");
+      });
+      child.unref();
+      // Tell the lifecycle registry to expect this wrap. wrap.ts will report
+      // its real node PID when it sends `register` over the WS. wt.exe itself
+      // is a launcher that exits after handing off, so its PID is useless to
+      // us — we wait for the in-process wrap to phone home with its own PID.
+      wrapProc.recordSpawn({ sessionUuid, cwd });
+      deps.log?.info({ route: "/wrap/start", session_uuid: sessionUuid, cwd, mikiArgs }, "wt new-tab spawned");
+      res.status(200).json({ ok: true, session_uuid: sessionUuid, cwd, mode: sessionUuid ? "resume" : "new" });
+    } catch (err) {
+      const msg = String(err);
+      deps.log?.error({ route: "/wrap/start", error: msg }, "wt.exe spawn threw");
+      res.status(503).json({ ok: false, error: `failed to spawn wt.exe: ${msg}` });
+    }
+  });
+
+  app.post("/wrap/permission-mode", (req: Request, res: Response) => {
+    const uuid = typeof req.body?.session_uuid === "string" ? req.body.session_uuid : null;
+    const mode = typeof req.body?.mode === "string" ? req.body.mode : null;
+    const allowed = ["default", "acceptEdits", "bypassPermissions", "plan", "auto"];
+    if (!uuid || !mode) { res.status(400).json({ error: "missing session_uuid or mode" }); return; }
+    if (!allowed.includes(mode)) { res.status(400).json({ error: "invalid mode", allowed }); return; }
+    const wrapConns: Map<string, import("ws").WebSocket> | undefined = (deps as any).__wrapConnections;
+    const wrapWs = wrapConns?.get(uuid);
+    if (!wrapWs || wrapWs.readyState !== wrapWs.OPEN) {
+      res.status(409).json({ error: "session not wrapped or wrap WS not connected" });
+      return;
+    }
+    try {
+      wrapWs.send(JSON.stringify({ type: "set_permission_mode", mode }));
+      deps.log?.info({ route: "/wrap/permission-mode", session_uuid: uuid, mode }, "pushed set_permission_mode to wrap");
+      res.status(202).json({ ok: true, queued: true, mode });
+    } catch (err) {
+      deps.log?.error({ route: "/wrap/permission-mode", session_uuid: uuid, mode, error: String(err) }, "push failed");
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   app.post("/send", async (req: Request, res: Response) => {
     const prompt = typeof req.body?.prompt === "string" ? req.body.prompt : null;
     const submitFlag = req.body?.submit === true;  // false (default) = prefill via URI
+    // Pasted images. Only meaningful for wrap-push fast path — VSCode prefill
+    // can't carry images through vscode:// URI, and `claude -p` stdin doesn't
+    // accept image blocks either, so those paths just drop them with a warning.
+    const images: Array<{ media_type: string; data: string }> | undefined =
+      Array.isArray(req.body?.images)
+        ? req.body.images
+            .filter((i: any) => typeof i?.media_type === "string" && typeof i?.data === "string")
+            .map((i: any) => ({ media_type: i.media_type, data: i.data }))
+        : undefined;
     // auto_enter (only meaningful with submit=false): after prefilling via URI,
     // send {ENTER} keystroke to foreground window so the panel's live session
     // submits — no -p spawn, no cache rebuild, uses panel's hot context.
@@ -218,6 +447,35 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     const { session, key, via } = resolveSession(req.body);
     if (!via || !prompt) { deps.log?.warn({ route: "/send", hasKey: !!via, hasPrompt: !!prompt, submit: submitFlag }, "missing session_uuid/cwd or prompt"); res.status(400).json({ error: "missing session_uuid or cwd, or missing prompt" }); return; }
     if (!session) { deps.log?.warn({ route: "/send", via, key, submit: submitFlag }, "session not found"); res.status(404).json({ error: "session not found", lookup: { via, key } }); return; }
+
+    // FAST PATH (highest priority): if a `miki claude` wrapper is alive for this
+    // session, push through its long-running query() — no spawn, no -p, no
+    // resume marker, no extra cost. Bypasses ALL other modes (prefill, helper,
+    // submit) regardless of submitFlag, because wrap-push is strictly better
+    // than any of them when available.
+    if (session.session_uuid) {
+      const wrapConns: Map<string, import("ws").WebSocket> | undefined = (deps as any).__wrapConnections;
+      const wrapWs = wrapConns?.get(session.session_uuid);
+      if (wrapWs && wrapWs.readyState === wrapWs.OPEN) {
+        try {
+          wrapWs.send(JSON.stringify({ type: "push", prompt, images }));
+          deps.log?.info({ route: "/send", mode: "wrap-push", session_uuid: session.session_uuid, project: session.project_name, promptLength: prompt.length, imageCount: images?.length ?? 0 }, "pushed via wrap WS");
+          res.status(200).json({
+            ok: true,
+            mode: "wrap-push",
+            session_uuid: session.session_uuid,
+            cwd: session.cwd,
+            project: session.project_name,
+            reply: "(streaming to wrapper — see terminal / next dashboard refresh)",
+            duration_ms: 0,
+          });
+          return;
+        } catch (err) {
+          deps.log?.error({ route: "/send", mode: "wrap-push", session_uuid: session.session_uuid, error: String(err) }, "wrap push threw, falling through to other modes");
+          // fall through
+        }
+      }
+    }
 
     if (!submitFlag) {
       // PREFILL+ENTER mode — route via helper extension. The legacy direct-SendKeys
@@ -260,7 +518,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
         registry,
         timeoutMs: 10_000,
       });
-      if (!result.ok && result.error?.includes("no cc-hub-helper")) {
+      if (!result.ok && result.error?.includes("no miki-helper")) {
         deps.log?.warn({ route: "/send", mode: "helper", cwd: session.cwd }, "no helper for cwd");
         res.status(503).json({ ok: false, error: result.error, mode: "helper", url, cwd: session.cwd });
         return;
@@ -279,31 +537,6 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     if (!session.session_uuid) {
       res.status(400).json({ error: "submit mode requires session_uuid (got null)" });
       return;
-    }
-
-    // FAST PATH: if a `cch claude` wrapper is alive for this session, push
-    // through its long-running query() — no spawn, no -p, no resume marker,
-    // no extra cost. The wrapper is the host; we just hand it the prompt.
-    const wrapConns: Map<string, import("ws").WebSocket> | undefined = (deps as any).__wrapConnections;
-    const wrapWs = wrapConns?.get(session.session_uuid);
-    if (wrapWs && wrapWs.readyState === wrapWs.OPEN) {
-      try {
-        wrapWs.send(JSON.stringify({ type: "push", prompt }));
-        deps.log?.info({ route: "/send", mode: "wrap-push", session_uuid: session.session_uuid, project: session.project_name, promptLength: prompt.length }, "pushed via wrap WS");
-        res.status(200).json({
-          ok: true,
-          mode: "wrap-push",
-          session_uuid: session.session_uuid,
-          cwd: session.cwd,
-          project: session.project_name,
-          reply: "(streaming to wrapper — see terminal / next dashboard refresh)",
-          duration_ms: 0,
-        });
-        return;
-      } catch (err) {
-        deps.log?.error({ route: "/send", mode: "wrap-push", session_uuid: session.session_uuid, error: String(err) }, "wrap push threw, falling back to -p spawn");
-        // fall through to spawn fallback
-      }
     }
 
     deps.log?.info({ route: "/send", mode: "submit", session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name, promptLength: prompt.length, maxBudgetUsd }, "spawning headless claude...");
@@ -338,17 +571,39 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   // Workaround: noServer mode + one manual upgrade router below.
   const wss = new WebSocketServer({ noServer: true });
 
-  // Wrap WS endpoint — each `cch claude` wrapper connects here and registers
+  // Wrap WS endpoint — each `miki claude` wrapper connects here and registers
   // its session. /send for a wrapped session goes through this socket instead
   // of spawning `claude -p`.
   const wrapWss = new WebSocketServer({ noServer: true });
   const wrapConnections = new Map<string, import("ws").WebSocket>(); // uuid → ws
+  // Latest activity label per wrapped session ("Ideating" / "Using Bash" / "Replying").
+  // Lives only in memory — purpose is to let dashboard pick up the badge after
+  // browser refresh without waiting for the next activity event from wrap.
+  const wrapActivity = new Map<string, string>();
+  // Permission mode declared by each wrap at register time
+  // ("default" | "acceptEdits" | "bypassPermissions" | "plan"). Locked for the
+  // wrap session lifetime — SDK doesn't expose a mid-session toggle.
+  const wrapPermissionMode = new Map<string, string>();
+  // Pending "downgrade to stale" timers per uuid. On wrap close we don't
+  // immediately mark the session stale (because daemon hot-reload / network
+  // blip causes transient closes that wrap auto-reconnects in 3s). Instead
+  // we schedule a downgrade after a grace period; if wrap reconnects within
+  // that window, bind() clears the timer.
+  const wrapStaleTimers = new Map<string, NodeJS.Timeout>();
+  const WRAP_STALE_GRACE_MS = 8_000;
+  // Pending AskUserQuestion per wrapped session (so dashboard F5 can re-pick up).
+  interface PendingAsk { question_id: string; questions: unknown[] }
+  const wrapAsks = new Map<string, PendingAsk>();
   // Re-broadcast a session's row with the updated `wrapped` flag so dashboard
   // can repaint the badge live. Cheap (one JSON.stringify per client).
   function rebroadcastSession(uuid: string): void {
     const s = deps.store.get(uuid);
     if (!s) return;
-    const enriched = { ...s, wrapped: wrapConnections.has(uuid) };
+    const enriched = {
+      ...s,
+      wrapped: wrapConnections.has(uuid),
+      permission_mode: wrapPermissionMode.get(uuid) ?? null,
+    };
     const msg = JSON.stringify({ type: "session_changed", session: enriched });
     for (const client of wss.clients) {
       if (client.readyState === client.OPEN) client.send(msg, () => { /* noop */ });
@@ -357,40 +612,245 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
 
   wrapWss.on("connection", (ws) => {
     let registeredUuid: string | null = null;
+    let registeredCwd: string = "";
+    let registeredPermissionMode: string | null = null;
+    // PID reported by wrap.ts at register-time. Buffered here for the
+    // late-bind case (`register` arrives with session_uuid:null, then a
+    // separate `session_uuid` message lands once SDK init completes).
+    let registeredPid: number | null = null;
     deps.log?.info({ route: "/wrap" }, "wrap client connected");
     function bind(uuid: string): void {
-      if (registeredUuid && registeredUuid !== uuid && wrapConnections.get(registeredUuid) === ws) {
-        wrapConnections.delete(registeredUuid);
+      // Detached uuid (e.g. user typed /clear in CLI → SDK assigns a new
+      // session id and we rebind). We must rebroadcast the OLD row so the
+      // dashboard sees it's no longer wrapped — otherwise the old cell keeps
+      // its wrapped badge, send goes to a dead WS, and falls through to the
+      // VSCode URI handler which spawns a surprise panel.
+      const detached = registeredUuid && registeredUuid !== uuid && wrapConnections.get(registeredUuid) === ws
+        ? registeredUuid : null;
+      if (detached) {
+        wrapConnections.delete(detached);
+        wrapPermissionMode.delete(detached);
       }
       registeredUuid = uuid;
       wrapConnections.set(uuid, ws);
+      if (registeredPermissionMode) wrapPermissionMode.set(uuid, registeredPermissionMode);
+      // Cancel any pending stale-downgrade — we're back online for this uuid.
+      const pending = wrapStaleTimers.get(uuid);
+      if (pending) { clearTimeout(pending); wrapStaleTimers.delete(uuid); }
+
+      // Ensure the Session row exists AND reflects the wrap being live. Two
+      // cases this handles:
+      //   1. No row yet (daemon restart, or session created outside hooks):
+      //      create it from scratch.
+      //   2. Stale row exists (prior VSCode panel closed, status="stale"):
+      //      force back to "active" so the dashboard treats this `miki claude
+      //      -r <uuid>` takeover as a fresh live session — otherwise the
+      //      dashboard cell looks dead until the user types something in the
+      //      terminal and a hook fires.
+      // We preserve existing fields (project_name, tokens, preview) by reading
+      // them first when present; only revive status + last_event_at.
+      if (registeredCwd) {
+        const cwdNorm = normalizeCwd(registeredCwd);
+        const existing = deps.store.get(uuid);
+        deps.store.upsert({
+          cwd: existing?.cwd ?? cwdNorm,
+          session_uuid: uuid,
+          project_name: existing?.project_name ?? path.basename(cwdNorm.replace(/\\/g, "/")),
+          status: "active",
+          last_event_at: Date.now(),
+          last_message_preview: existing?.last_message_preview ?? "",
+          tokens_in: existing?.tokens_in ?? 0,
+          tokens_out: existing?.tokens_out ?? 0,
+          vscode_pid: existing?.vscode_pid ?? null,
+        });
+        deps.log?.info({ route: "/wrap", session_uuid: uuid, cwd: cwdNorm, revived: !!existing }, "wrap upserted session row");
+      }
+      // If the wrap just swapped uuid (e.g. /clear in CLI), broadcast the OLD
+      // row so the dashboard's old cell drops its wrapped badge — otherwise
+      // sending to it routes through a dead WS, falls through to VSCode URI
+      // handler and surprises the user with a fresh panel.
+      if (detached) {
+        deps.log?.info({ route: "/wrap", detached, new: uuid }, "wrap uuid swap — unmarking old cell as wrapped");
+        rebroadcastSession(detached);
+      }
       rebroadcastSession(uuid);
     }
     ws.on("message", (raw) => {
       let m: any; try { m = JSON.parse(raw.toString()); } catch { return; }
-      if (m?.type === "register" && typeof m.session_uuid === "string" && m.session_uuid) {
-        bind(m.session_uuid);
-        deps.log?.info({ route: "/wrap", session_uuid: m.session_uuid }, "wrap registered");
+      if (m?.type === "register") {
+        // Store cwd from register payload so bind() can upsert with it later.
+        if (typeof m.cwd === "string") registeredCwd = m.cwd;
+        // Wrap-declared permission mode. Stays on the connection regardless of
+        // when the session_uuid is bound (could be at register or later via
+        // "session_uuid" message after SDK init).
+        if (typeof m.permission_mode === "string") {
+          registeredPermissionMode = m.permission_mode;
+        }
+        // Capture node PID so wrap-process registry can tree-kill it on close
+        // (Windows wt.exe doesn't propagate window-close to children).
+        if (typeof m.pid === "number" && m.pid > 0) registeredPid = m.pid;
+        if (typeof m.session_uuid === "string" && m.session_uuid) {
+          bind(m.session_uuid);
+          if (registeredPid) wrapProc.bindPid(m.session_uuid, registeredPid);
+          deps.log?.info({ route: "/wrap", session_uuid: m.session_uuid, permission_mode: registeredPermissionMode, pid: registeredPid }, "wrap registered");
+        }
       } else if (m?.type === "session_uuid" && typeof m.session_uuid === "string" && m.session_uuid) {
         bind(m.session_uuid);
-        deps.log?.info({ route: "/wrap", session_uuid: m.session_uuid }, "wrap uuid late-bound");
+        if (registeredPid) wrapProc.bindPid(m.session_uuid, registeredPid);
+        deps.log?.info({ route: "/wrap", session_uuid: m.session_uuid, pid: registeredPid }, "wrap uuid late-bound");
+      } else if (m?.type === "permission_mode_changed" && typeof m.session_uuid === "string" && typeof m.mode === "string") {
+        // Wrap confirmed the mode switch completed. Update server-side map and
+        // rebroadcast so all browser clients pick up the new badge.
+        wrapPermissionMode.set(m.session_uuid, m.mode);
+        deps.log?.info({ route: "/wrap", session_uuid: m.session_uuid, mode: m.mode }, "wrap permission_mode changed");
+        rebroadcastSession(m.session_uuid);
+      } else if (m?.type === "user_message" && typeof m.session_uuid === "string" && typeof m.text === "string") {
+        // Optimistic user-text overlay. Wrap sends this the instant the user
+        // hits Enter — broadcasted so dashboard cells can paint the new "user"
+        // preview line without waiting for the next /sessions/previews poll
+        // (~1-2s lag from JSONL flush). Browser drops the overlay as soon as
+        // the canonical preview's last_user_ts catches up.
+        const out = JSON.stringify({
+          type: "user_message",
+          session_uuid: m.session_uuid,
+          text: m.text,
+          ts: typeof m.ts === "number" ? m.ts : Date.now(),
+        });
+        for (const c of wss.clients) {
+          if (c.readyState === c.OPEN) c.send(out, () => { /* noop */ });
+        }
+      } else if ((m?.type === "assistant_delta" || m?.type === "assistant_delta_start" || m?.type === "assistant_delta_end") && typeof m.session_uuid === "string") {
+        // Streaming text deltas from the SDK partial-message stream. Just
+        // pass-through to all dashboard WS clients — they merge into the
+        // streaming buffer keyed by session_uuid. Cheap, no caching needed
+        // (late-joining browsers pick up the canonical text via /sessions/previews
+        // poll within 2s).
+        const out = JSON.stringify(m);
+        for (const c of wss.clients) {
+          if (c.readyState === c.OPEN) c.send(out, () => { /* noop */ });
+        }
+      } else if (m?.type === "activity" && typeof m.session_uuid === "string") {
+        // Live activity ping ("Ideating" / "Using Bash" / "Replying" / null).
+        // Cache the latest so /sessions can include it (so browser refresh
+        // doesn't blank the badge), AND broadcast for live updates.
+        const label: string | null = typeof m.label === "string" ? m.label : null;
+        if (label) wrapActivity.set(m.session_uuid, label);
+        else wrapActivity.delete(m.session_uuid);
+        const out = JSON.stringify({ type: "activity", session_uuid: m.session_uuid, label });
+        for (const c of wss.clients) {
+          if (c.readyState === c.OPEN) c.send(out, () => { /* noop */ });
+        }
+      } else if (m?.type === "ask_question" && typeof m.session_uuid === "string" && typeof m.question_id === "string") {
+        // Claude wants to ask a multi-choice question. Cache for late-joining
+        // browser refresh + broadcast immediately to all dashboard clients.
+        const entry = { question_id: m.question_id, questions: Array.isArray(m.questions) ? m.questions : [] };
+        wrapAsks.set(m.session_uuid, entry);
+        const out = JSON.stringify({ type: "ask_question", session_uuid: m.session_uuid, ...entry });
+        for (const c of wss.clients) {
+          if (c.readyState === c.OPEN) c.send(out, () => { /* noop */ });
+        }
+      } else if (m?.type === "ask_question_done" && typeof m.session_uuid === "string") {
+        // Wrap got the answer (from terminal or dashboard) — clear cache + tell dashboards to close pickers.
+        wrapAsks.delete(m.session_uuid);
+        const out = JSON.stringify({ type: "ask_question_done", session_uuid: m.session_uuid, question_id: m.question_id });
+        for (const c of wss.clients) {
+          if (c.readyState === c.OPEN) c.send(out, () => { /* noop */ });
+        }
+      } else if ((m?.type === "turn_start" || m?.type === "turn_end") && typeof m.session_uuid === "string") {
+        // SDK-driven wrap sessions never fire Claude Code's UserPromptSubmit /
+        // Stop hooks, so the dashboard's status column would freeze at whatever
+        // value the last real hook left. Wrap reports turn boundaries via
+        // turn_start / turn_end; we synthesize the equivalent hook events so
+        // hook-handler flips status as if a hook had fired.
+        const cwdForEvent = registeredCwd ?? deps.store.get(m.session_uuid)?.cwd ?? "";
+        if (cwdForEvent) {
+          void deps.handler.handle({
+            event_type: m.type === "turn_start" ? "user_prompt" : "stop",
+            cwd: cwdForEvent,
+            session_uuid: m.session_uuid,
+            timestamp: Date.now(),
+          });
+        }
       }
     });
     ws.on("close", () => {
       const uuid = registeredUuid;
       if (uuid && wrapConnections.get(uuid) === ws) {
         wrapConnections.delete(uuid);
+        wrapActivity.delete(uuid);
+        wrapPermissionMode.delete(uuid);
+        wrapAsks.delete(uuid);
         deps.log?.info({ route: "/wrap", session_uuid: uuid }, "wrap disconnected");
-        // Wrapped sessions are "owned" by cc-hub for their lifetime. When the
-        // wrapper exits (Ctrl+C / crash), the session is logically over —
-        // drop it from the store so the dashboard card disappears instead of
-        // hanging around stale. Re-opening via `cch claude -r <uuid>` will
-        // repopulate from hooks instantly.
-        deps.store.remove(uuid);
-        const removeMsg = JSON.stringify({ type: "session_removed", session_uuid: uuid });
-        for (const client of wss.clients) {
-          if (client.readyState === client.OPEN) client.send(removeMsg, () => { /* noop */ });
+
+        // Reclaim ownership from the lifecycle registry. If the daemon spawned
+        // this CLI via /wrap/start (i.e. spawnRec exists), it's our job to:
+        //   1. Tree-kill the leftover node process (Windows wt close doesn't),
+        //   2. If the session never produced a real turn (user opened CLI by
+        //      mistake, closed without sending), evict the row so the
+        //      dashboard doesn't carry a ghost card forever.
+        // External wraps (user-launched `pnpm miki claude` from their own
+        // terminal) don't have a spawn record; we leave them entirely alone.
+        const spawnRec = wrapProc.takeOnClose(uuid);
+        if (spawnRec?.pid) {
+          void killProcessTree(spawnRec.pid, deps.log);
         }
+
+        rebroadcastSession(uuid);
+
+        // Replace any pending timer for this uuid (defensive — close can fire
+        // twice in some edge cases).
+        const prior = wrapStaleTimers.get(uuid);
+        if (prior) clearTimeout(prior);
+
+        // Auto-cleanup empty daemon-spawned sessions: if JSONL has zero
+        // meaningful turns, evict the row entirely instead of marking stale.
+        // Done async (file IO) — until it resolves the row sits at its current
+        // status, which is fine because the dashboard already dropped the
+        // "wrapped" badge via rebroadcastSession above.
+        if (spawnRec) {
+          void (async () => {
+            try {
+              const projectsRoot = path.join(os.homedir(), ".claude", "projects");
+              const dirs = await fs.readdir(projectsRoot).catch(() => [] as string[]);
+              let tpath: string | null = null;
+              for (const d of dirs) {
+                const candidate = path.join(projectsRoot, d, `${uuid}.jsonl`);
+                try { await fs.access(candidate); tpath = candidate; break; }
+                catch { /* keep looking */ }
+              }
+              const hasTurns = tpath ? await sessionHasAnyTurns(tpath) : false;
+              if (!hasTurns) {
+                // Don't race the stale timer below — cancel it first.
+                const t = wrapStaleTimers.get(uuid);
+                if (t) { clearTimeout(t); wrapStaleTimers.delete(uuid); }
+                const removed = deps.store.remove(uuid);
+                if (removed) {
+                  deps.log?.info({ route: "/wrap", session_uuid: uuid, transcript_found: !!tpath }, "wrap closed with no turns — row evicted");
+                }
+              }
+            } catch (err) {
+              deps.log?.warn({ route: "/wrap", session_uuid: uuid, error: String(err) }, "empty-transcript check failed; row kept");
+            }
+          })();
+        }
+
+        const timer = setTimeout(() => {
+          wrapStaleTimers.delete(uuid);
+          // Reconnected in the meantime? bind() already cleared us, but check
+          // again to be safe.
+          if (wrapConnections.has(uuid)) return;
+          const existing = deps.store.get(uuid);
+          if (!existing) return;
+          if (existing.status === "stale") return;
+          deps.store.upsert({
+            ...existing,
+            status: "stale",
+            last_event_at: Date.now(),
+          });
+          deps.log?.info({ route: "/wrap", session_uuid: uuid }, "wrap stayed disconnected — downgraded to stale");
+          rebroadcastSession(uuid);
+        }, WRAP_STALE_GRACE_MS);
+        wrapStaleTimers.set(uuid, timer);
       }
     });
     ws.on("error", () => { /* swallow — close handler does cleanup */ });
@@ -398,6 +858,9 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
 
   // Expose check for /send to route through wrap when available
   (deps as any).__wrapConnections = wrapConnections;
+  (deps as any).__wrapActivity = wrapActivity;
+  (deps as any).__wrapPermissionMode = wrapPermissionMode;
+  (deps as any).__wrapAsks = wrapAsks;
 
   const registry = new ExtRegistry();
   const wssExt = new WebSocketServer({ noServer: true });
@@ -474,7 +937,12 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   });
 
   deps.store.on("session_changed", (session) => {
-    const enriched = { ...session, wrapped: wrapConnections.has(session.session_uuid ?? "") };
+    const uuid = session.session_uuid ?? "";
+    const enriched = {
+      ...session,
+      wrapped: wrapConnections.has(uuid),
+      permission_mode: wrapPermissionMode.get(uuid) ?? null,
+    };
     const msg = JSON.stringify({ type: "session_changed", session: enriched });
     for (const client of wss.clients) {
       if (client.readyState === client.OPEN) {
@@ -483,5 +951,24 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     }
   });
 
+  // Auto-cleanup paths (wrap close with empty transcript, future manual
+  // delete) end at session_store.remove() → "session_removed" event. Forward
+  // it to dashboard clients so the cell vanishes live. Frontend already
+  // handles the `session_removed` WS message type (see app.tsx).
+  deps.store.on("session_removed", (sessionUuid) => {
+    const msg = JSON.stringify({ type: "session_removed", session_uuid: sessionUuid });
+    for (const client of wss.clients) {
+      if (client.readyState === client.OPEN) {
+        client.send(msg, (_err) => { /* ignore racing disconnects */ });
+      }
+    }
+  });
+
+  // Expose registry for tests / startup orphan kill driver (index.ts).
+  (deps as any).__wrapProc = wrapProc;
+
   return { app, server, registry };
 }
+
+// Re-export for index.ts startup driver.
+export { killOrphans };

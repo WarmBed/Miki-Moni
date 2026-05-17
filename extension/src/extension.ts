@@ -14,14 +14,14 @@ export function activate(context: vscode.ExtensionContext): void {
   if (!folder) {
     // No workspace open — extension still loads (for showStatus command) but does NOT register.
     context.subscriptions.push(
-      vscode.commands.registerCommand("cc-hub-helper.showStatus", () =>
-        vscode.window.showInformationMessage("cc-hub helper: no workspace folder open, not registered with daemon"),
+      vscode.commands.registerCommand("miki-helper.showStatus", () =>
+        vscode.window.showInformationMessage("miki-moni helper: no workspace folder open, not registered with daemon"),
       ),
     );
     return;
   }
 
-  const cfg = vscode.workspace.getConfiguration("cc-hub-helper");
+  const cfg = vscode.workspace.getConfiguration("miki-helper");
   const daemonUrl = cfg.get<string>("daemonUrl", "ws://127.0.0.1:8765/ws_ext");
   // Default 1000ms — Claude panel needs time to switch tabs / clear previous
   // response state before the new prefill + Enter lands cleanly. Lower values
@@ -47,14 +47,14 @@ export function activate(context: vscode.ExtensionContext): void {
     registerInfo: () => ({ workspace_root: workspaceRoot, helper_version: version }),
     onSubmit: (req) => submit(req, submitterDeps),
     WebSocketCtor: WebSocket as any,
-    log: (msg, ctx) => console.log(`[cc-hub-helper] ${msg}`, ctx ?? ""),
+    log: (msg, ctx) => console.log(`[miki-helper] ${msg}`, ctx ?? ""),
   });
   client.start();
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("cc-hub-helper.showStatus", () =>
+    vscode.commands.registerCommand("miki-helper.showStatus", () =>
       vscode.window.showInformationMessage(
-        `cc-hub helper v${version}, workspace=${workspaceRoot}, daemon=${daemonUrl}`,
+        `miki-moni helper v${version}, workspace=${workspaceRoot}, daemon=${daemonUrl}`,
       ),
     ),
     { dispose: () => client?.stop() },

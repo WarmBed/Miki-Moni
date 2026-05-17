@@ -1,0 +1,2 @@
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-05-17T01:00:00Z"}
+{"type":"user","message":{"role":"user","content":"hi (no cwd field at all)"},"timestamp":"2026-05-17T01:00:01Z"}

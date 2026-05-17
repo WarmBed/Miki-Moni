@@ -1,4 +1,4 @@
-# cc-hub Relay Protocol (v1)
+# miki-moni Relay Protocol (v1)
 
 ## Overview
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Package the cc-hub-helper VSCode extension into a .vsix and install it
+ * Package the miki-helper VSCode extension into a .vsix and install it
  * into the user's local VSCode (`code --install-extension`).
  *
  * Idempotent — uses `--force` to overwrite any existing install. Re-run this
@@ -77,7 +77,7 @@ async function main() {
   await installExtension(vsix);
 
   console.log("");
-  console.log("✅ cc-hub-helper installed. Restart your VSCode windows to activate it.");
+  console.log("✅ miki-helper installed. Restart your VSCode windows to activate it.");
   console.log("   Then in the dashboard, click 送出 to verify prompts reach the right Claude panel.");
 }
 

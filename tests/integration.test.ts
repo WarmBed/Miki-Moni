@@ -279,7 +279,7 @@ describe("VscodeBridge.submitViaHelper", () => {
       sessionUuid: "u", prompt: "p", cwd: "d:/code", registry, timeoutMs: 100,
     });
     expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/no cc-hub-helper.*registered/i);
+    expect(result.error).toMatch(/no miki-helper.*registered/i);
   });
 
   it("returns {ok:false} after timeoutMs when extension doesn't ack", async () => {
@@ -359,7 +359,7 @@ describe("server POST /send routing (helper path)", () => {
       session_uuid: "uuid-y", prompt: "hi",  // auto_enter:true (default), submit:false (default)
     });
     expect(res.status).toBe(503);
-    expect(res.body.error).toMatch(/no cc-hub-helper.*registered/i);
+    expect(res.body.error).toMatch(/no miki-helper.*registered/i);
     expect(res.body.error).toMatch(/install the VSIX/i);
     store.close();
   });

@@ -131,8 +131,8 @@ const server = http.createServer(async (req, res) => {
       res.end(
         `<!doctype html>
 <meta charset="utf-8">
-<title>cc-hub phone web client</title>
-<h1>cc-hub phone web client not built yet</h1>
+<title>miki-moni phone web client</title>
+<h1>miki-moni phone web client not built yet</h1>
 <p>Run <code>pnpm build:phone</code> from the repo root to build it.</p>`,
       );
     } else {

@@ -25,7 +25,7 @@ describe("ExtRegistry", () => {
     const r = new ExtRegistry();
     const ws = fakeWs("a");
     r.add(ws, baseInfo("d:/code"));
-    expect(r.findForCwd("d:/code/cc-hub/src")).toBe(ws);
+    expect(r.findForCwd("d:/code/miki-moni/src")).toBe(ws);
   });
 
   it("findForCwd returns null when no workspace covers the cwd", () => {
