@@ -3,6 +3,7 @@ import { SessionStore } from "../src/session-store.js";
 import type { Session } from "../src/types.js";
 
 const sample: Session = {
+  agent: "claude",
   cwd: "d:\\code\\dragonfly",
   session_uuid: "uuid-a",
   project_name: "dragonfly",
@@ -53,5 +54,17 @@ describe("SessionStore", () => {
   it("throws when session_uuid is missing", () => {
     expect(() => store.upsert({ ...sample, session_uuid: null }))
       .toThrow(/session_uuid is required/);
+  });
+
+  it("persists agent column and round-trips via get()", () => {
+    const store = new SessionStore(":memory:");
+    store.upsert({
+      agent: "codex",
+      cwd: "d:\\x", session_uuid: "u1", project_name: "x", status: "active",
+      last_event_at: 1, last_message_preview: "", tokens_in: 0, tokens_out: 0, vscode_pid: null,
+    });
+    const got = store.get("u1");
+    expect(got?.agent).toBe("codex");
+    store.close();
   });
 });

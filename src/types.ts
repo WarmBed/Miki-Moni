@@ -1,11 +1,15 @@
+export type { AgentId } from "./agents/types.js";
+import type { AgentId } from "./agents/types.js";
+
 export type SessionStatus = "active" | "waiting" | "idle" | "stale";
 
 export interface Session {
-  cwd: string;                  // primary key, e.g. "d:\\code\\dragonfly"
+  agent: AgentId;
+  cwd: string;
   session_uuid: string | null;
   project_name: string;
   status: SessionStatus;
-  last_event_at: number;        // unix ms
+  last_event_at: number;
   last_message_preview: string;
   tokens_in: number;
   tokens_out: number;
@@ -20,6 +24,7 @@ export type HookEventType =
   | "post_tool_use";
 
 export interface HookEvent {
+  agent: AgentId;
   event_type: HookEventType;
   cwd: string;
   session_uuid: string | null;

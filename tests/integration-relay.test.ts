@@ -78,6 +78,7 @@ describe("daemon <-> mock-Worker <-> phone integration", () => {
 
     const store = new SessionStore(":memory:");
     store.upsert({
+      agent: "claude",
       cwd: "d:\\code\\target",
       session_uuid: "uuid-target",
       project_name: "target",
@@ -114,6 +115,7 @@ describe("daemon <-> mock-Worker <-> phone integration", () => {
 
     // Daemon emits a session_changed → phone should receive an encrypted event
     store.upsert({
+      agent: "claude",
       cwd: "d:\\code\\new",
       session_uuid: "u-new",
       project_name: "new",

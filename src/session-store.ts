@@ -2,13 +2,14 @@ import Database from "better-sqlite3";
 import { EventEmitter } from "node:events";
 import type { Session, StoreEvents } from "./types.js";
 
-// v2 schema: PK is session_uuid (one row per Claude session, not per workspace).
+// v3 schema: adds agent column (claude | codex).
 // Multiple sessions per cwd are supported (e.g. 3 Claude tabs in the same VSCode workspace).
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const CREATE_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
   session_uuid TEXT PRIMARY KEY,
+  agent TEXT NOT NULL DEFAULT 'claude',
   cwd TEXT NOT NULL,
   project_name TEXT NOT NULL,
   status TEXT NOT NULL,
@@ -20,14 +21,16 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_cwd ON sessions(cwd);
 CREATE INDEX IF NOT EXISTS idx_sessions_last_event ON sessions(last_event_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent);
 `;
 
 const UPSERT_SQL = `
-INSERT INTO sessions (session_uuid, cwd, project_name, status, last_event_at,
+INSERT INTO sessions (session_uuid, agent, cwd, project_name, status, last_event_at,
                      last_message_preview, tokens_in, tokens_out, vscode_pid)
-VALUES (@session_uuid, @cwd, @project_name, @status, @last_event_at,
+VALUES (@session_uuid, @agent, @cwd, @project_name, @status, @last_event_at,
         @last_message_preview, @tokens_in, @tokens_out, @vscode_pid)
 ON CONFLICT(session_uuid) DO UPDATE SET
+  agent = excluded.agent,
   cwd = excluded.cwd,
   project_name = excluded.project_name,
   status = excluded.status,

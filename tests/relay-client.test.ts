@@ -87,6 +87,7 @@ describe("RelayClient", () => {
     await new Promise((r) => setTimeout(r, 50));  // let WS open
 
     store.upsert({
+      agent: "claude",
       cwd: "d:\\code\\x", session_uuid: "u", project_name: "x",
       status: "active", last_event_at: Date.now(),
       last_message_preview: "", tokens_in: 0, tokens_out: 0, vscode_pid: null,
@@ -119,6 +120,7 @@ describe("RelayClient", () => {
 
     const store = new SessionStore(":memory:");
     store.upsert({
+      agent: "claude",
       cwd: "d:\\code\\target", session_uuid: "uuid-target", project_name: "target",
       status: "waiting", last_event_at: 1, last_message_preview: "",
       tokens_in: 0, tokens_out: 0, vscode_pid: null,

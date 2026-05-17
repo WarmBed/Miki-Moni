@@ -102,6 +102,7 @@ describe("server POST /focus + /send", () => {
   it("focus calls bridge.focus with session_uuid from store", async () => {
     const store = new SessionStore(":memory:");
     store.upsert({
+      agent: "claude",
       cwd: "d:\\code\\x", session_uuid: "uuid-xyz", project_name: "x",
       status: "waiting", last_event_at: 1, last_message_preview: "",
       tokens_in: 0, tokens_out: 0, vscode_pid: null,
@@ -122,6 +123,7 @@ describe("server POST /focus + /send", () => {
   it("send calls bridge.send with encoded prompt", async () => {
     const store = new SessionStore(":memory:");
     store.upsert({
+      agent: "claude",
       cwd: "d:\\code\\x", session_uuid: "uuid-xyz", project_name: "x",
       status: "waiting", last_event_at: 1, last_message_preview: "",
       tokens_in: 0, tokens_out: 0, vscode_pid: null,
@@ -347,6 +349,7 @@ describe("server POST /send routing (helper path)", () => {
   it("returns 503 with helpful message when no helper registered for cwd", async () => {
     const store = new SessionStore(":memory:");
     store.upsert({
+      agent: "claude",
       cwd: "d:\\code\\xianyu-assistant", session_uuid: "uuid-y", project_name: "xianyu",
       status: "waiting", last_event_at: 1, last_message_preview: "",
       tokens_in: 0, tokens_out: 0, vscode_pid: null,
@@ -367,6 +370,7 @@ describe("server POST /send routing (helper path)", () => {
   it("returns 200 with ok=true when helper acks success", async () => {
     const store = new SessionStore(":memory:");
     store.upsert({
+      agent: "claude",
       cwd: "d:\\code", session_uuid: "uuid-z", project_name: "code",
       status: "waiting", last_event_at: 1, last_message_preview: "",
       tokens_in: 0, tokens_out: 0, vscode_pid: null,
@@ -406,6 +410,7 @@ describe("server POST /send routing (helper path)", () => {
   it("returns 200 with ok=false when helper acks error (propagates message)", async () => {
     const store = new SessionStore(":memory:");
     store.upsert({
+      agent: "claude",
       cwd: "d:\\code", session_uuid: "uuid-w", project_name: "code",
       status: "waiting", last_event_at: 1, last_message_preview: "",
       tokens_in: 0, tokens_out: 0, vscode_pid: null,

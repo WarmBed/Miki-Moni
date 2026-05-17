@@ -62,6 +62,8 @@ export class HookHandler {
     // for a transcript that actually lived in d--code/.
     const cwdToStore = existing?.cwd ?? cwd;
     const next: Session = {
+      // TODO(Phase 2.3): replace with existing?.agent ?? ev.agent
+      agent: "claude",
       cwd: cwdToStore,
       session_uuid: sessionUuid,
       project_name: existing?.project_name ?? basename(cwdToStore),
