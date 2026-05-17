@@ -32,7 +32,8 @@
     justify-content: center;
     margin-bottom: 24px;
   }
-  canvas { display: block; }
+  #qr { display: block; line-height: 0; }
+  #qr svg { display: block; width: 280px; height: 280px; }
   .row { margin-bottom: 14px; }
   .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8; margin-bottom: 4px; }
   .value {
@@ -69,7 +70,7 @@
   <div id="content"></div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 <script>
 const params = new URLSearchParams(location.search);
 const token = params.get("t");
@@ -84,7 +85,7 @@ if (!token || !relay) {
   const grouped = token.match(/.{1,4}/g).join("-");
 
   content.innerHTML = `
-    <div class="qr-wrap"><canvas id="qr"></canvas></div>
+    <div class="qr-wrap"><div id="qr"></div></div>
 
     <div class="row">
       <div class="label">配對碼（16 碼，case-insensitive，dash 可省）</div>
@@ -106,9 +107,16 @@ if (!token || !relay) {
     </div>
   `;
 
-  QRCode.toCanvas(document.getElementById("qr"), url, { width: 280, margin: 1 }, (err) => {
-    if (err) console.error("QR render failed", err);
-  });
+  // qrcode-generator API: typeNumber=0 (auto), errorCorrectionLevel='M'
+  try {
+    const qr = qrcode(0, "M");
+    qr.addData(url);
+    qr.make();
+    document.getElementById("qr").innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2 });
+  } catch (e) {
+    console.error("QR render failed", e);
+    document.getElementById("qr").innerHTML = '<div style="color:#f87171;padding:40px;">QR generation failed: ' + e.message + '</div>';
+  }
 
   document.querySelectorAll(".copy").forEach((btn) => {
     btn.addEventListener("click", async () => {
