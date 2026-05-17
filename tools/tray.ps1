@@ -148,7 +148,10 @@ $pairItem.Add_Click({
         "miki-moni", "OK", "Warning") | Out-Null
       return
     }
-    $cfg = Get-Content -Raw $cfgPath | ConvertFrom-Json
+    # PS 5.1 defaults to system ANSI codepage; force UTF-8 or Chinese device
+    # names (and any non-ASCII path) break ConvertFrom-Json with a cryptic
+    # "傳入了無效的物件，必須有 ':' 或 '}'" error.
+    $cfg = Get-Content -Raw -Encoding UTF8 $cfgPath | ConvertFrom-Json
     $token = $cfg.remote.pair_token
     $relay = $cfg.remote.worker_url
     $pwa   = if ($cfg.remote.phone_pwa_url) { $cfg.remote.phone_pwa_url } else { "https://miki-moni.pages.dev/" }

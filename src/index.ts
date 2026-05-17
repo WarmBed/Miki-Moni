@@ -1,7 +1,7 @@
 import path from "node:path";
 import os from "node:os";
 import http from "node:http";
-import { promises as fs } from "node:fs";
+import { promises as fs, appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import pino from "pino";
@@ -122,13 +122,19 @@ async function main(): Promise<void> {
   const staled = store.markAllStale();
   log.info({ staled }, "marked all sessions stale on startup");
 
-  // Sweep up `miki claude` orphans left behind by the previous daemon session
-  // (Windows wt.exe doesn't reliably propagate window-close to child node
-  // processes — so a daemon crash, manual kill, or hot-reload typically
-  // leaves the wrap CLIs alive). Best-effort; failure here is non-fatal.
-  killOrphans(log).then((n) => {
-    if (n > 0) log.info({ killed: n }, "swept orphan `miki claude` processes from previous daemon");
-  }).catch((err) => log.warn({ error: String(err) }, "orphan sweep failed (non-fatal)"));
+  // Opt-in orphan sweep. The `taskkill /T /F` in killProcessTree turned out
+  // to bring down the *current* daemon when the matched orphan happened to
+  // share a Windows job object with us (reproducible inside Claude Code's
+  // bash sandbox + likely the user's terminal too — daemon would die ~1.5s
+  // after listen with no exception, no signal, just TerminateProcess).
+  // Until killOrphans uses a safer mechanism (skip /T, or verify parent is
+  // dead before killing), it stays off by default. Wraps left over from a
+  // crashed daemon session just sit there — annoying but not fatal.
+  if (process.env.MIKI_KILL_ORPHANS === "1") {
+    killOrphans(log).then((n) => {
+      if (n > 0) log.info({ killed: n }, "swept orphan `miki claude` processes from previous daemon");
+    }).catch((err) => log.warn({ error: String(err) }, "orphan sweep failed (non-fatal)"));
+  }
   const resolver = new SessionResolver(PROJECTS_ROOT);
   const notifier = new Notifier();
   const handler = new HookHandler(store, resolver, notifier);
@@ -248,6 +254,21 @@ async function spawnTrayHelper(port: number, log: pino.Logger): Promise<void> {
   child.unref();
   log.info({ scriptPath, pid: child.pid, trayLog }, "tray helper spawned");
 }
+
+// Catch silent crashes (Node's default for uncaughtException is to exit
+// with no error message). Write to LOG_FILE directly because pino's stream
+// may not flush before exit. ONLY catch — do NOT subscribe to beforeExit /
+// exit, which fire on every normal Node tick when the loop drains and
+// produce noise that looks like crashes.
+function logFatal(kind: string, err: unknown): void {
+  try {
+    const line = JSON.stringify({ level: 60, time: Date.now(), pid: process.pid, kind, err: String(err), stack: (err as Error)?.stack }) + "\n";
+    appendFileSync(LOG_FILE, line);
+    process.stderr.write(line);
+  } catch { /* nothing we can do */ }
+}
+process.on("uncaughtException", (err) => { logFatal("uncaughtException", err); process.exit(1); });
+process.on("unhandledRejection", (reason) => { logFatal("unhandledRejection", reason); });
 
 main().catch((err) => {
   console.error(err);

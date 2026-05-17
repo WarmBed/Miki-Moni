@@ -94,12 +94,26 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     deps.log?.info({ route: "/admin/restart" }, "admin/restart received — respawning");
     try {
       const { spawn } = await import("node:child_process");
-      const child = spawn(process.argv[0]!, process.argv.slice(1), {
-        detached: true,
-        stdio: "ignore",
-        env: { ...process.env, MIKI_FORCE_RESTART: "1" },
-        windowsHide: true,
-      });
+      // Windows quirk: a `detached + stdio:"ignore" + windowsHide:true` respawn
+      // inherits no console, and the new daemon dies silently the moment
+      // spawnTrayHelper runs `cmd /c start /B powershell` (reproducible —
+      // 3/3 times in local diag). Workaround: go through `cmd start /MIN`
+      // which forces CREATE_NEW_CONSOLE so the respawned daemon owns a real
+      // (minimized) console window and the tray spawn doesn't blow up.
+      // The minimized cmd window is the visible cost of a clean restart.
+      const isWin = process.platform === "win32";
+      const child = isWin
+        ? spawn("cmd.exe", ["/c", "start", "/MIN", "miki-moni", process.argv[0]!, ...process.argv.slice(1)], {
+            detached: true,
+            stdio: "ignore",
+            env: { ...process.env, MIKI_FORCE_RESTART: "1" },
+            windowsHide: false,
+          })
+        : spawn(process.argv[0]!, process.argv.slice(1), {
+            detached: true,
+            stdio: "ignore",
+            env: { ...process.env, MIKI_FORCE_RESTART: "1" },
+          });
       child.unref();
     } catch (err) {
       deps.log?.error({ err: String(err) }, "respawn failed; just exiting");
