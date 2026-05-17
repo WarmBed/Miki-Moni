@@ -1,10 +1,11 @@
 import type { AgentAdapter, AgentId, InstallResult, WrapArgs, InternalEvent } from "../types.js";
+import { installCodexHooks } from "./install.js";
 
 export class CodexAdapter implements AgentAdapter {
   readonly id: AgentId = "codex";
 
   async installHooks(): Promise<InstallResult> {
-    return { installed: false, warning: "CodexAdapter not yet implemented (Phase 3)" };
+    return installCodexHooks();
   }
 
   async uninstallHooks(): Promise<void> { /* Phase 6 */ }
