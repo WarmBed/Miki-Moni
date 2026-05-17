@@ -75,6 +75,40 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     res.status(204).end();
   });
 
+  // ── Admin endpoints (used by the system-tray helper) ──────────────────
+  // Quit: graceful exit. The tray script falls back to Stop-Process if we
+  // don't actually exit within ~1s, so this is best-effort.
+  app.post("/admin/quit", (_req, res) => {
+    res.json({ ok: true });
+    deps.log?.info({ route: "/admin/quit" }, "admin/quit received — exiting");
+    setTimeout(() => process.exit(0), 100);
+  });
+  // Restart: spawn a detached replacement that re-execs whatever invocation
+  // started us (node + tsx + cli/miki.ts, or `miki start`, etc.) and then
+  // exit ourselves. The child runs with MIKI_FORCE_RESTART=1 so the
+  // singleton guard in src/index.ts lets it through while our PORT_FILE /
+  // socket is still being released. unref() so we don't keep the child
+  // attached to our event loop.
+  app.post("/admin/restart", async (_req, res) => {
+    res.json({ ok: true });
+    deps.log?.info({ route: "/admin/restart" }, "admin/restart received — respawning");
+    try {
+      const { spawn } = await import("node:child_process");
+      const child = spawn(process.argv[0]!, process.argv.slice(1), {
+        detached: true,
+        stdio: "ignore",
+        env: { ...process.env, MIKI_FORCE_RESTART: "1" },
+        windowsHide: true,
+      });
+      child.unref();
+    } catch (err) {
+      deps.log?.error({ err: String(err) }, "respawn failed; just exiting");
+    }
+    // 400ms buys time for the child to start its own bind attempt with the
+    // FORCE_RESTART path that takes over PORT_FILE without dueling.
+    setTimeout(() => process.exit(0), 400);
+  });
+
   app.get("/sessions", (_req, res) => {
     const wrapConns: Map<string, import("ws").WebSocket> | undefined = (deps as any).__wrapConnections;
     const wrapAct: Map<string, string> | undefined = (deps as any).__wrapActivity;
