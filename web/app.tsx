@@ -2,7 +2,7 @@ import { render } from "preact";
 import type { ComponentChildren } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { marked } from "marked";
-import { t, useLocale, setLocale as setLocaleGlobal, LOCALES, LOCALE_LABELS, type Locale } from "./i18n";
+import { t, useLocale, setLocale as setLocaleGlobal, LOCALES, LOCALE_LABELS, type Locale } from "@shared/i18n";
 import { apiFetch, apiWebSocket } from "./api";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -106,6 +106,34 @@ function fmtTurnTs(iso: string | null | undefined): string {
 }
 
 // ── Inline SVG icons (lucide style — line, currentColor) ──────────────────
+
+// Miki-Moni mascot: a curled-up sleeping cat. Used as the app's top-left
+// logo. Pure stroke-art so it inherits currentColor and matches the rest of
+// the icon set. Two pointed ears, a closed-eye curve, and a small "Z" for
+// "asleep / standing watch quietly while you work".
+function IconSleepingCat({ size = 22 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.6"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-label="miki-moni"
+    >
+      {/* Curled body + two ear peaks in one continuous outline */}
+      <path d="M4.5 13.2 L6 10 L7.6 13 L9.6 11 L11.4 13 C14.5 13 18.5 13.6 20 15.8 C20.8 17 20.4 18.3 18.6 18.7 C16 19.2 7 19.2 5.4 18.4 C3.8 17.5 3.6 14.5 4.5 13.2 Z" />
+      {/* Closed sleeping eye */}
+      <path d="M6.8 15.2 q0.9 0.7 1.8 0" stroke-width="1.3" />
+      {/* Two stacked Z's drifting up — "asleep" */}
+      <path d="M15 7 h2.4 l-2.4 2.6 h2.4" stroke-width="1.3" />
+      <path d="M18.4 4.5 h1.6 l-1.6 1.8 h1.6" stroke-width="1.1" />
+    </svg>
+  );
+}
 
 function IconCopy({ size = 13 }: { size?: number }) {
   return (
@@ -2912,7 +2940,13 @@ function App() {
     <div class="app-shell">
       {/* Top nav */}
       <header style={{ display: "flex", alignItems: "center", gap: 12, paddingBottom: 12, borderBottom: "1px solid var(--border)", position: "relative" }}>
-        <h1 style={{ margin: 0, fontSize: 17, fontWeight: 600, letterSpacing: "-0.01em" }}>miki-moni</h1>
+        <h1
+          style={{ margin: 0, display: "inline-flex", alignItems: "center", color: "var(--fg)" }}
+          title="miki-moni"
+          aria-label="miki-moni"
+        >
+          <IconSleepingCat size={24} />
+        </h1>
         <HeaderStats sessions={sessions} filter={statusFilter} onFilter={setStatusFilter} />
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--fg-subtle)" }}>
           <NewCliButton recentCwds={recentCwds} />
@@ -3035,9 +3069,9 @@ function App() {
       <div style={{ marginTop: 12, marginBottom: 20 }} />
       {sessions.length === 0 ? (
         <div class="card" style={{ padding: "24px 14px", textAlign: "center", color: "var(--fg-subtle)", fontSize: 13 }}>
-          <div>目前沒有 session。</div>
-          <div style={{ fontSize: 11, marginTop: 6 }}>在任何 VSCode 視窗開 Claude Code panel 就會冒出來。</div>
-          <div style={{ fontSize: 11 }}>沒反應的話：<code>pnpm install:hooks</code></div>
+          <div>{t("overview.noSessions")}</div>
+          <div style={{ fontSize: 11, marginTop: 6 }}>{t("overview.openPanelHint")}</div>
+          <div style={{ fontSize: 11 }}>{t("overview.runHooks")}<code>pnpm install:hooks</code></div>
         </div>
       ) : (
         <GridOverview

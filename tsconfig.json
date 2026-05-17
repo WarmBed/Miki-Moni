@@ -12,7 +12,11 @@
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "preserve",
-    "jsxImportSource": "preact"
+    "jsxImportSource": "preact",
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["shared/*"]
+    }
   },
-  "include": ["src/**/*", "tests/**/*", "tools/**/*", "web/**/*", "web-phone/**/*", "vite-phone.config.ts"]
+  "include": ["src/**/*", "tests/**/*", "tools/**/*", "web/**/*", "web-phone/**/*", "shared/**/*", "vite-phone.config.ts"]
 }

@@ -15,6 +15,11 @@ export default defineConfig({
     jsxImportSource: "preact",
   },
   resolve: {
-    alias: { react: "preact/compat", "react-dom": "preact/compat" },
+    alias: {
+      react: "preact/compat",
+      "react-dom": "preact/compat",
+      "@shared": path.join(__dirname, "shared"),
+    },
   },
+  server: { fs: { allow: [__dirname] } },
 });

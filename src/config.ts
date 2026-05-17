@@ -27,6 +27,9 @@ export interface RemoteEndpoint {
   pair_token?: string;
 }
 
+/** UI language for setup wizard, CLI banner, dashboard. Persisted across runs. */
+export type Locale = "en" | "zh-CN" | "zh-TW";
+
 export interface Config {
   device: {
     name: string;
@@ -36,6 +39,10 @@ export interface Config {
     signing_privkey: string;    // Ed25519 sign priv (64B), base64
     created_at: number;
   };
+  /** Preferred UI language. Set by the setup wizard's first step; can be
+   *  overridden anytime by editing config.json or via a future `miki locale`
+   *  command. Defaults to "en" if missing (e.g. older configs). */
+  locale?: Locale;
   remote?: RemoteEndpoint;
   paired_peers: PairedPeer[];
 }

@@ -11,10 +11,11 @@
 
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import type { Config } from "../config.js";
+import type { Config, Locale } from "../config.js";
 import { HUB_HOME } from "../data-dir.js";
 import { runSelfHostWizard } from "./setup-self-host.js";
 import { select } from "./prompt.js";
+import { setLocale, t, LOCALE_CHOICES } from "./i18n-cli.js";
 
 const HOSTED_RELAY_URL = "wss://relay.f1telemetrystationpro.org";
 const HOSTED_PHONE_PWA_URL = "https://miki-moni.pages.dev/";
@@ -41,15 +42,29 @@ export interface SetupWizardOpts {
 }
 
 export async function runSetupWizard(cfg: Config, opts: SetupWizardOpts = {}): Promise<Config> {
+  // Step 0: pick UI language (English / Traditional / Simplified Chinese)
+  // BEFORE anything else, so subsequent prompts speak the user's language.
+  // Respects cfg.locale if already set (e.g. re-running `miki setup`).
+  let cfgWithLocale = cfg;
+  if (!opts.forceChoice) {
+    const existing = cfg.locale;
+    if (existing) setLocale(existing);
+    else {
+      const lang = await pickLocale();
+      setLocale(lang);
+      cfgWithLocale = { ...cfg, locale: lang };
+    }
+  }
+
   const choice = opts.forceChoice ?? await pickChoice();
   switch (choice) {
     case "hosted":
-      return applyHosted(cfg);
+      return applyHosted(cfgWithLocale);
     case "self-host":
-      return await runSelfHostWizard(cfg);
+      return await runSelfHostWizard(cfgWithLocale);
     case "local-only":
       await markLocalOnly();
-      return applyLocalOnly(cfg);
+      return applyLocalOnly(cfgWithLocale);
   }
 }
 
@@ -62,28 +77,28 @@ export async function shouldRunWizard(cfg: Config): Promise<boolean> {
   return true;
 }
 
+async function pickLocale(): Promise<Locale> {
+  // Language picker shown in English-only since user hasn't told us yet.
+  console.log("");
+  console.log("✨ Welcome to miki-moni! / 歡迎 / 欢迎");
+  console.log("");
+  return await select<Locale>({
+    message: "Language / 語言 / 语言：",
+    choices: LOCALE_CHOICES.map((c) => ({ name: c.name, value: c.value })),
+    default: "en",
+  });
+}
+
 async function pickChoice(): Promise<Choice> {
   console.log("");
-  console.log("✨ Welcome to miki-moni! First-time setup.");
+  console.log(t("wizard.welcome"));
   console.log("");
   return await select<Choice>({
-    message: "配對手機要透過哪條路徑連回 daemon？",
+    message: t("wizard.pick.relay"),
     choices: [
-      {
-        name: "Hosted relay（推薦） — 用 relay.f1telemetrystationpro.org，零設定",
-        value: "hosted",
-        description: "免費共用 relay。Zero-knowledge — relay 看不到你內容。99% 使用者選這個。",
-      },
-      {
-        name: "Self-host — 自動部署到你的 Cloudflare 帳號",
-        value: "self-host",
-        description: "需要 CF 帳號 + wrangler。約 5 分鐘。完全自主，不依賴作者基礎設施。",
-      },
-      {
-        name: "Local-only — 只用 127.0.0.1:8765 dashboard，不配手機",
-        value: "local-only",
-        description: "完全本機。安全度最高，但手機 / 跨機器無法用。",
-      },
+      { name: t("wizard.choice.hosted"), value: "hosted", description: t("wizard.choice.hosted.desc") },
+      { name: t("wizard.choice.selfhost"), value: "self-host", description: t("wizard.choice.selfhost.desc") },
+      { name: t("wizard.choice.local"), value: "local-only", description: t("wizard.choice.local.desc") },
     ],
     default: "hosted",
   });

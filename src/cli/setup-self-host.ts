@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import type { Config } from "../config.js";
 import { select } from "./prompt.js";
+import { t } from "./i18n-cli.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -108,10 +109,10 @@ function parseMultiAccountError(stderr: string): Array<{ label: string; id: stri
 
 async function pickAccountId(accounts: Array<{ label: string; id: string }>): Promise<string> {
   console.log("");
-  console.log("⚠ 偵測到你有多個 Cloudflare 帳號，請選一個來部署：");
+  console.log(t("selfhost.step2.multiacc"));
   console.log("");
   return await select<string>({
-    message: "用哪個 CF 帳號？",
+    message: t("selfhost.step2.pickacc"),
     choices: accounts.map((a) => ({ name: `${a.label}  (${a.id.slice(0, 8)}…)`, value: a.id })),
   });
 }
@@ -154,19 +155,19 @@ export async function runSelfHostWizard(cfg: Config): Promise<Config> {
 
   console.log("");
   console.log("─".repeat(64));
-  console.log("📦 我會幫你在你自己的 Cloudflare 帳號上開兩個東西：");
+  console.log("📦 " + t("selfhost.intro.1"));
   console.log("");
-  console.log("   1. Relay server — 轉發加密訊息的後端");
-  console.log("   2. Phone app    — 手機 / 第二台電腦開的網頁");
+  console.log("   " + t("selfhost.intro.2"));
+  console.log("   " + t("selfhost.intro.3"));
   console.log("");
-  console.log("   完全免費，CF 免費層額度足夠個人用。");
+  console.log("   " + t("selfhost.intro.4"));
   console.log("─".repeat(64));
   console.log("");
 
   if (!checkWranglerAvailable()) {
-    console.error("✗ 找不到 wrangler（Cloudflare 的部署工具）。");
-    console.error("  請先跑：npm install -g wrangler");
-    console.error("  然後重來：miki setup");
+    console.error(t("selfhost.wrangler.missing"));
+    console.error(t("selfhost.wrangler.install"));
+    console.error(t("selfhost.wrangler.retry"));
     throw new Error("wrangler_missing");
   }
 
@@ -191,24 +192,21 @@ export async function runSelfHostWizard(cfg: Config): Promise<Config> {
   const pagesName = suggestName("miki");
 
   // 1/3: wrangler login (interactive — opens browser).
-  console.log("[1/3] 登入 Cloudflare");
-  console.log("      瀏覽器即將開啟，請完成 OAuth 登入…");
+  console.log(t("selfhost.step1"));
+  console.log(t("selfhost.step1.browser"));
   console.log("");
   const loginCode = await runWrangler(["login"], WORKER_DIR);
   if (loginCode !== 0) {
     console.error("");
-    console.error("✗ Cloudflare 登入失敗 (exit " + loginCode + ")。");
-    console.error("  通常是瀏覽器沒開或網路問題；重跑 miki setup 再試一次。");
+    console.error("✗ Cloudflare login failed (exit " + loginCode + ")。");
     throw new Error("wrangler_login_failed");
   }
-  console.log("✓ Cloudflare 登入成功");
+  console.log(t("selfhost.step1.ok"));
   console.log("");
 
   // 2/3: Worker deploy. Use the self-host config (no routes/custom_domain)
-  // so we never hijack the author's hosted relay.f1telemetrystationpro.org. First attempt
-  // without account_id; if wrangler complains about multi-account, parse the
-  // list, prompt, and retry.
-  console.log("[2/3] 部署 Relay server …");
+  // so we never hijack the author's hosted relay.f1telemetrystationpro.org.
+  console.log(t("selfhost.step2"));
   console.log("");
   const deployArgs = ["deploy", "--config", WORKER_SELFHOST_CONFIG, "--name", workerName];
   let accountEnv: Record<string, string> | undefined;
@@ -219,14 +217,14 @@ export async function runSelfHostWizard(cfg: Config): Promise<Config> {
       const accountId = await pickAccountId(multi);
       accountEnv = { CLOUDFLARE_ACCOUNT_ID: accountId };
       console.log("");
-      console.log(`→ 用帳號 ${accountId.slice(0, 8)}… 重新部署 Relay …`);
+      console.log(`${t("selfhost.step2.retry")} ${accountId.slice(0, 8)}…`);
       console.log("");
       wOut = await runWranglerCaptured(deployArgs, WORKER_DIR, accountEnv);
     }
   }
   if (wOut.code !== 0) {
     console.error("");
-    console.error("✗ Relay 部署失敗。看上面的 wrangler 訊息找原因；常見是 CF 帳號權限不足。");
+    console.error(t("selfhost.step2.fail"));
     throw new Error("worker_deploy_failed");
   }
   let workerUrl = parseUrl(wOut.out, "worker");
@@ -235,23 +233,23 @@ export async function runSelfHostWizard(cfg: Config): Promise<Config> {
     // user to paste it from the CF dashboard rather than fail outright.
     const deployedName = parseWorkerName(wOut.out) ?? workerName;
     console.log("");
-    console.log(`✓ Relay 已部署為 '${deployedName}'，但 wrangler 沒印出 workers.dev URL。`);
-    console.log("  到 https://dash.cloudflare.com → Workers & Pages → " + deployedName);
-    console.log("  → Settings → Triggers，找到 *.workers.dev URL 貼下面。");
+    console.log(`✓ Relay deployed as '${deployedName}', ${t("selfhost.step2.urlfail")}`);
+    console.log("  https://dash.cloudflare.com → Workers & Pages → " + deployedName);
+    console.log("  → Settings → Triggers");
     console.log("");
     const { input } = await import("./prompt.js");
     const pasted = await input({
-      message: "Worker URL (https://...workers.dev):",
+      message: t("selfhost.step2.urlinput"),
       validate: (v) => /^https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev\/?$/i.test(v) || "請貼完整的 https://...workers.dev URL",
     });
     workerUrl = pasted.replace(/\/$/, "");
   }
   console.log("");
-  console.log(`✓ Relay 已部署到 ${workerUrl}`);
+  console.log(`${t("selfhost.step2.ok")} ${workerUrl}`);
   console.log("");
 
   // 3/3: Pages deploy. Reuse the chosen account.
-  console.log("[3/3] 部署 Phone app …");
+  console.log(t("selfhost.step3"));
   console.log("");
   await runWrangler(["pages", "project", "create", pagesName, "--production-branch=main"], WORKER_DIR, accountEnv);
   const pOut = await runWranglerCaptured(
@@ -261,19 +259,19 @@ export async function runSelfHostWizard(cfg: Config): Promise<Config> {
   );
   if (pOut.code !== 0) {
     console.error("");
-    console.error("✗ Phone app 部署失敗。");
+    console.error(t("selfhost.step3.fail"));
     throw new Error("pages_deploy_failed");
   }
   const pagesUrl = parseUrl(pOut.out, "pages") ?? `https://${pagesName}.pages.dev`;
   console.log("");
-  console.log(`✓ Phone app 已部署到 ${pagesUrl}`);
+  console.log(`${t("selfhost.step3.ok")} ${pagesUrl}`);
   console.log("");
 
   // Worker URL needs ws:// prefix for our config.
   const wsUrl = workerUrl.replace(/^https:/, "wss:");
 
   console.log("─".repeat(64));
-  console.log("✓ 完成！設定已存進 ~/.miki-moni/config.json：");
+  console.log(t("selfhost.done.title"));
   console.log("");
   console.log("   Relay:     " + wsUrl);
   console.log("   Phone app: " + pagesUrl);

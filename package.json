@@ -1,6 +1,6 @@
 {
   "name": "miki-moni",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "type": "module",
   "description": "Miki-Moni / 巫女 — weave multiple VSCode Claude Code panel sessions into one local dashboard, with optional encrypted relay to a phone client. See docs/naming.md.",
   "engines": {

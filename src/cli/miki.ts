@@ -13,6 +13,16 @@ import { loadOrInitConfig, saveConfig } from "../config.js";
 import { CONFIG_FILE, PORT_FILE } from "../data-dir.js";
 import { generateNewPairingToken, pairingQrPayload } from "../pairing.js";
 import { runSetupWizard, shouldRunWizard } from "./setup-wizard.js";
+import { setLocale, t } from "./i18n-cli.js";
+
+/** Load the user's preferred locale from config (set by wizard step 0) so
+ *  subsequent CLI output uses it. Best-effort: silent fall back to "en". */
+async function applySavedLocale(): Promise<void> {
+  try {
+    const cfg = await loadOrInitConfig(CONFIG_FILE);
+    if (cfg.locale) setLocale(cfg.locale);
+  } catch { /* first-run, fine */ }
+}
 
 /** Last port the daemon listened on (written to PORT_FILE on startup). If
  *  this is the first ever run there's no file yet, so fall back to the
@@ -56,14 +66,14 @@ async function printPairBanner(): Promise<void> {
     const grouped = token.match(/.{1,4}/g)!.join("-");
     const localUrl = `http://127.0.0.1:${lastKnownPort()}`;
     console.log("");
-    console.log("📱 Phone pairing — scan QR, open URL, or type the 16-char code:");
+    console.log(t("banner.title"));
     console.log("");
     qrcode.generate(payload, { small: true });
     console.log("");
     console.log("   URL:    " + payload);
     console.log("   Code:   " + grouped);
-    console.log("   Local:  " + localUrl + "   ← 同台電腦在這看 dashboard，不走 relay");
-    console.log("   (QR / URL / Code are permanent — rotate with `miki pair --rotate`)");
+    console.log("   " + t("banner.local") + localUrl + "   " + t("banner.local.hint"));
+    console.log("   " + t("banner.permanent"));
     console.log("");
   } catch (e) {
     // Best-effort: never block daemon startup on banner failure.
@@ -87,6 +97,7 @@ async function maybeRunSetupWizard(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  await applySavedLocale();
   const sub = process.argv[2];
   if (sub === "claude") {
     await import("./wrap.js");
