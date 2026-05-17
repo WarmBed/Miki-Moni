@@ -12,17 +12,17 @@ Aggregate the state of every VSCode Claude Code panel into a single local dashbo
 
 <table>
 <tr>
-<td align="center">
+<td align="center" width="33%">
   <img src="docs/images/dashboard-phone.png" width="280" alt="Phone dashboard — same content, single-column mobile layout">
   <br /><em>Phone dashboard (mobile viewport)</em>
 </td>
-<td align="center">
+<td align="center" width="33%">
   <img src="docs/images/phone-pair-screen.png" width="280" alt="Phone pairing screen — QR scan + 16-char code">
   <br /><em>Phone pairing screen — scan QR or type code</em>
 </td>
-<td align="center">
-  <img src="docs/images/desktop-pair-screen.png" width="280" alt="Pair screen on desktop browser — second laptop / tablet">
-  <br /><em>Pair screen on any browser (2nd laptop / tablet)</em>
+<td align="center" width="33%">
+  <img src="docs/images/cli-banner.png" width="280" alt="CLI banner — miki start prints QR + URL + 16-char code on startup">
+  <br /><em><code>miki start</code> prints QR + URL + code on every startup</em>
 </td>
 </tr>
 </table>
