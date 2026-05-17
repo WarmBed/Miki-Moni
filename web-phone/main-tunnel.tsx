@@ -36,6 +36,7 @@ import {
 import { QrScanner } from "./qr-scanner";
 import { setTransport } from "../web/api";
 import { TunnelTransport } from "../web/transport-tunnel";
+import { t } from "@shared/i18n";
 
 // ── URL-hash auto-pair ───────────────────────────────────────────────────────
 
@@ -160,7 +161,8 @@ function PairScreen({ relayUrl, onPaired }: PairProps) {
     setScanning(false);
     const parsed = parsePairFromScannedText(text);
     if (!parsed) {
-      setError(`掃到了但不是配對 QR：${text.slice(0, 60)}${text.length > 60 ? "…" : ""}`);
+      const preview = text.slice(0, 60) + (text.length > 60 ? "…" : "");
+      setError(t("phone.pair.errorScannedQr", { text: preview }));
       return;
     }
     void pair(parsed.token, parsed.relay);
@@ -173,19 +175,19 @@ function PairScreen({ relayUrl, onPaired }: PairProps) {
   return (
     <div class="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
       <div class="w-full max-w-md">
-        <h1 class="text-2xl font-bold mb-2">miki-moni 配對</h1>
-        <p class="text-slate-400 mb-6 text-sm">把這台裝置跟你電腦上的 miki-moni daemon 配對</p>
+        <h1 class="text-2xl font-bold mb-2">{t("phone.pair.title")}</h1>
+        <p class="text-slate-400 mb-6 text-sm">{t("phone.pair.subtitle")}</p>
 
         <div class="bg-slate-900 rounded-lg border border-slate-800 p-5 flex flex-col gap-4">
-          <p class="text-sm text-slate-400">
-            在電腦終端機跑 <code class="bg-slate-800 px-1 rounded font-mono">pnpm pair --new</code>
-          </p>
+          <p class="text-sm text-slate-400" dangerouslySetInnerHTML={{
+            __html: t("phone.pair.instruction", { cmd: "<code class=\"bg-slate-800 px-1 rounded font-mono\">miki pair</code>" }),
+          }} />
 
           <div class="flex flex-col gap-1">
-            <label class="text-sm text-slate-300 font-medium">16 碼配對碼</label>
+            <label class="text-sm text-slate-300 font-medium">{t("phone.pair.codeLabel")}</label>
             <input
               type="text"
-              placeholder="XXXX-XXXX-XXXX-XXXX"
+              placeholder={t("phone.pair.codePlaceholder")}
               value={input}
               onInput={(e) => setInput((e.currentTarget as HTMLInputElement).value)}
               onKeyDown={(e) => {
@@ -214,12 +216,12 @@ function PairScreen({ relayUrl, onPaired }: PairProps) {
             disabled={!valid || busy}
             onClick={() => void pair(normalized, relayUrl)}
           >
-            {busy ? "配對中…" : "開始配對"}
+            {busy ? t("phone.pair.busy") : t("phone.pair.submit")}
           </button>
 
           <div class="flex items-center gap-3 text-xs text-slate-500">
             <div class="flex-1 h-px bg-slate-800" />
-            <span>或</span>
+            <span>{t("phone.pair.or")}</span>
             <div class="flex-1 h-px bg-slate-800" />
           </div>
 
@@ -229,12 +231,12 @@ function PairScreen({ relayUrl, onPaired }: PairProps) {
             onClick={() => { setError(null); setScanning(true); }}
           >
             <span>📷</span>
-            <span>掃 QR Code</span>
+            <span>{t("phone.pair.scan")}</span>
           </button>
         </div>
 
         <p class="text-xs text-slate-600 mt-4 text-center">
-          relay: <code class="font-mono">{relayUrl}</code>
+          {t("phone.pair.relayLabel")} <code class="font-mono">{relayUrl}</code>
         </p>
       </div>
     </div>
@@ -296,13 +298,13 @@ function Bootstrap() {
     return (
       <div class="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
         <div class="max-w-md text-center">
-          <div class="text-lg font-bold text-red-400 mb-2">連線錯誤</div>
+          <div class="text-lg font-bold text-red-400 mb-2">{t("phone.tunnel.error")}</div>
           <div class="text-sm text-slate-400 mb-4">{error}</div>
           <button
             class="bg-slate-700 hover:bg-slate-600 rounded px-4 py-2 text-sm"
             onClick={() => { clearState(); window.location.reload(); }}
           >
-            清除狀態並重新配對
+            {t("phone.tunnel.resetAndRepair")}
           </button>
         </div>
       </div>
@@ -313,8 +315,8 @@ function Bootstrap() {
     return (
       <div class="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center">
         <div class="text-center">
-          <div class="text-lg">配對中…</div>
-          <div class="text-sm text-slate-500 mt-2">正在跟 daemon 完成 handshake</div>
+          <div class="text-lg">{t("phone.pair.autoTitle")}</div>
+          <div class="text-sm text-slate-500 mt-2">{t("phone.pair.autoHint")}</div>
         </div>
       </div>
     );
@@ -324,8 +326,8 @@ function Bootstrap() {
     return (
       <div class="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center">
         <div class="text-center">
-          <div class="text-lg">連線中…</div>
-          <div class="text-sm text-slate-500 mt-2">透過 relay 連到 daemon · {state?.daemon_id?.slice(0, 12)}…</div>
+          <div class="text-lg">{t("phone.tunnel.connecting")}</div>
+          <div class="text-sm text-slate-500 mt-2">{t("phone.tunnel.connectingHint", { daemon: state?.daemon_id?.slice(0, 12) ?? "" })}</div>
         </div>
       </div>
     );
