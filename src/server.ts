@@ -103,18 +103,26 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       // rotate ends up with two cat icons (old tray that survived + new
       // tray spawned by replacement daemon).
       const childEnv = { ...process.env, MIKI_FORCE_RESTART: "1", MIKI_NO_TRAY_SPAWN: "1" };
-      const child = isWin
-        ? spawn("cmd.exe", ["/c", "start", "", "/MIN", process.argv[0]!, ...process.argv.slice(1)], {
-            detached: true,
-            stdio: "ignore",
-            env: childEnv,
-            windowsHide: false,
-          })
-        : spawn(process.argv[0]!, process.argv.slice(1), {
-            detached: true,
-            stdio: "ignore",
-            env: childEnv,
-          });
+      // Respawn via `node bin/miki.mjs start` — we CANNOT just re-exec
+      // process.argv because tsx loads itself via `--import tsx/esm` (a
+      // node CLI flag that doesn't survive in argv), so the new node
+      // would try to parse src/cli/miki.ts as plain JS and instantly
+      // crash on the first `import` statement. bin/miki.mjs is the
+      // canonical CLI entry — it knows how to find tsx and spawn it.
+      const nodeExe = process.argv[0]!;
+      const nodeArgs = [MIKI_BIN_JS, "start"];
+      const spawnArgs = isWin
+        ? ["/c", "start", "", "/MIN", nodeExe, ...nodeArgs]
+        : nodeArgs;
+      const spawnCmd = isWin ? "cmd.exe" : nodeExe;
+      const child = spawn(spawnCmd, spawnArgs, {
+        detached: true,
+        stdio: "ignore",
+        env: childEnv,
+        windowsHide: false,
+      });
+      child.on("error", (err) => deps.log?.error({ err: String(err) }, "respawn child error"));
+      deps.log?.info({ binEntry: MIKI_BIN_JS, launcherPid: child.pid }, "respawn launched");
       child.unref();
     } catch (err) {
       deps.log?.error({ err: String(err) }, "respawn failed; just exiting");
