@@ -1,5 +1,7 @@
 # Miki-Moni
 
+**[English](README.md) · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md)**
+
 > 巫女 (Miki the Monitor) — watches your Claude Code sessions and pings you when one needs attention.
 
 Aggregate the state of every VSCode Claude Code panel into a single local dashboard. Connect to it from your phone or another laptop through an end-to-end encrypted relay.
@@ -114,6 +116,29 @@ That QR works permanently — scan once on each device you want to pair. Rotate 
 **Encryption**: X25519 ECDH at pair time → per-peer shared secret → NaCl `secretbox` on every envelope. The relay never holds keys; only the daemon and the paired phone can read content.
 
 **Auth**: each phone holds an Ed25519 signing keypair (in IndexedDB). On reconnect, it signs `daemon_id || utc_minute` — relay verifies before routing. Revoke per-device with `miki pair --revoke <peer_id>`.
+
+## Dashboard features
+
+Top bar:
+
+| | What it does |
+|---|---|
+| **Counters** (`5 active · 0 idle · 56 total`) | Click to filter the grid to that status (click again to clear) |
+| **➕ New CLI** | Open a new wrapped Claude session in a fresh folder (`miki claude --fresh`) |
+| **⚙️ Settings** | Send key (Enter vs Ctrl/⌘+Enter), theme (light/dark), language (en / 繁中 / 简中) |
+| **WS status dot** | Green = receiving live updates · amber = reconnecting |
+
+Session cards:
+
+| Element | What it does |
+|---|---|
+| **Project name + cwd** | Header — click to expand the card / view full transcript |
+| **🖥️ VSCode / 📟 CLI badge** | Toggles how *send* / *focus* dispatches. **VSCode**: prompt fills the VSCode panel via `vscode://anthropic.claude-code/open?session=…`. **CLI**: prompt goes through the wrap CLI's WebSocket directly. |
+| **Permission badge** (`✏️ auto edit`, `🚀 bypass`) | Only on wrapped CLI sessions started with `--permission-mode acceptEdits` / `--bypass-permissions`. Locked for the session lifetime. |
+| **Transcript view** | Live-rendered Claude turns. Toggle tool calls. Limit slider (10 / 50 / 200 / all). |
+| **Send composer** | Multi-line prompt input. Enter or Ctrl/⌘+Enter to send (per your settings choice). Supports image attachment via paste/drop. |
+| **Open CLI button** | Spawns `wt.exe` (Windows Terminal) with `miki claude -r <session-uuid>` so you can attach to the wrap CLI directly. |
+| **Focus button** | `POST /focus` — raises the matching VSCode window (or new CLI tab) to foreground. |
 
 ## CLI reference
 
