@@ -39,6 +39,8 @@
 
 Miki-Moni 給你**一張 dashboard** 收齊所有 Claude session（跨視窗、跨專案、跨機器），任何地方都能回應。
 
+**任何 session 都能從任何 terminal 接管繼續做。** VSCode 起的、CLI 起的都一樣，editor 崩了、視窗誤關、想換個 terminal 繼續做 — 一句 `miki claude -r <session-uuid>` 把**完整上下文**接回來。dashboard 每張 session 卡都有一鍵「Open CLI」按鈕；手機端就直接透過 relay 對同一個 session 繼續打字。再也不會「Claude 上下文掉了」 — session UUID 是耐用的把手，不是起它的那個視窗。
+
 ## 安裝
 
 ```bash
@@ -140,7 +142,7 @@ Session 卡片：
 | **權限 badge**（`✏️ auto edit` / `🚀 bypass`） | 只有跑 `miki claude --permission-mode acceptEdits` / `--bypass-permissions` 的 wrap CLI session 才會顯示，整個 session lifetime 鎖定不能改 |
 | **Transcript view** | 即時渲染 Claude 對話。可開關 tool call。捲動門檻 10 / 50 / 200 / 全部。 |
 | **送出輸入框** | 多行 prompt。Enter 或 Ctrl/⌘+Enter 送出（依你的設定）。支援貼/拖圖片。 |
-| **開 CLI 按鈕** | 開 `wt.exe`（Windows Terminal）跑 `miki claude -r <session-uuid>` 接到 wrap CLI |
+| **開 CLI 按鈕** ⭐ | **從 CLI 接管這個 session，完整上下文都在。** 開 `wt.exe`（Windows Terminal）跑 `miki claude -r <session-uuid>` — Claude 從 VSCode panel 停的那回合接著做。原本從哪裡起的都不重要；panel 可以已關、已 crash、在另一個視窗。配上手機 dashboard，同一個 session 你在哪都能繼續打 |
 | **Focus 按鈕** | `POST /focus` — 把對應 VSCode 視窗（或 CLI tab）拉到最前面 |
 
 ## CLI 指令
@@ -161,12 +163,32 @@ Session 卡片：
 
 ## 資安
 
-風險按可能性排序：
+### 手機能做什麼、不能做什麼
+
+刻意把手機端能力壓到最小，威脅模型才好顧：
+
+| 手機**可以** | 手機**不可以** |
+|---|---|
+| 看即時 session 狀態 + transcript | 在你電腦上跑任意 shell 指令 |
+| Pre-fill prompt 進 VSCode panel（`/focus`） | 不經你 VSCode 按鍵自動送出 prompt（Anthropic 設計） |
+| 對 `miki claude` 起的 session 從 wrap CLI WebSocket 推 prompt | 開新 process 或讀 session 外的檔案 |
+| Focus 已存在的 panel | 繞過 Claude Code 工具權限提示（每個工具呼叫一樣會問你） |
+
+### 信賴邊界
+
+daemon **只綁 `127.0.0.1`** — 公網永遠戳不到。遠端走加密 relay，不走本機 HTTP port。
+
+daemon 信任**所有跟你同帳號**的本機程序去打 `/event`、`/send`、`/focus`、`/ws_ext`。這是故意的（Claude Code hooks 跟 VSCode helper extension 才不用帶 token），但代價是：**任何以你身分跑的程序都能跟 daemon 講話**。完整本機信賴分析跟硬化選項見 [`docs/security/hooks-trust-model.md`](docs/security/hooks-trust-model.md) 跟 [`docs/security/extension-ws-trust-model.md`](docs/security/extension-ws-trust-model.md)。
+
+### 風險表
+
+按可能性排序：
 
 | 風險 | 緩解 |
 |---|---|
 | 🔴 **配對 QR 洩漏**（截圖、貼到聊天室、被路人拍） | 永久 QR = 任何人掃到都能 pair。把 QR 當 SSH key 看待。洩漏立刻 rotate：`miki pair --rotate` |
 | 🟡 **配對手機被偷** | 手機握 Ed25519 簽章 key 才能連 relay。從 daemon 砍：`miki pair --revoke <peer_id>` |
+| 🟡 **本機被入侵** | daemon 信任 loopback。任何以你身分跑的惡意程序可讀 session、可從 `/ws_ext` 攔 prompt。`~/.miki-moni/`（私鑰、配對紀錄）請當 `~/.ssh/` 那樣保護 |
 | 🟢 暴力猜 token | 16 字元 Crockford base32 ≈ 80 bits entropy，宇宙熱寂前猜不到 |
 | 🟢 Relay 看到內容 | 零知識架構 — relay 只路由密文，不持有 shared secret |
 | 🟡 信任 hosted relay 維運者 | Self-host 完全擺脫這層信任。作者看得到 metadata（peer ID、時間、大小），理論上可改 PWA bundle。原始碼公開，可自行 audit 或 self-host。 |
@@ -225,6 +247,24 @@ Source 結構：
 
 - `main` — 版本化 release（目前：v0.0.0）
 - `dev` — 開發中；每改動 bump `package.json` version
+
+## 相關專案
+
+**[Happy](https://happy.engineering)**（`slopus/happy-cli`, MIT）切的痛點有重疊 — 從手機操控 Claude Code — 但角度不同。兩者可以同一台機器並存。
+
+|  | Miki-Moni | Happy |
+|---|---|---|
+| 主入口 | VSCode panel — hooks 把每個 panel 拉進 dashboard | 取代 `claude` 的 terminal wrapper |
+| Relay | Cloudflare Worker；可以 5 分鐘 self-host 到自己 CF 帳號 | 作者自架 socket.io server（`api.cluster-fluster.com`） |
+| 手機端 | Web PWA — 掃 QR 就能用，免裝 app | 原生 iOS / Android app |
+| 支援 agent | Claude Code | Claude Code、Codex、Gemini、通用 ACP |
+| 語音輸入 | — | 有 |
+| 多 session 視覺化 dashboard | 有 — 跨視窗聚合 | 各 session 獨立管 |
+| 取代 `claude` 嗎 | 不取代 — hooks 並存 | 取代，自己 spawn `claude` |
+| 遠端 spawn（人不在桌前也能起新 session） | — | 有（`happy daemon`） |
+| 加密 relay | 有（X25519 + NaCl secretbox） | 有（X25519 + NaCl secretbox + AES-GCM） |
+
+想要打磨好的手機原生體驗、跨多個 AI agent、不介意 SaaS relay → 用 Happy。住在 VSCode 裡、想要一張 dashboard 收齊多個並行 panel、想 self-host 到自己 CF → 用 Miki-Moni。
 
 ## 授權
 

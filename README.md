@@ -39,6 +39,8 @@ Aggregate the state of every VSCode Claude Code panel into a single local dashbo
 
 Miki-Moni gives you **one dashboard** that aggregates every Claude Code session (across windows, projects, machines) and lets you respond from anywhere.
 
+**Resume any session from any terminal.** Started a session in VSCode and your editor crashed? Closed the wrong window? Switched to a different terminal? Every session — VSCode-spawned or CLI-spawned — is resumable with its **full context** by running `miki claude -r <session-uuid>`. The dashboard exposes a one-click *Open CLI* button on each session card; from your phone, just keep prompting the same session through the relay. No more "I lost my Claude context" — the session UUID is the durable handle, not the window that started it.
+
 ## Install
 
 ```bash
@@ -148,7 +150,7 @@ Session cards:
 | **Permission badge** (`✏️ auto edit`, `🚀 bypass`) | Only on wrapped CLI sessions started with `--permission-mode acceptEdits` / `--bypass-permissions`. Locked for the session lifetime. |
 | **Transcript view** | Live-rendered Claude turns. Toggle tool calls. Limit slider (10 / 50 / 200 / all). |
 | **Send composer** | Multi-line prompt input. Enter or Ctrl/⌘+Enter to send (per your settings choice). Supports image attachment via paste/drop. |
-| **Open CLI button** | Spawns `wt.exe` (Windows Terminal) with `miki claude -r <session-uuid>` so you can attach to the wrap CLI directly. |
+| **Open CLI button** ⭐ | **Take over the session from a CLI, with full context.** Spawns `wt.exe` (Windows Terminal) running `miki claude -r <session-uuid>` — Claude resumes from the exact turn the VSCode panel was on. Works regardless of where the session was originally started; the panel can be closed, crashed, or on a different window. Pair with the phone dashboard and you keep prompting the same session from anywhere. |
 | **Focus button** | `POST /focus` — raises the matching VSCode window (or new CLI tab) to foreground. |
 
 ## CLI reference
@@ -169,12 +171,32 @@ Verbose daemon logs: `MIKI_LOG_LEVEL=info miki start`. Full trace always in `~/.
 
 ## Security
 
-Risks ordered by realism:
+### What the phone can and can't do
+
+Designed conservatively to keep the threat model small:
+
+| The phone **can** | The phone **cannot** |
+|---|---|
+| See live session state + transcript | Run arbitrary shell commands on your machine |
+| Pre-fill a prompt into a VSCode panel (`/focus`) | Auto-submit a prompt without your VSCode keystroke (Anthropic's design) |
+| Push a prompt through the wrap CLI WebSocket for sessions started with `miki claude` | Spawn new processes or read files outside the session transcript |
+| Trigger a focus on an existing panel | Bypass Claude Code's tool-permission prompts (those still gate every tool call) |
+
+### Trust boundaries
+
+The daemon binds **`127.0.0.1` only** — nothing on the public network can reach it, ever. Remote access flows through the encrypted relay, not the local HTTP port.
+
+The daemon trusts any process running on the same machine to call `/event`, `/send`, `/focus`, and connect to `/ws_ext`. This is intentional (so Claude Code hooks and the VSCode helper extension don't need a token) but means: **anything that runs as your user can talk to the daemon**. See [`docs/security/hooks-trust-model.md`](docs/security/hooks-trust-model.md) and [`docs/security/extension-ws-trust-model.md`](docs/security/extension-ws-trust-model.md) for the full local-trust analysis and hardening options.
+
+### Risk table
+
+Ordered by realism:
 
 | Risk | Mitigation |
 |---|---|
 | 🔴 **Pairing QR leaks** (screenshot in chat, photo of screen, posted publicly) | Permanent QR means anyone with it can pair. Treat the QR like an SSH key. Rotate immediately if leaked: `miki pair --rotate`. |
 | 🟡 **Paired phone stolen** | Phone holds an Ed25519 signing key that grants relay access. Revoke from the daemon: `miki pair --revoke <peer_id>`. |
+| 🟡 **Local machine compromised** | The daemon trusts loopback. Any malicious process running as your user can read sessions and intercept prompts via `/ws_ext`. Treat `~/.miki-moni/` (private keys, paired-phone records) like `~/.ssh/`. |
 | 🟢 Brute-force pair token | 16 Crockford base32 chars ≈ 80 bits of entropy. Computationally infeasible. |
 | 🟢 Relay sees content | Zero-knowledge by design — relay only routes opaque ciphertext, never holds shared secrets. |
 | 🟡 You trust the hosted relay operator | Self-host avoids this entirely. The author can see metadata (peer IDs, timing, sizes) and theoretically swap the PWA bundle. Source is open; verify or self-host. |
@@ -233,6 +255,24 @@ Source tree:
 
 - `main` — versioned releases (current: v0.0.0)
 - `dev` — active development; every change gets a `package.json` version bump
+
+## Related projects
+
+**[Happy](https://happy.engineering)** (`slopus/happy-cli`, MIT) solves an overlapping itch — controlling Claude Code from your phone — from a different angle. Both can coexist on the same machine.
+
+|  | Miki-Moni | Happy |
+|---|---|---|
+| Primary entry point | VSCode panel — hooks pull every panel into a dashboard | Terminal wrapper that replaces `claude` |
+| Relay | Cloudflare Worker; self-host in ~5 min on your own CF account | Author-hosted socket.io server (`api.cluster-fluster.com`) |
+| Phone client | Web PWA — scan QR, no app install | Native iOS / Android apps |
+| Supported agents | Claude Code | Claude Code, Codex, Gemini, generic ACP |
+| Voice input | — | Yes |
+| Multi-session visual dashboard | Yes — aggregates across windows | Sessions managed independently |
+| Replaces `claude`? | No — hooks in alongside | Yes — spawns `claude` itself |
+| Remote spawn (start a session away from your desk) | — | Yes (`happy daemon`) |
+| End-to-end encrypted relay | Yes (X25519 + NaCl secretbox) | Yes (X25519 + NaCl secretbox + AES-GCM) |
+
+Use Happy if you want a polished mobile-first experience across multiple AI agents and don't mind a SaaS relay. Use Miki-Moni if you live in VSCode, want a single dashboard for many parallel panels, or want to self-host the relay on your own CF account in minutes.
 
 ## License
 
