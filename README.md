@@ -5,16 +5,27 @@
 Aggregate the state of every VSCode Claude Code panel into a single local dashboard. Connect to it from your phone or another laptop through an end-to-end encrypted relay.
 
 <p align="center">
-  <img src="docs/images/dashboard-desktop.png" width="720" alt="Desktop dashboard — session cards with live transcript">
+  <img src="docs/images/dashboard-desktop.png" width="800" alt="Desktop dashboard — session cards with live transcript">
   <br />
-  <em>Local dashboard at <code>http://127.0.0.1:8765</code> · same UI served to phones via tunnel</em>
+  <em>Desktop dashboard at <code>http://127.0.0.1:8765</code></em>
 </p>
 
-<p align="center">
-  <img src="docs/images/phone-pair-screen.png" width="320" alt="Phone pairing screen with QR scan + 16-char code entry">
-  <br />
-  <em>Phone pairing — scan QR, paste URL, or type the 16-char code</em>
-</p>
+<table>
+<tr>
+<td align="center">
+  <img src="docs/images/dashboard-phone.png" width="280" alt="Phone dashboard — same content, single-column mobile layout">
+  <br /><em>Phone dashboard (mobile viewport)</em>
+</td>
+<td align="center">
+  <img src="docs/images/phone-pair-screen.png" width="280" alt="Phone pairing screen — QR scan + 16-char code">
+  <br /><em>Phone pairing screen — scan QR or type code</em>
+</td>
+<td align="center">
+  <img src="docs/images/desktop-pair-screen.png" width="280" alt="Pair screen on desktop browser — second laptop / tablet">
+  <br /><em>Pair screen on any browser (2nd laptop / tablet)</em>
+</td>
+</tr>
+</table>
 
 ---
 
