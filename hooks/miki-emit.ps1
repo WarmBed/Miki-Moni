@@ -40,6 +40,7 @@ try {
   if (-not $sessionId) { $sessionId = $env:CLAUDE_SESSION_ID }
 
   $body = @{
+    agent = "claude"
     event_type = $ourType
     cwd = $cwd
     session_uuid = $sessionId

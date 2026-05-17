@@ -5,7 +5,7 @@ import type { SessionStore } from "./session-store.js";
 import type { HookHandler } from "./hook-handler.js";
 import type { VscodeBridge } from "./vscode-bridge.js";
 import type { Notifier } from "./notifier.js";
-import type { HookEvent, Session } from "./types.js";
+import type { AgentId, HookEvent, Session } from "./types.js";
 import { normalizeCwd } from "./hook-handler.js";
 import { readTranscriptTail, readSessionPreview, sessionHasAnyTurns, readOriginalCwd, type SessionPreview } from "./session-resolver.js";
 import path from "node:path";
@@ -47,9 +47,9 @@ function parseHookEvent(body: unknown): HookEvent | null {
   if (typeof b.timestamp !== "number") return null;
   const validTypes = ["session_start", "stop", "user_prompt", "pre_tool_use", "post_tool_use"];
   if (!validTypes.includes(b.event_type)) return null;
+  const agent: AgentId = b.agent === "codex" ? "codex" : "claude";
   return {
-    // TODO(Phase 2.3): parse agent from payload once Codex hooks emit it
-    agent: "claude",
+    agent,
     event_type: b.event_type as HookEvent["event_type"],
     cwd: b.cwd,
     session_uuid: typeof b.session_uuid === "string" ? b.session_uuid : null,
@@ -760,8 +760,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
         const cwdNorm = normalizeCwd(registeredCwd);
         const existing = deps.store.get(uuid);
         deps.store.upsert({
-          // TODO(Phase 2.3): replace with existing?.agent ?? "claude"
-          agent: "claude",
+          agent: existing?.agent ?? "claude",
           cwd: existing?.cwd ?? cwdNorm,
           session_uuid: uuid,
           project_name: existing?.project_name ?? path.basename(cwdNorm.replace(/\\/g, "/")),
@@ -874,7 +873,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
         const cwdForEvent = registeredCwd ?? deps.store.get(m.session_uuid)?.cwd ?? "";
         if (cwdForEvent) {
           void deps.handler.handle({
-            // TODO(Phase 2.3): pass agent from wrap session once Codex wrap is wired
+            // synthetic events from the Claude wrap path; Phase 4.1 will make this multi-agent
             agent: "claude",
             event_type: m.type === "turn_start" ? "user_prompt" : "stop",
             cwd: cwdForEvent,
