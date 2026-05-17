@@ -395,6 +395,17 @@ textarea { resize: vertical; }
 }
 @media (max-width: 480px) {
   .cwd-group-grid { grid-template-columns: 1fr; }
+  /* Single-column mobile: cells stretch to row, but rows are 1-cell so the
+   * row should auto-size to content. Force height:auto in case any flex
+   * cascade leaks min-content sizing. */
+  .cwd-group-grid > .cell { height: auto; }
+  /* Mobile screens are tall but narrow → text wraps to MANY lines, so a
+   * 4-line clamp on each turn body still eats vertical real estate. Drop
+   * to 3 lines on assistant (whose content is usually longest) and let
+   * the cell grow naturally so USER row is never the one that gets axed
+   * by overflow:hidden on the cell-preview ancestor. */
+  .cell-turn-assistant .cell-turn-body { -webkit-line-clamp: 3; }
+  .cell-preview { overflow: visible; }
 }
 
 /* Mobile-safety: kill horizontal scroll caused by grid children whose
@@ -535,22 +546,36 @@ html, body { overflow-x: hidden; max-width: 100vw; }
  * badge. Size matches cell-cwd (10px) so the row height stays unchanged;
  * overflow is clipped by the row's existing white-space: nowrap + ellipsis. */
 .cell-tool-inline {
-  display: inline-flex;
+  /* Was inline-flex with row ellipsis — when description was long, the LAST
+   * sibling (timestamp) got eaten by the row's text-overflow. Switching to
+   * `display: flex` + flex-shrink rules per child so the description is the
+   * only thing that truncates and the timestamp always stays visible at the
+   * right edge. */
+  display: flex;
   align-items: baseline;
   gap: 3px;
   font-size: 10px;
   color: var(--fg-muted);
   min-width: 0;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+.cell-tool-inline .cell-tool-icon { color: #a8740d; flex-shrink: 0; }
+.cell-tool-inline strong { font-weight: 600; color: var(--fg); flex-shrink: 0; }
+.cell-tool-inline .cell-tool-desc {
+  color: var(--fg-subtle);
+  /* Take all the slack and absorb truncation so siblings stay readable. */
+  flex: 1 1 0;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
-.cell-tool-inline .cell-tool-icon { color: #a8740d; }
-.cell-tool-inline strong { font-weight: 600; color: var(--fg); }
-.cell-tool-inline .cell-tool-desc { color: var(--fg-subtle); }
 .cell-tool-inline .cell-tool-ts {
   color: var(--fg-subtle);
   font-family: ui-monospace, monospace;
+  flex-shrink: 0;
+  /* Tiny left margin so the bullet `·` doesn't kiss the ellipsis. */
+  margin-left: 2px;
 }
 /* TOOL row stays compact: body single-line so the block tops out at 2 lines
  * (role label + ts) regardless of tool description length. Keeps ASSISTANT /
@@ -995,6 +1020,28 @@ html, body { overflow-x: hidden; max-width: 100vw; }
   from { opacity: 0; transform: translate(-50%, -8px); }
   to   { opacity: 1; transform: translate(-50%, 0); }
 }
+
+/* Spinner glyph used by <SpawnPendingBanner> while a wt window is launching
+ * and we're waiting for the wrap process to connect back to daemon. */
+.spawn-pending-spinner {
+  display: inline-block;
+  font-size: 14px;
+  margin-top: 1px;
+  color: var(--pass);
+  animation: miki-spin 1.1s linear infinite;
+}
+@keyframes miki-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Settings popover: when content overflows the maxHeight viewport clamp, the
+ * global 4px scrollbar is so thin users miss it and think the popover got
+ * truncated. Bump it to 8px just for this element so the scroll affordance
+ * is unmistakable. */
+.settings-popover::-webkit-scrollbar { width: 8px; }
+.settings-popover::-webkit-scrollbar-thumb { background: var(--sl8); border-radius: 4px; }
+.settings-popover::-webkit-scrollbar-thumb:hover { background: var(--sl10); }
+.settings-popover { scrollbar-width: thin; }
 
 /* ── Cell modal (centered, tall overlay) ───────────────────────────── */
 

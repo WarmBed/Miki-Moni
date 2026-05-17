@@ -1553,6 +1553,114 @@ function WrapConfirmDialog({ sessionByUuid }: { sessionByUuid: Map<string, Sessi
   );
 }
 
+// Bottom-of-page loading banner shown after the user clicks "Open" in the
+// NewCliButton popover. Bridges the 3–5s gap between "wt window spawned"
+// and "wrap process connected back → session card appears in grid". Without
+// this, the user clicks, the popover closes, and nothing visible happens
+// until the new card materialises — easy to think nothing worked.
+//
+// Auto-dismisses when a session matching the spawned cwd appears (we watch
+// the `sessions` prop). 30s safety timer also dismisses + shows an error
+// hint in case the wt window crashed silently and no wrap ever connects.
+function SpawnPendingBanner({ sessions }: { sessions: Session[] }) {
+  interface Pending { cwd: string; startedAt: number; timedOut: boolean }
+  const [pendings, setPendings] = useState<Pending[]>([]);
+
+  // Listen for spawn-pending events fired by <NewCliButton> on /wrap/start success.
+  useEffect(() => {
+    function onSpawn(e: Event) {
+      const ce = e as CustomEvent<{ cwd: string }>;
+      const cwd = ce.detail?.cwd;
+      if (!cwd) return;
+      setPendings((prev) => {
+        // De-dupe: replace existing entry for same cwd (re-clicks reset timer).
+        const without = prev.filter((p) => p.cwd.toLowerCase() !== cwd.toLowerCase());
+        return [...without, { cwd, startedAt: Date.now(), timedOut: false }];
+      });
+    }
+    window.addEventListener("miki-moni:spawn-pending", onSpawn);
+    return () => window.removeEventListener("miki-moni:spawn-pending", onSpawn);
+  }, []);
+
+  // Tick the timeout once a second so the banner can switch to "timed out"
+  // copy after 30s. Cheap — only runs while there's a pending entry.
+  useEffect(() => {
+    if (pendings.length === 0) return;
+    const id = window.setInterval(() => {
+      const now = Date.now();
+      setPendings((prev) => prev.map((p) =>
+        p.timedOut ? p : (now - p.startedAt > 30_000 ? { ...p, timedOut: true } : p)
+      ));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [pendings.length]);
+
+  // Auto-dismiss when a real session for that cwd has shown up post-event.
+  // We treat "appeared" as: any session row whose cwd matches AND
+  // last_event_at >= the spawn's startedAt (the session row could have
+  // pre-existed from VSCode-panel hooks). The `sessions` prop refreshes
+  // every 2s via the App's polling tick, so this resolves naturally.
+  useEffect(() => {
+    if (pendings.length === 0) return;
+    setPendings((prev) => prev.filter((p) => {
+      const match = sessions.find(
+        (s) => s.cwd.toLowerCase() === p.cwd.toLowerCase() && s.last_event_at >= p.startedAt,
+      );
+      return !match;
+    }));
+  }, [sessions, pendings.length]);
+
+  function dismiss(cwd: string) {
+    setPendings((prev) => prev.filter((p) => p.cwd !== cwd));
+  }
+
+  if (pendings.length === 0) return null;
+  return (
+    <div
+      style={{
+        position: "fixed", bottom: 16, left: "50%", transform: "translateX(-50%)",
+        zIndex: 65,
+        display: "flex", flexDirection: "column", gap: 8,
+        maxWidth: "min(520px, calc(100vw - 24px))",
+        width: "100%",
+      }}
+    >
+      {pendings.map((p) => (
+        <div
+          key={p.cwd}
+          role="status"
+          style={{
+            padding: "10px 14px",
+            background: "var(--bg)",
+            border: "1px solid var(--border)",
+            borderLeft: `3px solid var(${p.timedOut ? "--accent" : "--pass"})`,
+            borderRadius: 6,
+            boxShadow: "0 6px 24px rgba(0,0,0,0.18)",
+            fontSize: 12, lineHeight: 1.5, color: "var(--fg)",
+            display: "flex", alignItems: "flex-start", gap: 10,
+          }}
+        >
+          {p.timedOut
+            ? <span style={{ fontSize: 14, marginTop: 1 }}>⚠️</span>
+            : <span class="spawn-pending-spinner" aria-hidden="true">⟳</span>
+          }
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 600, marginBottom: 2 }}>{t("spawnPending.title")}</div>
+            <div style={{ color: "var(--fg-muted)", overflowWrap: "anywhere" }}>
+              {p.timedOut ? t("spawnPending.timeout") : t("spawnPending.body", { cwd: p.cwd })}
+            </div>
+          </div>
+          <button
+            class="btn-ghost"
+            style={{ fontSize: 11, padding: "2px 8px", flexShrink: 0 }}
+            onClick={() => dismiss(p.cwd)}
+          >{t("spawnPending.dismiss")}</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // Header "+ 新增 CLI" button. Opens a popover with a folder-path input so the
 // user can spawn `miki claude --fresh` in any directory without typing in a
 // terminal. Recently-seen cwds (derived from current sessions) get autocompleted
@@ -1569,6 +1677,10 @@ function NewCliButton({ recentCwds }: { recentCwds: string[] }) {
   // popover anchor in viewport coords (recomputed on open + window resize) so
   // a narrow viewport doesn't leave the popover clipped off-screen.
   const [popTop, setPopTop] = useState(0);
+  // distance from the right edge of the viewport to the right edge of the
+  // button — popover aligns to that so it visually "drops out from under the
+  // button leftward", instead of slamming against the viewport's right gutter.
+  const [popRight, setPopRight] = useState(8);
 
   // Close on outside click — same pattern as Settings / PermissionModeChip.
   useEffect(() => {
@@ -1593,7 +1705,14 @@ function NewCliButton({ recentCwds }: { recentCwds: string[] }) {
     if (!open) return;
     function measure() {
       const r = btnRef.current?.getBoundingClientRect();
-      if (r) setPopTop(r.bottom + 6);
+      if (!r) return;
+      setPopTop(r.bottom + 6);
+      // Align popover's right edge with the button's right edge so on mobile
+      // it opens *leftward* from the button position rather than from the
+      // viewport's right gutter (which made it look like it "popped right"
+      // because the button isn't actually at the viewport edge — there's
+      // header padding).
+      setPopRight(Math.max(8, window.innerWidth - r.right));
     }
     measure();
     window.addEventListener("resize", measure);
@@ -1615,6 +1734,14 @@ function NewCliButton({ recentCwds }: { recentCwds: string[] }) {
         setErr(body?.error ?? `HTTP ${r.status}`);
       } else {
         setOk(true);
+        // Tell the App-level SpawnPendingBanner that a wt window is opening
+        // for `cwd` — it'll show a loading banner until the wrap process
+        // connects back to daemon and a fresh session card materialises in
+        // the grid. Without this the user has zero visual feedback for the
+        // 3–5s between click and card-appearing.
+        window.dispatchEvent(new CustomEvent("miki-moni:spawn-pending", {
+          detail: { cwd: trimmed },
+        }));
         // Auto-close after a beat so user sees the success indicator briefly.
         window.setTimeout(() => { setOpen(false); setCwd(""); }, 800);
       }
@@ -1644,12 +1771,15 @@ function NewCliButton({ recentCwds }: { recentCwds: string[] }) {
         <div
           style={{
             // Fixed to the viewport (not the button's relative parent) so a
-            // narrow window can't clip the popover off the left edge. We pin
-            // it to the viewport's right edge with an 8px gutter and let the
-            // width shrink to fit anything narrower than 360px.
+            // narrow window can't clip the popover off the left edge. Right
+            // edge aligns with the button's right edge (popRight, measured
+            // on open + resize) so the popover visually drops from under the
+            // button and extends LEFTWARD — instead of being slammed against
+            // the viewport's right gutter, which on mobile makes it look like
+            // a misplaced "rightward" popover.
             position: "fixed",
             top: popTop,
-            right: 8,
+            right: popRight,
             zIndex: 50,
             background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 6,
             padding: "12px 14px",
@@ -3110,6 +3240,11 @@ function App() {
           /wrap/start, so the wt window doesn't pop up until the user has
           ticked "I closed the VSCode panel" + hit Confirm. */}
       <WrapConfirmDialog sessionByUuid={sessionByUuid} />
+
+      {/* Loading banner shown after "新增 CLI > Open" — bridges the gap
+          between spawning wt.exe and a real session card appearing in the
+          grid. Watches `sessions` to auto-dismiss when the wrap connects. */}
+      <SpawnPendingBanner sessions={sessions} />
 
       {/* Popover */}
       {popoverFor && (

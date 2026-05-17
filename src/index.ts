@@ -3,6 +3,7 @@ import os from "node:os";
 import http from "node:http";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 import pino from "pino";
 import { createApp } from "./server.js";
 import { SessionStore } from "./session-store.js";
@@ -159,6 +160,16 @@ async function main(): Promise<void> {
   server.listen(port, "127.0.0.1", () => {
     log.info({ port }, "miki-moni listening");
     console.log(`miki-moni listening on http://127.0.0.1:${port}`);
+    // Windows-only: spawn the sleeping-cat tray icon so the user has a
+    // visible reminder the daemon is alive. Detached + unref'd so it owns
+    // its own lifetime; the script watches our PID and self-exits when we
+    // die. Failures here are non-fatal — the daemon is fully usable
+    // without the tray icon.
+    if (process.platform === "win32") {
+      spawnTrayHelper(port, log).catch((err) => {
+        log.warn({ err: String(err) }, "tray helper spawn failed (non-fatal)");
+      });
+    }
   });
 
   const shutdown = async () => {
@@ -168,6 +179,64 @@ async function main(): Promise<void> {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+}
+
+// Spawn tools/tray.ps1 as a detached child. The script renders a tray icon
+// with right-click menu (Open / Restart / Quit) and self-exits when our PID
+// disappears. Resolved relative to this file so it works whether the daemon
+// was launched from the repo or via a packaged `miki` global install.
+async function spawnTrayHelper(port: number, log: pino.Logger): Promise<void> {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  // src/index.ts compiled lives one level under repo root; tools/tray.ps1
+  // lives at the repo root. Two candidate paths so this works both in
+  // tsx-direct and in a built dist/ layout.
+  const candidates = [
+    path.resolve(here, "..", "tools", "tray.ps1"),
+    path.resolve(here, "..", "..", "tools", "tray.ps1"),
+  ];
+  let scriptPath: string | null = null;
+  for (const p of candidates) {
+    try { await fs.access(p); scriptPath = p; break; } catch { /* try next */ }
+  }
+  if (!scriptPath) {
+    log.warn({ candidates }, "tray.ps1 not found — skipping tray icon");
+    return;
+  }
+  // Two Windows-spawn quirks fixed here:
+  //
+  // 1. PowerShell's argv parser mangles Windows-style backslash paths when
+  //    they come through Node's CreateProcess wrapping ("D:\code\..."
+  //    became "D:codec..."). Forward slashes work natively on every
+  //    Windows tool and don't get eaten by escape processing.
+  //
+  // 2. STA is required for WinForms NotifyIcon (default MTA caused silent
+  //    exit on Application.Run when spawned from Node's CreateProcess
+  //    DETACHED_PROCESS flag).
+  //
+  // 3. Going through `cmd /c start /B` instead of spawning powershell.exe
+  //    directly side-steps a subtler Node-on-Windows issue where the
+  //    detached child still inherits CreateProcess flags that prevent
+  //    PowerShell from running a WinForms message pump. Direct spawn died
+  //    silently within ~1s; `Start-Process` from PowerShell worked fine,
+  //    and so does the cmd /c start indirection — both yield a process
+  //    with the flags Application.Run() expects.
+  const scriptForPs = scriptPath.replace(/\\/g, "/");
+  const child = spawn(
+    "cmd.exe",
+    [
+      "/c", "start", "/B", "",
+      "powershell.exe",
+      "-NoProfile", "-STA",
+      "-WindowStyle", "Hidden",
+      "-File", scriptForPs,
+      "-DaemonPid", String(process.pid),
+      "-Port", String(port),
+    ],
+    { detached: true, stdio: "ignore", windowsHide: true },
+  );
+  child.on("error", (err) => log.warn({ err: String(err) }, "tray helper error"));
+  child.unref();
+  log.info({ scriptPath, pid: child.pid }, "tray helper spawned");
 }
 
 main().catch((err) => {

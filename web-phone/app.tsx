@@ -13,6 +13,7 @@ import {
 } from "./relay";
 import { loadState, saveState, clearState, loadOrCreateIdentity, type PhoneState } from "./store";
 import { QrScanner } from "./qr-scanner";
+import { t, useLocale, setLocale, LOCALES, LOCALE_LABELS, type Locale } from "@shared/i18n";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -34,12 +35,32 @@ const STATUS_COLOR: Record<Session["status"], string> = {
   stale: "bg-red-500",
 };
 
-const STATUS_LABEL: Record<Session["status"], string> = {
-  active: "進行中",
-  waiting: "等你回應",
-  idle: "閒置",
-  stale: "已斷線",
-};
+// Status labels are computed via t() per render so locale switches take effect
+// without remounting. Keep STATUS_COLOR (Tailwind class names) static.
+function statusLabel(s: Session["status"]): string {
+  return t(`status.${s}`);
+}
+
+// Compact language selector used in both the pair screen header and the
+// dashboard header. Subscribes to locale changes so the surrounding tree
+// re-renders when the user flips locales.
+function PhoneLocaleSelector() {
+  const [locale, setL] = useLocale();
+  return (
+    <select
+      value={locale}
+      onChange={(e) => setL((e.currentTarget as HTMLSelectElement).value as Locale)}
+      class="bg-slate-800 text-slate-200 text-xs rounded px-2 py-1 border border-slate-700 focus:outline-none"
+      aria-label="Language"
+      title="Language"
+    >
+      {LOCALES.map((l) => (
+        <option key={l} value={l}>{LOCALE_LABELS[l]}</option>
+      ))}
+    </select>
+  );
+}
+
 
 // ── F12 console logging helper ────────────────────────────────────────────
 const TAG = "%c[miki-moni-phone]";
@@ -161,7 +182,7 @@ function PairForm({ relayUrl, onPaired, autoPairError }: PairFormProps) {
   }
 
   async function handleSubmit() {
-    if (!valid) { setError("Code must be 16 chars from the Crockford base32 alphabet"); return; }
+    if (!valid) { setError(t("phone.pair.errorBadCode")); return; }
     await pair(normalized, relayUrl);
   }
 
@@ -169,7 +190,8 @@ function PairForm({ relayUrl, onPaired, autoPairError }: PairFormProps) {
     setScanning(false);
     const parsed = parsePairFromScannedText(scannedText);
     if (!parsed) {
-      setError(`掃到了但不是配對 QR：${scannedText.slice(0, 60)}${scannedText.length > 60 ? "…" : ""}`);
+      const preview = scannedText.slice(0, 60) + (scannedText.length > 60 ? "…" : "");
+      setError(t("phone.pair.errorScannedQr", { text: preview }));
       return;
     }
     void pair(parsed.token, parsed.relay);
@@ -182,19 +204,33 @@ function PairForm({ relayUrl, onPaired, autoPairError }: PairFormProps) {
   return (
     <div class="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
       <div class="w-full max-w-md">
-        <h1 class="text-2xl font-bold mb-2">miki-moni 配對</h1>
-        <p class="text-slate-400 mb-6 text-sm">把這台裝置跟你電腦上的 miki-moni daemon 配對</p>
+        <div class="flex items-center justify-between mb-2">
+          <h1 class="text-2xl font-bold">{t("phone.pair.title")}</h1>
+          <PhoneLocaleSelector />
+        </div>
+        <p class="text-slate-400 mb-6 text-sm">{t("phone.pair.subtitle")}</p>
 
         <div class="bg-slate-900 rounded-lg border border-slate-800 p-5 flex flex-col gap-4">
           <p class="text-sm text-slate-400">
-            在電腦終端機跑 <code class="bg-slate-800 px-1 rounded font-mono">miki pair</code>，輸入它顯示的 16 碼配對碼。
+            {(() => {
+              // The {cmd} segment is rendered as a styled <code>, so split the
+              // template ourselves rather than fighting interpolate().
+              const parts = t("phone.pair.instruction", { cmd: " CMD " }).split(" CMD ");
+              return (
+                <>
+                  {parts[0]}
+                  <code class="bg-slate-800 px-1 rounded font-mono">miki pair</code>
+                  {parts[1] ?? ""}
+                </>
+              );
+            })()}
           </p>
 
           <div class="flex flex-col gap-1">
-            <label class="text-sm text-slate-300 font-medium">配對碼</label>
+            <label class="text-sm text-slate-300 font-medium">{t("phone.pair.codeLabel")}</label>
             <input
               type="text"
-              placeholder="XXXX-XXXX-XXXX-XXXX"
+              placeholder={t("phone.pair.codePlaceholder")}
               value={input}
               onInput={(e) => setInput((e.currentTarget as HTMLInputElement).value)}
               onKeyDown={(e) => {
@@ -226,12 +262,12 @@ function PairForm({ relayUrl, onPaired, autoPairError }: PairFormProps) {
             disabled={!valid || busy}
             onClick={() => void handleSubmit()}
           >
-            {busy ? "配對中…" : "開始配對"}
+            {busy ? t("phone.pair.busy") : t("phone.pair.submit")}
           </button>
 
           <div class="flex items-center gap-3 text-xs text-slate-500">
             <div class="flex-1 h-px bg-slate-800" />
-            <span>或</span>
+            <span>{t("phone.pair.or")}</span>
             <div class="flex-1 h-px bg-slate-800" />
           </div>
 
@@ -241,12 +277,12 @@ function PairForm({ relayUrl, onPaired, autoPairError }: PairFormProps) {
             onClick={() => { setError(null); setScanning(true); }}
           >
             <span>📷</span>
-            <span>掃 QR Code</span>
+            <span>{t("phone.pair.scan")}</span>
           </button>
         </div>
 
         <p class="text-xs text-slate-600 mt-4 text-center">
-          relay: <code class="font-mono">{relayUrl}</code>
+          {t("phone.pair.relayLabel")} <code class="font-mono">{relayUrl}</code>
         </p>
       </div>
     </div>
@@ -270,11 +306,11 @@ function SessionCard({
       <div class="flex items-center gap-2">
         <span class={`w-3 h-3 rounded-full flex-shrink-0 ${STATUS_COLOR[s.status]}`} />
         <span class="text-base font-semibold truncate">{s.project_name}</span>
-        <span class="text-xs text-slate-500 ml-auto flex-shrink-0">{STATUS_LABEL[s.status]}</span>
+        <span class="text-xs text-slate-500 ml-auto flex-shrink-0">{statusLabel(s.status)}</span>
       </div>
       <div class="text-xs text-slate-500 font-mono break-all">{s.cwd}</div>
       <div class="text-[10px] text-slate-600 font-mono break-all">
-        session_uuid: {s.session_uuid ?? <span class="text-amber-400">null（沒抓到，叫起/送出可能會開錯 session）</span>}
+        session_uuid: {s.session_uuid ?? <span class="text-amber-400">{t("phone.session.noUuid")}</span>}
       </div>
       {s.last_message_preview && (
         <div class="text-sm text-slate-300 line-clamp-2">{s.last_message_preview}</div>
@@ -284,14 +320,14 @@ function SessionCard({
           class="bg-slate-700 hover:bg-slate-600 rounded px-3 py-1 text-sm transition-colors"
           onClick={() => onFocus(s.cwd)}
         >
-          叫起視窗
+          {t("phone.session.focus")}
         </button>
       </div>
       <div class="flex gap-2 mt-1">
         <textarea
           class="flex-1 bg-slate-800 rounded px-2 py-1 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-indigo-500"
           rows={2}
-          placeholder="輸入 prompt 送給這個 session…"
+          placeholder={t("phone.session.promptPlaceholder")}
           value={draft}
           onInput={(e) => setDraft((e.currentTarget as HTMLTextAreaElement).value)}
         />
@@ -300,7 +336,7 @@ function SessionCard({
           disabled={!draft.trim()}
           onClick={() => { onSend(s.cwd, draft); setDraft(""); }}
         >
-          送出
+          {t("phone.session.send")}
         </button>
       </div>
     </div>
@@ -318,12 +354,9 @@ const CONN_DOT: Record<ConnStatus, string> = {
   error: "bg-red-500",
 };
 
-const CONN_LABEL: Record<ConnStatus, string> = {
-  connected: "已連線",
-  connecting: "連線中…",
-  reconnecting: "重新連線中…",
-  error: "連線錯誤",
-};
+function connLabel(c: ConnStatus): string {
+  return t(`phone.conn.${c}`);
+}
 
 interface LogEntry { ts: number; level: "info" | "warn" | "error"; msg: string; ctx?: Record<string, unknown> }
 const ACT_LOG_MAX = 50;
@@ -362,12 +395,12 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
     setUnpairing(true);
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
-      addLog("info", "送 revoke_self 給 relay");
+      addLog("info", t("phone.log.revokeRelay"));
       try { ws.send(JSON.stringify({ type: "revoke_self" })); } catch { /* ignore */ }
       // Safety net: if relay never replies, finalize anyway after 1.5s.
       setTimeout(() => { if (mountedRef.current) finalizeUnpair(); }, 1500);
     } else {
-      addLog("warn", "WS 未連線；直接清本地（relay 端可能仍有 paired_phones entry，下次連會被擋掉）");
+      addLog("warn", t("phone.log.unpairOffline"));
       finalizeUnpair();
     }
   }
@@ -381,12 +414,12 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
   function sendEncrypted(plain: object, label: string) {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      addLog("error", `${label}: WS 未連線，無法送出`, { state: ws?.readyState ?? "no-ws" });
+      addLog("error", t("phone.log.sendFailWsClosed", { label }), { state: ws?.readyState ?? "no-ws" });
       return false;
     }
     const env = encodeEnvelope(plain, sharedSecret, "daemon");
     ws.send(JSON.stringify(env));
-    addLog("info", `加密送出 ${label}`, { kind: (plain as any).kind, envBytes: JSON.stringify(env).length });
+    addLog("info", t("phone.log.encryptedSend", { label }), { kind: (plain as any).kind, envBytes: JSON.stringify(env).length });
     return true;
   }
 
@@ -397,7 +430,7 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
     let ws: WebSocket;
     if (state.relay_url) {
       // New relay-based connection: use signed auth token
-      addLog("info", `WS 連線中 (relay)`, { relay: state.relay_url, daemon_id: state.daemon_id, daemon_name: state.daemon_name });
+      addLog("info", t("phone.log.wsConnectingRelay"), { relay: state.relay_url, daemon_id: state.daemon_id, daemon_name: state.daemon_name });
       // We need identity for connectAuthed — load async then connect
       void loadOrCreateIdentity().then((identity) => {
         if (!mountedRef.current) return;
@@ -405,7 +438,7 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
         wsRef.current = w;
         attachWsHandlers(w);
       }).catch((e) => {
-        addLog("error", "無法載入 identity", { err: String(e) });
+        addLog("error", t("phone.log.identityFail"), { err: String(e) });
         setConnStatus("error");
       });
       return;
@@ -414,7 +447,7 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
     const workerUrl = state.worker_url ?? "";
     const phoneWsBase = workerUrl.replace(/\/v1\/daemon($|\?)/, "/v1/phone$1");
     const wsUrl = appendQueryParam(phoneWsBase, "daemon_id", state.daemon_id);
-    addLog("info", `WS 連線中 (legacy)`, { url: wsUrl, daemon_id: state.daemon_id, daemon_name: state.daemon_name });
+    addLog("info", t("phone.log.wsConnectingLegacy"), { url: wsUrl, daemon_id: state.daemon_id, daemon_name: state.daemon_name });
     ws = new WebSocket(wsUrl);
     wsRef.current = ws;
     attachWsHandlers(ws);
@@ -432,10 +465,10 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
         if (!mountedRef.current) return;
         try {
           ws.send(JSON.stringify({ type: "register_peer_id", peer_id }));
-          addLog("info", "送 register_peer_id", { peer_id });
+          addLog("info", t("phone.log.registerPeer"), { peer_id });
         } catch { /* ignore */ }
       });
-      addLog("info", "WS open — 送 request_snapshot");
+      addLog("info", t("phone.log.wsOpenSnapshot"));
       sendEncrypted({ kind: "request_snapshot" }, "request_snapshot");
     };
 
@@ -443,18 +476,18 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
       if (!mountedRef.current) return;
       let raw: any;
       try { raw = JSON.parse(ev.data as string); }
-      catch { addLog("warn", "WS 收到非 JSON", { raw: String(ev.data).slice(0, 80) }); return; }
+      catch { addLog("warn", t("phone.log.wsNonJson"), { raw: String(ev.data).slice(0, 80) }); return; }
 
       // Control-plane messages from relay/daemon (not encrypted envelopes):
       if (raw && typeof raw.type === "string") {
         if (raw.type === "revoked_ok") {
-          addLog("info", "relay 確認 revoke 完成，清除本地狀態");
+          addLog("info", t("phone.log.revokeOk"));
           finalizeUnpair();
           return;
         }
         if (raw.type === "phone_revoked") {
           // Daemon kicked us — clear local and bounce to pair screen.
-          addLog("warn", "daemon 主動解除配對，回到配對畫面", { by: raw.by ?? "unknown" });
+          addLog("warn", t("phone.log.revokeKicked"), { by: raw.by ?? "unknown" });
           finalizeUnpair();
           return;
         }
@@ -478,35 +511,35 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
         echo?: string;
       } | null;
       if (!plain) {
-        addLog("warn", "envelope 解密失敗 — 可能對方不是這個 peer", { to: env.to, ts: env.ts });
+        addLog("warn", t("phone.log.envelopeFail"), { to: env.to, ts: env.ts });
         return;
       }
       if (plain.kind === "state_snapshot" && Array.isArray(plain.sessions)) {
-        addLog("info", `state_snapshot — 收到 ${plain.sessions.length} 個 session`, { cwds: plain.sessions.map((s) => s.cwd) });
+        addLog("info", t("phone.log.snapshotReceived", { n: plain.sessions.length }), { cwds: plain.sessions.map((s) => s.cwd) });
         setSessions(plain.sessions as Session[]);
       } else if (plain.kind === "event" && plain.session) {
         const s = plain.session;
-        addLog("info", `event — ${s.project_name}`, { cwd: s.cwd, status: s.status, session_uuid: s.session_uuid });
+        addLog("info", t("phone.log.eventReceived", { project: s.project_name }), { cwd: s.cwd, status: s.status, session_uuid: s.session_uuid });
         setSessions((prev) => {
           const others = prev.filter((x) => x.cwd !== s.cwd);
           return [s, ...others].sort((a, b) => b.last_event_at - a.last_event_at);
         });
       } else {
-        addLog("warn", `不認識的訊息 kind`, { kind: plain.kind });
+        addLog("warn", t("phone.log.unknownKind"), { kind: plain.kind });
       }
     };
 
     ws.onerror = () => {
       if (!mountedRef.current) return;
       setConnStatus("error");
-      addLog("error", "WS error");
+      addLog("error", t("phone.log.wsError"));
     };
 
     ws.onclose = (ev) => {
       if (!mountedRef.current) return;
       setConnStatus("reconnecting");
       const delay = Math.min(backoffRef.current, 60_000);
-      addLog("warn", `WS close — ${delay}ms 後重連`, { code: ev.code, reason: ev.reason || "(無)" });
+      addLog("warn", t("phone.log.wsCloseReconnect", { delay }), { code: ev.code, reason: ev.reason || t("phone.log.wsCloseReason") });
       backoffRef.current = delay * 2;
       setTimeout(connect, delay);
     };
@@ -522,11 +555,11 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
   }, []);
 
   const onFocus = (cwd: string) => {
-    addLog("info", `click 叫起視窗`, { cwd });
+    addLog("info", t("phone.log.focusClick"), { cwd });
     sendEncrypted({ kind: "cmd_focus", cwd }, "cmd_focus");
   };
   const onSend = (cwd: string, prompt: string) => {
-    addLog("info", `click 送出 prompt`, { cwd, promptLength: prompt.length, promptPreview: prompt.slice(0, 40) });
+    addLog("info", t("phone.log.sendClick"), { cwd, promptLength: prompt.length, promptPreview: prompt.slice(0, 40) });
     sendEncrypted({ kind: "cmd_send", cwd, prompt }, "cmd_send");
   };
 
@@ -536,32 +569,39 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
         <h1 class="text-lg font-bold">miki-moni · <span class="text-indigo-400">{state.daemon_name}</span></h1>
         <div class="flex items-center gap-2 ml-auto">
           <span class={`w-2.5 h-2.5 rounded-full ${CONN_DOT[connStatus]}`} />
-          <span class="text-xs text-slate-400">{CONN_LABEL[connStatus]}</span>
+          <span class="text-xs text-slate-400">{connLabel(connStatus)}</span>
         </div>
+        <PhoneLocaleSelector />
         <button
           class="bg-slate-700 hover:bg-slate-600 disabled:opacity-60 rounded px-3 py-1 text-sm ml-3 transition-colors"
           onClick={requestUnpair}
           disabled={unpairing}
         >
-          {unpairing ? "解除中…" : "解除配對"}
+          {unpairing ? t("phone.header.unpairing") : t("phone.header.unpair")}
         </button>
       </header>
 
       <main class="max-w-2xl mx-auto p-4 flex flex-col gap-4">
         {sessions.length === 0 && connStatus === "connected" && (
           <div class="text-slate-500 text-center py-10 text-sm space-y-2">
-            <p class="text-base">⚪ 連上 relay，但還沒有 session</p>
-            <p class="text-xs text-slate-600">兩個可能：</p>
+            <p class="text-base">{t("phone.empty.title")}</p>
+            <p class="text-xs text-slate-600">{t("phone.empty.twoOptions")}</p>
             <ul class="text-xs text-slate-500 list-disc list-inside text-left max-w-xs mx-auto space-y-1">
-              <li>電腦的 daemon 沒在跑 → 終端機跑 <code class="bg-slate-800 px-1 rounded">pnpm start</code></li>
-              <li>daemon 有跑，但你還沒開任何 Claude Code session → 開一個就會出現</li>
+              <li>{(() => {
+                const parts = t("phone.empty.daemonNotRunning", { cmd: " CMD " }).split(" CMD ");
+                return <>{parts[0]}<code class="bg-slate-800 px-1 rounded">pnpm start</code>{parts[1] ?? ""}</>;
+              })()}</li>
+              <li>{t("phone.empty.noClaude")}</li>
             </ul>
-            <p class="text-[10px] text-slate-700 mt-3">若 hooks 還沒裝：<code class="bg-slate-800 px-1 rounded">pnpm install:hooks</code></p>
+            <p class="text-[10px] text-slate-700 mt-3">{(() => {
+              const parts = t("phone.empty.hooksHint", { cmd: " CMD " }).split(" CMD ");
+              return <>{parts[0]}<code class="bg-slate-800 px-1 rounded">pnpm install:hooks</code>{parts[1] ?? ""}</>;
+            })()}</p>
           </div>
         )}
         {sessions.length === 0 && connStatus !== "connected" && (
           <div class="text-slate-600 text-center py-10 text-sm">
-            等待連線…
+            {t("phone.empty.waitingConn")}
           </div>
         )}
         {sessions.map((s) => (
@@ -570,11 +610,11 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
 
         <div class="mt-6 border border-slate-800 rounded-lg bg-slate-900/50">
           <div class="flex items-center px-3 py-2 border-b border-slate-800">
-            <span class="text-xs font-semibold text-slate-400">活動紀錄（同步輸出到 F12 Console）</span>
-            <button class="ml-auto text-xs text-slate-500 hover:text-slate-300" onClick={() => setLog([])}>清空</button>
+            <span class="text-xs font-semibold text-slate-400">{t("phone.log.title")}{t("phone.log.consoleNote")}</span>
+            <button class="ml-auto text-xs text-slate-500 hover:text-slate-300" onClick={() => setLog([])}>{t("phone.log.clear")}</button>
           </div>
           <div class="text-[11px] font-mono p-3 max-h-64 overflow-y-auto">
-            {log.length === 0 && <div class="text-slate-600">尚無活動。WS 連上、配對後送出 cmd、收到 event 都會即時顯示。</div>}
+            {log.length === 0 && <div class="text-slate-600">{t("phone.log.empty")}</div>}
             {log.map((e, i) => (
               <div key={i} class={
                 e.level === "error" ? "text-red-400" :
@@ -596,6 +636,9 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
 // ── Root ───────────────────────────────────────────────────────────────────
 
 function App() {
+  // Subscribe at the root so a locale flip in any child causes the whole tree
+  // to re-render — every t() call captured in JSX then picks up new strings.
+  useLocale();
   const [state, setState] = useState<PhoneState | null>(() => loadState());
   const [autoPairError, setAutoPairError] = useState<string | null>(null);
   const [autoPairing, setAutoPairing] = useState(false);
@@ -646,8 +689,8 @@ function App() {
     return (
       <div class="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
         <div class="text-center">
-          <div class="text-lg font-medium mb-2">配對中…</div>
-          <div class="text-sm text-slate-500">正在跟 daemon 完成 handshake</div>
+          <div class="text-lg font-medium mb-2">{t("phone.pair.autoTitle")}</div>
+          <div class="text-sm text-slate-500">{t("phone.pair.autoHint")}</div>
         </div>
       </div>
     );
