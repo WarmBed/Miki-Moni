@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>miki-moni · 配對</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: #0b1020; color: #d4d4d4;
+    font-family: "Inter", "Noto Sans TC", system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  .card {
+    background: #12172a;
+    border: 1px solid #2a3050;
+    border-radius: 14px;
+    padding: 32px 40px;
+    max-width: 520px;
+    width: 100%;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+  h1 { font-size: 18px; font-weight: 600; margin-bottom: 4px; color: #f472b6; }
+  .sub { font-size: 13px; color: #94a3b8; margin-bottom: 24px; }
+  .qr-wrap {
+    background: white;
+    padding: 16px;
+    border-radius: 8px;
+    display: flex;
+    justify-content: center;
+    margin-bottom: 24px;
+  }
+  canvas { display: block; }
+  .row { margin-bottom: 14px; }
+  .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8; margin-bottom: 4px; }
+  .value {
+    background: #1a2138;
+    border: 1px solid #2a3050;
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-family: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
+    font-size: 14px;
+    color: #e6e9ef;
+    word-break: break-all;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .code { font-size: 20px; font-weight: 600; letter-spacing: 0.1em; color: #fde68a; }
+  .copy {
+    background: #2a3050; border: none; color: #d4d4d4;
+    border-radius: 4px; padding: 4px 10px; font-size: 11px;
+    cursor: pointer; transition: background 0.15s;
+    flex-shrink: 0;
+  }
+  .copy:hover { background: #3a4060; }
+  .copy.done { background: #16a34a; color: white; }
+  .hint { font-size: 12px; color: #64748b; margin-top: 20px; line-height: 1.6; }
+  .err { color: #f87171; padding: 20px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>📱 miki-moni 配對</h1>
+  <div class="sub">手機掃 QR、開 URL，或輸入 16 碼 — 三選一</div>
+
+  <div id="content"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+<script>
+const params = new URLSearchParams(location.search);
+const token = params.get("t");
+const relay = params.get("r");
+const pwa = params.get("pwa") || "https://miki-moni.pages.dev/";
+const content = document.getElementById("content");
+
+if (!token || !relay) {
+  content.innerHTML = '<div class="err">缺少 token / relay 參數。從 tray 圖示重開這個頁面，或跑 <code>miki pair</code> 看 banner。</div>';
+} else {
+  const url = pwa + "#t=" + encodeURIComponent(token) + "&r=" + encodeURIComponent(relay);
+  const grouped = token.match(/.{1,4}/g).join("-");
+
+  content.innerHTML = `
+    <div class="qr-wrap"><canvas id="qr"></canvas></div>
+
+    <div class="row">
+      <div class="label">配對碼（16 碼，case-insensitive，dash 可省）</div>
+      <div class="value"><span class="code">${grouped}</span>
+        <button class="copy" data-copy="${token}">copy</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="label">URL（手機直接開）</div>
+      <div class="value"><span style="flex:1;">${url}</span>
+        <button class="copy" data-copy="${url.replace(/"/g, "&quot;")}">copy</button>
+      </div>
+    </div>
+
+    <div class="hint">
+      QR 跟 URL / 16 碼是<strong>永久</strong>有效，rotate 才會換。<br />
+      被截圖外洩 → 終端機跑 <code style="background:#2a3050;padding:2px 6px;border-radius:3px;">miki pair --rotate</code> 換新的。
+    </div>
+  `;
+
+  QRCode.toCanvas(document.getElementById("qr"), url, { width: 280, margin: 1 }, (err) => {
+    if (err) console.error("QR render failed", err);
+  });
+
+  document.querySelectorAll(".copy").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(btn.dataset.copy);
+        const orig = btn.textContent;
+        btn.textContent = "✓ copied";
+        btn.classList.add("done");
+        setTimeout(() => { btn.textContent = orig; btn.classList.remove("done"); }, 1500);
+      } catch (e) {
+        btn.textContent = "fail";
+        setTimeout(() => { btn.textContent = "copy"; }, 1500);
+      }
+    });
+  });
+}
+</script>
+</body>
+</html>
