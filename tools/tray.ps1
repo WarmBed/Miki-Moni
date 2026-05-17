@@ -21,6 +21,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Write all output to ~/.miki-moni/tray.log so silent failures can be
+# diagnosed post-mortem. Append so successive spawns don't clobber history.
+$trayLogPath = Join-Path $env:USERPROFILE ".miki-moni\tray.log"
+try {
+  $logDir = Split-Path $trayLogPath -Parent
+  if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+  Start-Transcript -Path $trayLogPath -Append -Force | Out-Null
+  Write-Output "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] tray.ps1 starting (DaemonPid=$DaemonPid, Port=$Port, PSVersion=$($PSVersionTable.PSVersion))"
+} catch { }
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 

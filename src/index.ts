@@ -221,22 +221,32 @@ async function spawnTrayHelper(port: number, log: pino.Logger): Promise<void> {
   //    and so does the cmd /c start indirection — both yield a process
   //    with the flags Application.Run() expects.
   const scriptForPs = scriptPath.replace(/\\/g, "/");
+  // -ExecutionPolicy Bypass: many users have the default `Restricted` policy
+  // which silently refuses to run .ps1 files. Bypass only applies to this one
+  // process invocation (we don't touch their system-wide policy).
+  // Capture stdout/stderr to the daemon log so silent crashes are debuggable.
+  const trayLog = path.join(path.dirname(LOG_FILE), "tray.log");
   const child = spawn(
     "cmd.exe",
     [
       "/c", "start", "/B", "",
       "powershell.exe",
       "-NoProfile", "-STA",
+      "-ExecutionPolicy", "Bypass",
       "-WindowStyle", "Hidden",
       "-File", scriptForPs,
       "-DaemonPid", String(process.pid),
       "-Port", String(port),
     ],
-    { detached: true, stdio: "ignore", windowsHide: true },
+    {
+      detached: true,
+      stdio: ["ignore", "ignore", "ignore"],
+      windowsHide: true,
+    },
   );
   child.on("error", (err) => log.warn({ err: String(err) }, "tray helper error"));
   child.unref();
-  log.info({ scriptPath, pid: child.pid }, "tray helper spawned");
+  log.info({ scriptPath, pid: child.pid, trayLog }, "tray helper spawned");
 }
 
 main().catch((err) => {
