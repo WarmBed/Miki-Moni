@@ -484,11 +484,11 @@ async function main(): Promise<void> {
   // First one wins; we then push the answer as a regular user message into
   // the query iterable so Claude can see the response.
   interface QQuestion { question: string; header: string; multiSelect?: boolean; options: Array<{ label: string; description: string }> }
-  interface PendingAsk { id: string; questions: QQuestion[] }
+  interface PendingAsk { id: string; parentToolUseId: string | null; questions: QQuestion[] }
   let pendingAsk: PendingAsk | null = null;
 
-  function emitAskQuestion(id: string, questions: QQuestion[]): void {
-    pendingAsk = { id, questions };
+  function emitAskQuestion(id: string, parentToolUseId: string | null, questions: QQuestion[]): void {
+    pendingAsk = { id, parentToolUseId, questions };
     // 1. Daemon broadcast
     const liveWs = getWs();
     if (liveWs && liveWs.readyState === liveWs.OPEN && resumeUuid) {
@@ -734,7 +734,11 @@ async function main(): Promise<void> {
               if (block.name === "AskUserQuestion" && block.input && typeof block.input === "object") {
                 const qs = (block.input as any).questions;
                 if (Array.isArray(qs) && qs.length > 0) {
-                  emitAskQuestion(block.id || `q-${Date.now()}`, qs as QQuestion[]);
+                  // Capture parent_tool_use_id from the SDKAssistantMessage so
+                  // the tool_result we push back has the right parent context
+                  // (null for top-level Claude; the Task tool's id for subagents).
+                  const parentToolUseId = (m as any).parent_tool_use_id ?? null;
+                  emitAskQuestion(block.id || `q-${Date.now()}`, parentToolUseId, qs as QQuestion[]);
                 }
               }
             } else if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
