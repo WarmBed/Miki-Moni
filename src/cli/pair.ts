@@ -1,7 +1,14 @@
 import WebSocket from "ws";
 import qrcode from "qrcode-terminal";
+import http from "node:http";
+import path from "node:path";
+import os from "node:os";
+import { promises as fsp } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { PORT_FILE } from "../data-dir.js";
 import {
   loadOrInitConfig,
   saveConfig,
@@ -384,6 +391,64 @@ async function cmdShow(cfg: Config, workerUrlArg?: string): Promise<void> {
   }
 }
 
+// ── Daemon lifecycle helpers (used by cmdRotate to hot-swap the running
+//    daemon so the new pair_token gets registered with the relay without
+//    a manual restart). Mirrors the spawn dance in wrap.ts:ensureDaemonRunning. ─
+
+async function readPortFile(): Promise<number | null> {
+  try {
+    const raw = await fsp.readFile(PORT_FILE, "utf8");
+    const n = parseInt(raw.trim(), 10);
+    return Number.isFinite(n) ? n : null;
+  } catch { return null; }
+}
+
+function pingDaemonHttp(port: number, timeoutMs = 800): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/sessions`, { timeout: timeoutMs }, (res) => {
+      res.resume();
+      resolve((res.statusCode ?? 0) > 0);
+    });
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => { req.destroy(); resolve(false); });
+  });
+}
+
+function postAdmin(port: number, route: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.request({
+      hostname: "127.0.0.1", port, path: route, method: "POST",
+      headers: { "content-length": "0" }, timeout: 2000,
+    }, (res) => { res.resume(); resolve((res.statusCode ?? 0) >= 200 && (res.statusCode ?? 0) < 300); });
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => { req.destroy(); resolve(false); });
+    req.end();
+  });
+}
+
+async function spawnDetachedDaemon(): Promise<void> {
+  // Locate tsx via package.json — same approach as wrap.ts so behaviour stays
+  // consistent across pnpm-store layouts. spawning `node <tsx-bin> src/index.ts`
+  // avoids Node 24's .cmd-spawn ban and doesn't need npm/pnpm on PATH.
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const projectRoot = path.join(here, "..", "..");
+  const indexEntry = path.join(here, "..", "index.ts");
+  const req = createRequire(import.meta.url);
+  const tsxPkgPath = req.resolve("tsx/package.json", { paths: [projectRoot] });
+  const tsxPkg = req(tsxPkgPath);
+  const tsxBinRel = typeof tsxPkg.bin === "string" ? tsxPkg.bin : tsxPkg.bin?.tsx;
+  if (!tsxBinRel) throw new Error("tsx bin not found");
+  const tsxBin = path.join(path.dirname(tsxPkgPath), tsxBinRel);
+
+  const logPath = path.join(os.homedir(), ".miki-moni", "daemon.log");
+  try { await fsp.mkdir(path.dirname(logPath), { recursive: true }); } catch { /* ignore */ }
+  const out = await fsp.open(logPath, "a").catch(() => null);
+  const stdio: any = out ? ["ignore", out.fd, out.fd] : ["ignore", "ignore", "ignore"];
+  const child = spawn(process.execPath, [tsxBin, indexEntry], { detached: true, stdio, windowsHide: true });
+  child.unref();
+  if (out) out.close().catch(() => { /* ignore */ });
+}
+
 async function cmdRotate(cfg: Config, workerUrlArg?: string): Promise<void> {
   const workerUrl = workerUrlArg ?? cfg.remote?.worker_url;
   if (!workerUrl) {
@@ -398,7 +463,46 @@ async function cmdRotate(cfg: Config, workerUrlArg?: string): Promise<void> {
   await saveConfig(CONFIG_PATH, next);
   console.log("[ok] Rotated persistent pair token. Old QR is now invalid.");
   console.log("[note] Existing paired phones are unaffected — they reconnect via signing key, not token.");
-  console.log("[note] Restart daemon so it registers the new token with the relay: Ctrl+C then `pnpm start`.");
+
+  // Hot-swap the daemon so the new token gets registered with the relay
+  // without the user having to manually Ctrl+C + restart. Previously this
+  // was a footgun: the new QR would 404 at /v1/phone because the relay's
+  // PairingCoordinator DO still held the stale token.
+  const port = await readPortFile();
+  if (port && await pingDaemonHttp(port)) {
+    process.stdout.write("[…] restarting daemon to register the new token… ");
+    const acked = await postAdmin(port, "/admin/restart");
+    if (!acked) {
+      console.log("FAILED");
+      console.error("[warn] /admin/restart did not ack. Manually restart: Ctrl+C in the daemon window then `pnpm start`.");
+    } else {
+      // Wait for the old daemon's port to free (up to 5s).
+      for (let i = 0; i < 25; i++) {
+        await new Promise((r) => setTimeout(r, 200));
+        if (!(await pingDaemonHttp(port, 300))) break;
+      }
+      // Spawn a fresh detached daemon — singleton guard in index.ts will no-op
+      // if somehow a daemon is already there, so this is safe to fire.
+      try { await spawnDetachedDaemon(); } catch (e) {
+        console.log("FAILED");
+        console.error(`[warn] could not respawn daemon: ${(e as Error).message}`);
+        console.error("[warn] start manually: pnpm start (from D:\\code\\cc-hub or wherever miki-moni lives)");
+        printQrAndCode(next);
+        return;
+      }
+      // Wait for the new daemon to register the token + come up (up to 10s).
+      let ready = false;
+      for (let i = 0; i < 50; i++) {
+        await new Promise((r) => setTimeout(r, 200));
+        const p = await readPortFile();
+        if (p && await pingDaemonHttp(p)) { ready = true; break; }
+      }
+      console.log(ready ? "OK" : "TIMED OUT — daemon may still be coming up, give it a moment");
+    }
+  } else {
+    console.log("[info] No running daemon detected. The new token will be active when you next `pnpm start`.");
+  }
+
   printQrAndCode(next);
 }
 

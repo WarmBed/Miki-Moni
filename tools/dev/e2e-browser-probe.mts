@@ -54,18 +54,10 @@ async function main() {
     console.log(`goto failed: ${(e as Error).message}`);
   }
 
-  // 3 screenshots over 30s to catch whatever UI state the page lands on
-  await page.waitForTimeout(3000);
-  await page.screenshot({ path: "D:/tmp/e2e-shot-3s.png", fullPage: true });
-  console.log("screenshot @ 3s → D:/tmp/e2e-shot-3s.png");
-
-  await page.waitForTimeout(10000);
-  await page.screenshot({ path: "D:/tmp/e2e-shot-13s.png", fullPage: true });
-  console.log("screenshot @ 13s → D:/tmp/e2e-shot-13s.png");
-
+  // Wait long enough for the second (reconnect-mode) WS to land
   await page.waitForTimeout(15000);
-  await page.screenshot({ path: "D:/tmp/e2e-shot-28s.png", fullPage: true });
-  console.log("screenshot @ 28s → D:/tmp/e2e-shot-28s.png");
+  await page.screenshot({ path: "D:/tmp/e2e-shot-final.png", fullPage: true });
+  console.log("screenshot → D:/tmp/e2e-shot-final.png");
 
   console.log("\n=== console ===");
   for (const m of consoleMessages) console.log(`[${m.type}] ${m.text}`);
