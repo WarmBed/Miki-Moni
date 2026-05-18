@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { marked } from "marked";
 import { t, useLocale, setLocale as setLocaleGlobal, LOCALES, LOCALE_LABELS, type Locale } from "@shared/i18n";
 import { apiFetch, apiWebSocket } from "./api";
+import { assembleRenderTurns } from "./lib/transcript-assembly";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -1095,53 +1096,19 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
                 : transcript.turns
                     .filter((tn) => !tn.tool_use && !tn.tool_result)
                     .slice(-transcriptLimit);
-              const extras: TranscriptTurn[] = [];
-              // Append optimistic user overlay only when JSONL has not yet
-              // caught up: i.e. the latest user turn we know of is older
-              // than the overlay timestamp.
-              if (userOverlayText && userOverlayTs) {
-                let latestUserTs = 0;
-                for (const tn of transcript.turns) {
-                  if (tn.role !== "user" || tn.tool_result) continue;
-                  const ts = Date.parse(tn.ts) || 0;
-                  if (ts > latestUserTs) latestUserTs = ts;
-                }
-                if (latestUserTs < userOverlayTs) {
-                  extras.push({
-                    ts: new Date(userOverlayTs).toISOString(),
-                    role: "user",
-                    text: userOverlayText,
-                    raw_type: "synthetic-user-overlay",
-                  });
-                }
-              }
-              // Append in-flight assistant streaming buffer. We keep this
-              // buffer alive past assistant_delta_end (see WS handler) to
-              // avoid the "blank flash" between delta_end and canonical
-              // JSONL landing. The guard below prevents a brief duplicate:
-              // if the latest canonical assistant turn is newer than the
-              // stream's startTs, canonical has caught up and we suppress
-              // the overlay (loadPreviews will clear it from state shortly
-              // after for memory hygiene).
-              if (streamingText && streamingText.length > 0) {
-                let latestAssistantTs = 0;
-                for (const tn of transcript.turns) {
-                  if (tn.role !== "assistant" || tn.tool_use) continue;
-                  const ts = Date.parse(tn.ts) || 0;
-                  if (ts > latestAssistantTs) latestAssistantTs = ts;
-                }
-                const startedAt = streamingStartTs ?? 0;
-                const canonicalCaughtUp = startedAt > 0 && latestAssistantTs >= startedAt;
-                if (!canonicalCaughtUp) {
-                  extras.push({
-                    ts: new Date().toISOString(),
-                    role: "assistant",
-                    text: streamingText,
-                    raw_type: "synthetic-streaming",
-                  });
-                }
-              }
-              const renderTurns = extras.length > 0 ? baseTurns.concat(extras) : baseTurns;
+              // Merge canonical baseTurns with optimistic overlays and
+              // chronologically sort. Pure logic lives in
+              // web/lib/transcript-assembly.ts — the historical bug was
+              // appending overlays at the END without sorting, which made
+              // a stale user overlay land below a newer canonical
+              // assistant turn that had already hit JSONL.
+              const overlay = userOverlayText && userOverlayTs
+                ? { text: userOverlayText, ts: userOverlayTs }
+                : undefined;
+              const stream = streamingText && streamingText.length > 0
+                ? { text: streamingText, startTs: streamingStartTs ?? 0 }
+                : undefined;
+              const renderTurns = assembleRenderTurns(baseTurns, overlay, stream);
               return (
                 <div style={fixedHeight ? { flex: 1, minHeight: 0, display: "flex" } : { maxHeight: 480, overflow: "hidden", display: "flex" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
