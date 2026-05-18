@@ -167,6 +167,11 @@ export class DaemonRelay implements DurableObject {
   }
 
   private async handleDaemonMessage(ws: WebSocket, att: DaemonAttachment, msg: any): Promise<void> {
+    // App-level keepalive — defeats the 100s idle-WS timeout on CF's edge.
+    // Daemon (and optionally phones) send these every 50s; we acknowledge by
+    // doing nothing. The cost is one billable request per keepalive, which
+    // is the whole point: the DO has to wake to receive it.
+    if (msg?.type === "keepalive") return;
     if (!att.authed) {
       if (msg.type !== "challenge_response") { ws.close(1008, "expected_challenge_response"); return; }
       const pubkey = fromBase64(att.pubkey_b64);
@@ -274,6 +279,8 @@ export class DaemonRelay implements DurableObject {
   }
 
   private async handlePhoneMessage(ws: WebSocket, att: PhoneAttachment, msg: any): Promise<void> {
+    // App-level keepalive (mirror of daemon side); see handleDaemonMessage.
+    if (msg?.type === "keepalive") return;
     if (!att.authed) {
       if (msg.type === "pair_offer" && att.pairing_token) {
         const signPk = String(msg.phone_sign_pubkey ?? msg.phone_pubkey ?? "");

@@ -79,6 +79,39 @@ describe("DaemonRelay", () => {
     });
   });
 
+  describe("keepalive", () => {
+    it("drops daemon-side keepalive messages without broadcasting", async () => {
+      const { daemon, serverWs, keypair } = await openDaemonAndChallenge();
+      // Authenticate first
+      const ch = JSON.parse(serverWs.sent[0]);
+      const sigMsg = buildChallengeMessage(
+        Uint8Array.from(atob(ch.nonce), (c) => c.charCodeAt(0)),
+        ch.issued_at_ms,
+      );
+      const sig = nacl.sign.detached(sigMsg, keypair.secretKey);
+      await daemon.webSocketMessage(serverWs as any, JSON.stringify({
+        type: "challenge_response",
+        sig: toBase64(sig),
+      }));
+      const sentBefore = serverWs.sent.length;
+      // Send keepalive — should be a silent no-op
+      await daemon.webSocketMessage(serverWs as any, JSON.stringify({ type: "keepalive" }));
+      // No additional broadcast back to the daemon and no close
+      expect(serverWs.sent.length).toBe(sentBefore);
+      expect(serverWs.closed).toBeFalsy();
+    });
+
+    it("ignores keepalive even before daemon is authed (no close, no challenge bounce)", async () => {
+      const { daemon, serverWs } = await openDaemonAndChallenge();
+      // Send keepalive before challenge_response — must NOT close the socket
+      // (otherwise a flaky client could drop the auth window).
+      const sentBefore = serverWs.sent.length;
+      await daemon.webSocketMessage(serverWs as any, JSON.stringify({ type: "keepalive" }));
+      expect(serverWs.closed).toBeFalsy();
+      expect(serverWs.sent.length).toBe(sentBefore);
+    });
+  });
+
   describe("pairing flow", () => {
     it("daemon registers a pairing token, phone connects + receives pair_init", async () => {
       const { daemon, state, serverWs, keypair } = await openDaemonAndChallenge();

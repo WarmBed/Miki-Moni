@@ -157,6 +157,13 @@ export async function computePeerIdFromB64(peerPubkeyBase64: string): Promise<st
   return btoa(bin).replace(/[+/=]/g, "").slice(0, 16);
 }
 
+// CF Workers' edge enforces a 100s idle WebSocket timeout. Without an
+// app-level heartbeat the phone disconnects every ~100s of dashboard idle,
+// then has to do the auth dance again — visible as a flickery WS-status
+// indicator on the phone. The worker DO short-circuits "keepalive" messages
+// without broadcasting them (worker/src/daemon-relay.ts).
+const PHONE_KEEPALIVE_INTERVAL_MS = 50_000;
+
 /** Connect using stored pair credentials (reconnect mode). */
 export function connectAuthed(
   relayUrl: string,
@@ -177,5 +184,20 @@ export function connectAuthed(
   url.searchParams.set("daemon_id", daemon_id);
   url.searchParams.set("phone_pubkey", identity.signing_pubkey);
   url.searchParams.set("sig", naclUtil.encodeBase64(sig));
-  return new WebSocket(url.toString());
+  const ws = new WebSocket(url.toString());
+
+  // Attach keepalive lifecycle to the WS itself so callers don't need to
+  // remember to clean it up — addEventListener('close') is fired on both
+  // graceful close and remote drop.
+  let timer: ReturnType<typeof setInterval> | null = null;
+  ws.addEventListener("open", () => {
+    timer = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      try { ws.send(JSON.stringify({ type: "keepalive" })); } catch { /* */ }
+    }, PHONE_KEEPALIVE_INTERVAL_MS);
+  });
+  ws.addEventListener("close", () => {
+    if (timer) { clearInterval(timer); timer = null; }
+  });
+  return ws;
 }

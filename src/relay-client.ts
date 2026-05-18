@@ -45,6 +45,14 @@ function buildChallengeMessage(nonce: Uint8Array, issued_at_ms: number): Uint8Ar
   return out;
 }
 
+// CF Workers' edge enforces a 100s idle WebSocket timeout on the Free/Pro
+// plan. The peer-ping the daemon exchanges with paired phones doesn't help
+// here — it's tunnelled inside encrypted envelopes that the worker never
+// inspects, so from CF's perspective the underlying connection is idle.
+// Send an app-level JSON keepalive directly to the relay every 50s; the DO
+// short-circuits these without broadcasting (worker/src/daemon-relay.ts).
+const KEEPALIVE_INTERVAL_MS = 50_000;
+
 export class RelayClient {
   private ws: WebSocket | null = null;
   private stopRequested = false;
@@ -52,6 +60,7 @@ export class RelayClient {
   private storeListener: ((s: Session) => void) | null = null;
   private peers: PeerSecrets[] = [];
   private ready = false;
+  private keepaliveTimer: NodeJS.Timeout | null = null;
 
   constructor(private deps: RelayClientDeps) {
     this.peers = deps.config.paired_peers.map((p) => ({
@@ -75,6 +84,7 @@ export class RelayClient {
       this.deps.store.off("session_changed", this.storeListener);
       this.storeListener = null;
     }
+    this.stopKeepalive();
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -123,6 +133,7 @@ export class RelayClient {
       if (msg.type === "ready") {
         this.ready = true;
         this.reconnectMs = RECONNECT_INITIAL_MS;
+        this.startKeepalive();
         this.storeListener = (session: Session) => this.broadcastEvent(session);
         this.deps.store.on("session_changed", this.storeListener);
         // Re-register the persistent pair token (if configured). This keeps
@@ -252,12 +263,34 @@ export class RelayClient {
       this.deps.store.off("session_changed", this.storeListener);
       this.storeListener = null;
     }
+    this.stopKeepalive();
     this.ws = null;
     this.ready = false;
     if (this.stopRequested) return;
     const wait = this.reconnectMs;
     this.reconnectMs = Math.min(this.reconnectMs * 2, RECONNECT_MAX_MS);
     setTimeout(() => this.connect(), wait);
+  }
+
+  /** Periodic JSON keepalive — defeats CF's 100s idle-WS timeout. The DO
+   *  short-circuits messages of type "keepalive" without broadcasting, so
+   *  this costs one billable request every 50s (~52k/month per daemon,
+   *  well under the free-tier 100k/day per worker). */
+  private startKeepalive(): void {
+    this.stopKeepalive();
+    this.keepaliveTimer = setInterval(() => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      try { this.ws.send(JSON.stringify({ type: "keepalive" })); } catch { /* */ }
+    }, KEEPALIVE_INTERVAL_MS);
+    // unref so the timer doesn't pin the event loop open for shutdown
+    this.keepaliveTimer.unref?.();
+  }
+
+  private stopKeepalive(): void {
+    if (this.keepaliveTimer) {
+      clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = null;
+    }
   }
 
   private handleEnvelope(env: Envelope): void {
