@@ -109,7 +109,15 @@ export async function performPairing(
   identity: Identity,
   opts: PerformPairingOpts = {},
 ): Promise<PairResult> {
-  const base = relayUrl.replace(/^https?:/, (m) => (m === "https:" ? "wss:" : "ws:"));
+  // Normalize: strip any trailing path/slash so we never double-append. Old
+  // self-host configs sometimes baked `/v1/daemon` into worker_url; the daemon
+  // tolerated it but the phone naively appended `/v1/phone` yielding the
+  // wrong `/v1/daemon/v1/phone` path → ERR_CONNECTION_REFUSED.
+  const base = relayUrl
+    .replace(/^https?:/, (m) => (m === "https:" ? "wss:" : "ws:"))
+    .replace(/\/+$/, "")
+    .replace(/\/v1\/daemon$/i, "")
+    .replace(/\/v1\/phone$/i, "");
   const wsUrl = `${base}/v1/phone?token=${encodeURIComponent(pairingToken)}`;
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);

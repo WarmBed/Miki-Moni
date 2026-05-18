@@ -244,6 +244,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     const wrapAct: Map<string, string> | undefined = (deps as any).__wrapActivity;
     const wrapMode: Map<string, string> | undefined = (deps as any).__wrapPermissionMode;
     const wrapModelMap: Map<string, string> | undefined = (deps as any).__wrapModel;
+    const wrapEffortMap: Map<string, string> | undefined = (deps as any).__wrapEffort;
     const wrapAskMap: Map<string, { question_id: string; questions: unknown[] }> | undefined = (deps as any).__wrapAsks;
     const list = deps.store.list().map((s) => ({
       ...s,
@@ -251,6 +252,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       activity: s.session_uuid ? wrapAct?.get(s.session_uuid) ?? null : null,
       permission_mode: s.session_uuid ? wrapMode?.get(s.session_uuid) ?? null : null,
       current_model: s.session_uuid ? wrapModelMap?.get(s.session_uuid) ?? null : null,
+      current_effort: s.session_uuid ? wrapEffortMap?.get(s.session_uuid) ?? null : null,
       pending_ask: s.session_uuid ? wrapAskMap?.get(s.session_uuid) ?? null : null,
     }));
     res.json(list);
@@ -592,6 +594,37 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     }
   });
 
+  app.post("/wrap/effort", (req: Request, res: Response) => {
+    // SDK reasoning-effort levels per @anthropic-ai/claude-agent-sdk
+    // (sdk.d.ts:472-480). `xhigh` falls back to high on models that don't
+    // support it; `max` is gated to specific models (Opus 4.6/4.7, Sonnet
+    // 4.6). Empty string / null = "clear runtime override; fall back to
+    // SDK default", same convention as /wrap/model.
+    const uuid = typeof req.body?.session_uuid === "string" ? req.body.session_uuid : null;
+    const effortRaw = req.body?.effort;
+    const effort: string = typeof effortRaw === "string" ? effortRaw : "";
+    const allowed = ["", "low", "medium", "high", "xhigh", "max"];
+    if (!uuid) { res.status(400).json({ error: "missing session_uuid" }); return; }
+    if (!allowed.includes(effort)) {
+      res.status(400).json({ error: "invalid effort", allowed: allowed.filter((x) => x) });
+      return;
+    }
+    const wrapConns: Map<string, import("ws").WebSocket> | undefined = (deps as any).__wrapConnections;
+    const wrapWs = wrapConns?.get(uuid);
+    if (!wrapWs || wrapWs.readyState !== wrapWs.OPEN) {
+      res.status(409).json({ error: "session not wrapped or wrap WS not connected" });
+      return;
+    }
+    try {
+      wrapWs.send(JSON.stringify({ type: "set_effort", effort }));
+      deps.log?.info({ route: "/wrap/effort", session_uuid: uuid, effort }, "pushed set_effort to wrap");
+      res.status(202).json({ ok: true, queued: true, effort });
+    } catch (err) {
+      deps.log?.error({ route: "/wrap/effort", session_uuid: uuid, effort, error: String(err) }, "push failed");
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   app.post("/wrap/permission-mode", (req: Request, res: Response) => {
     const uuid = typeof req.body?.session_uuid === "string" ? req.body.session_uuid : null;
     const mode = typeof req.body?.mode === "string" ? req.body.mode : null;
@@ -779,6 +812,11 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   // map means "wrap didn't pass a model" (same effective state, distinguished
   // only for log clarity).
   const wrapModel = new Map<string, string>();
+  // Active reasoning-effort per wrapped session. Sourced from wrap's
+  // `register` (initial flag) and updated on `effort_changed` (post
+  // applyFlagSettings). Empty string = "explicit SDK default"; absence in the
+  // map = "wrap didn't pass an effort". UI treats both the same.
+  const wrapEffort = new Map<string, string>();
   // Pending "downgrade to stale" timers per uuid. On wrap close we don't
   // immediately mark the session stale (because daemon hot-reload / network
   // blip causes transient closes that wrap auto-reconnects in 3s). Instead
@@ -799,6 +837,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       wrapped: wrapConnections.has(uuid),
       permission_mode: wrapPermissionMode.get(uuid) ?? null,
       current_model: wrapModel.get(uuid) ?? null,
+      current_effort: wrapEffort.get(uuid) ?? null,
     };
     const msg = JSON.stringify({ type: "session_changed", session: enriched });
     for (const client of wss.clients) {
@@ -814,6 +853,10 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     // registeredPermissionMode so bind() can upsert wrapModel once the
     // session_uuid arrives (either at register or via late-bind message).
     let registeredModel: string | null = null;
+    // Initial reasoning-effort declared by wrap.ts at register time. Same
+    // buffering as registeredModel so bind() can populate wrapEffort once
+    // the session_uuid arrives.
+    let registeredEffort: string | null = null;
     // PID reported by wrap.ts at register-time. Buffered here for the
     // late-bind case (`register` arrives with session_uuid:null, then a
     // separate `session_uuid` message lands once SDK init completes).
@@ -831,11 +874,13 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
         wrapConnections.delete(detached);
         wrapPermissionMode.delete(detached);
         wrapModel.delete(detached);
+        wrapEffort.delete(detached);
       }
       registeredUuid = uuid;
       wrapConnections.set(uuid, ws);
       if (registeredPermissionMode) wrapPermissionMode.set(uuid, registeredPermissionMode);
       if (registeredModel !== null) wrapModel.set(uuid, registeredModel);
+      if (registeredEffort !== null) wrapEffort.set(uuid, registeredEffort);
       // Cancel any pending stale-downgrade — we're back online for this uuid.
       const pending = wrapStaleTimers.get(uuid);
       if (pending) { clearTimeout(pending); wrapStaleTimers.delete(uuid); }
@@ -895,6 +940,12 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
         } else if (m.model === null) {
           registeredModel = "";
         }
+        // Effort follows the same null-vs-empty-string convention.
+        if (typeof m.effort === "string") {
+          registeredEffort = m.effort;
+        } else if (m.effort === null) {
+          registeredEffort = "";
+        }
         // Capture node PID so wrap-process registry can tree-kill it on close
         // (Windows wt.exe doesn't propagate window-close to children).
         if (typeof m.pid === "number" && m.pid > 0) registeredPid = m.pid;
@@ -919,6 +970,13 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
         const modelStr: string = typeof m.model === "string" ? m.model : "";
         wrapModel.set(m.session_uuid, modelStr);
         deps.log?.info({ route: "/wrap", session_uuid: m.session_uuid, model: modelStr || "(default)" }, "wrap model changed");
+        rebroadcastSession(m.session_uuid);
+      } else if (m?.type === "effort_changed" && typeof m.session_uuid === "string") {
+        // Wrap confirmed applyFlagSettings({ effortLevel }) resolved. Same
+        // null/empty-string convention as model_changed.
+        const effortStr: string = typeof m.effort === "string" ? m.effort : "";
+        wrapEffort.set(m.session_uuid, effortStr);
+        deps.log?.info({ route: "/wrap", session_uuid: m.session_uuid, effort: effortStr || "(default)" }, "wrap effort changed");
         rebroadcastSession(m.session_uuid);
       } else if (m?.type === "user_message" && typeof m.session_uuid === "string" && typeof m.text === "string") {
         // Optimistic user-text overlay. Wrap sends this the instant the user
@@ -996,6 +1054,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
         wrapActivity.delete(uuid);
         wrapPermissionMode.delete(uuid);
         wrapModel.delete(uuid);
+        wrapEffort.delete(uuid);
         wrapAsks.delete(uuid);
         deps.log?.info({ route: "/wrap", session_uuid: uuid }, "wrap disconnected");
 
@@ -1078,6 +1137,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   (deps as any).__wrapActivity = wrapActivity;
   (deps as any).__wrapPermissionMode = wrapPermissionMode;
   (deps as any).__wrapModel = wrapModel;
+  (deps as any).__wrapEffort = wrapEffort;
   (deps as any).__wrapAsks = wrapAsks;
 
   const registry = new ExtRegistry();
@@ -1161,6 +1221,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       wrapped: wrapConnections.has(uuid),
       permission_mode: wrapPermissionMode.get(uuid) ?? null,
       current_model: wrapModel.get(uuid) ?? null,
+      current_effort: wrapEffort.get(uuid) ?? null,
     };
     const msg = JSON.stringify({ type: "session_changed", session: enriched });
     for (const client of wss.clients) {

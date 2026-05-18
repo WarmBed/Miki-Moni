@@ -312,6 +312,11 @@ async function main(): Promise<void> {
   // echo this back to the daemon so it can populate /sessions for the
   // dashboard chip.
   let currentModel: string | undefined = args.model;
+  // Track active reasoning-effort (low / medium / high / xhigh / max). Updated
+  // via dashboard set_effort → q.applyFlagSettings({ effortLevel }) and echoed
+  // back in `effort_changed` so the daemon can populate /sessions for the
+  // dashboard chip. undefined = SDK default.
+  let currentEffort: string | undefined = undefined;
 
   function connect(): void {
     if (!port) return;
@@ -328,6 +333,8 @@ async function main(): Promise<void> {
         // model is optional; daemon treats null as "SDK default" for chip
         // labelling. Sent at register so reconnects re-seed the daemon map.
         model: currentModel ?? null,
+        // Reasoning-effort, same null/string convention as model.
+        effort: currentEffort ?? null,
       }));
       // If we already had a session_uuid from SDK init (i.e., this is a
       // RECONNECT after init already happened), tell daemon right away.
@@ -394,6 +401,33 @@ async function main(): Promise<void> {
             }
           }).catch((err: unknown) => {
             process.stdout.write(`${yellow(`[wrap] setModel failed: ${(err as Error).message}`)}\n`);
+          });
+        } else if (m?.type === "set_effort") {
+          // Dashboard requested an effort switch. SDK has no setEffort()
+          // standalone; applyFlagSettings is the documented path
+          // (sdk.d.ts:2094-2114). Settings.effortLevel accepts
+          // 'low'|'medium'|'high'|'xhigh' — 'max' may be silently rejected on
+          // unsupported models, which we let the SDK handle (catch logs).
+          // Empty string → null clears the runtime override.
+          const newEffortRaw = m.effort;
+          const newEffort: string | undefined = (typeof newEffortRaw === "string" && newEffortRaw.length > 0)
+            ? newEffortRaw
+            : undefined;
+          const q = currentQ;
+          if (!q) {
+            process.stdout.write(`${yellow(`[wrap] set_effort received but SDK query not ready yet`)}\n`);
+            return;
+          }
+          q.applyFlagSettings({ effortLevel: (newEffort ?? null) as any }).then(() => {
+            currentEffort = newEffort;
+            process.stdout.write(`${cyan(`[hub] effort → ${newEffort ?? "(default)"}`)}\n`);
+            const live = getWs();
+            if (live && live.readyState === live.OPEN && resumeUuid) {
+              try { live.send(JSON.stringify({ type: "effort_changed", session_uuid: resumeUuid, effort: newEffort ?? null })); }
+              catch { /* ignore */ }
+            }
+          }).catch((err: unknown) => {
+            process.stdout.write(`${yellow(`[wrap] applyFlagSettings(effortLevel) failed: ${(err as Error).message}`)}\n`);
           });
         } else if (m?.type === "interrupt") {
           // Dashboard pressed the ⏹ button. Stop whatever the model is doing.

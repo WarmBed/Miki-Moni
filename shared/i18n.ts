@@ -109,6 +109,9 @@ const zhTW: Dict = {
   "model.aliasDesc":            "切到 {id}",
   "model.customPlaceholder":    "claude-opus-4-7-20251122",
   "model.applyCustom":          "套用",
+  "model.effortTitle":          "推理力度 (Effort)",
+  "model.effortDefault":        "依模型預設（不指定 effort）",
+  "model.effortApply":          "切到 {level}",
   "transcript.viewOptions":     "對話檢視選項",
   "transcript.showTool":        "顯示 TOOL",
   "transcript.items10":         "10 條",
@@ -223,6 +226,7 @@ const zhTW: Dict = {
   "session.modalClose":       "關閉 (Esc)",
   "session.claudeWaitingHere":"🔔 Claude 還在等你回答這個 session 的問題",
   "session.showQuestion":     "重新顯示問題",
+  "session.dismissBanner":    "暫時隱藏這個提示",
 
   // permission modes (locked tooltips + menu rows)
   "mode.lockedAcceptTitle": "Auto-accept edits mode：所有 edit/write 直接套用、不再確認。`miki claude --permission-mode acceptEdits` 啟動鎖定。",
@@ -388,6 +392,9 @@ const zhCN: Dict = {
   "model.aliasDesc":            "切到 {id}",
   "model.customPlaceholder":    "claude-opus-4-7-20251122",
   "model.applyCustom":          "套用",
+  "model.effortTitle":          "推理力度 (Effort)",
+  "model.effortDefault":        "依模型默认（不指定 effort）",
+  "model.effortApply":          "切到 {level}",
   "transcript.viewOptions":     "对话检视选项",
   "transcript.showTool":        "显示 TOOL",
   "transcript.items10":         "10 条",
@@ -497,6 +504,7 @@ const zhCN: Dict = {
   "session.modalClose":        "关闭 (Esc)",
   "session.claudeWaitingHere": "🔔 Claude 还在等你回答这个 session 的问题",
   "session.showQuestion":      "重新显示问题",
+  "session.dismissBanner":     "暂时隐藏这个提示",
 
   "mode.lockedAcceptTitle": "Auto-accept edits mode：所有 edit/write 直接套用、不再确认。`miki claude --permission-mode acceptEdits` 启动锁定。",
   "mode.lockedBypassTitle": "Bypass permissions：所有工具都不问就执行。极度危险，仅在 sandbox 使用。`miki claude --bypass-permissions` 启动锁定。",
@@ -657,6 +665,9 @@ const en: Dict = {
   "model.aliasDesc":            "Switch to {id}",
   "model.customPlaceholder":    "claude-opus-4-7-20251122",
   "model.applyCustom":          "Apply",
+  "model.effortTitle":          "Reasoning effort",
+  "model.effortDefault":        "Use the model's default (no effort override)",
+  "model.effortApply":          "Set effort to {level}",
   "transcript.viewOptions":     "Transcript view options",
   "transcript.showTool":        "Show TOOL",
   "transcript.items10":         "10",
@@ -766,6 +777,7 @@ const en: Dict = {
   "session.modalClose":        "Close (Esc)",
   "session.claudeWaitingHere": "🔔 Claude is still waiting for your answer on this session",
   "session.showQuestion":      "Re-show question",
+  "session.dismissBanner":     "Hide this banner",
 
   "mode.lockedAcceptTitle": "Auto-accept edits mode: all edits/writes apply directly, no confirmation. Locked at start via `miki claude --permission-mode acceptEdits`.",
   "mode.lockedBypassTitle": "Bypass permissions: all tools run without asking. Extremely dangerous, sandbox only. Locked at start via `miki claude --bypass-permissions`.",

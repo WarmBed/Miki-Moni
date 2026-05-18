@@ -23,6 +23,9 @@ interface Session {
   // Active SDK model the wrap session is running on. Empty string = SDK
   // default (no --model override). null = not wrapped / unknown.
   current_model?: string | null;
+  // Active reasoning-effort level (low / medium / high / xhigh / max).
+  // Empty string = SDK default. null = not wrapped / unknown.
+  current_effort?: string | null;
   pending_ask?: PendingAsk | null;
 }
 
@@ -968,6 +971,7 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
               </span>
             )}
             <span style={{ color: "var(--fg-subtle)", fontSize: 11, marginLeft: 8 }}>{fmtRelative(s.last_event_at)}</span>
+            {s.wrapped && <ModelChip sessionUuid={s.session_uuid} current={s.current_model} currentEffort={s.current_effort} />}
             {s.wrapped && <PermissionModeChip sessionUuid={s.session_uuid} mode={s.permission_mode ?? "default"} />}
           </>
         )}
@@ -1179,7 +1183,7 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
               </span>
               {s.wrapped && (
                 <>
-                  <ModelChip sessionUuid={s.session_uuid} current={s.current_model} />
+                  <ModelChip sessionUuid={s.session_uuid} current={s.current_model} currentEffort={s.current_effort} />
                   <PermissionModeChip sessionUuid={s.session_uuid} mode={s.permission_mode ?? "default"} />
                 </>
               )}
@@ -1796,9 +1800,25 @@ function modelLabel(current: string | null | undefined): string {
   return current.replace(/^claude-/, "").replace(/-\d{8}$/, "");
 }
 
-function ModelChip({ sessionUuid, current }: { sessionUuid: string | null; current: string | null | undefined }) {
+// SDK reasoning-effort levels (sdk.d.ts:472-480). The empty-string key is the
+// "no override; use SDK default" sentinel — same convention as model="".
+const EFFORT_LEVELS: ReadonlyArray<{ key: string; label: string }> = [
+  { key: "",        label: "default" },
+  { key: "low",     label: "low"     },
+  { key: "medium",  label: "medium"  },
+  { key: "high",    label: "high"    },
+  { key: "xhigh",   label: "xhigh"   },
+  { key: "max",     label: "max"     },
+];
+
+function ModelChip({ sessionUuid, current, currentEffort }: {
+  sessionUuid: string | null;
+  current: string | null | undefined;
+  currentEffort?: string | null;
+}) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
+  const [pendingEffort, setPendingEffort] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [custom, setCustom] = useState("");
   const ref = useRef<HTMLDivElement | null>(null);
@@ -1870,6 +1890,30 @@ function ModelChip({ sessionUuid, current }: { sessionUuid: string | null; curre
       setErr(String(e));
     } finally {
       setPending(null);
+    }
+  }
+
+  // Effort sits in the same popover so the user picks a (model, effort) pair
+  // in one place. SDK silently downgrades unsupported levels (e.g. xhigh on
+  // non-Opus-4.7 falls back to high) — we don't pre-filter; the chip just
+  // shows what the server reports back via `current_effort`.
+  async function pickEffort(level: string) {
+    if (!sessionUuid || pendingEffort !== null) return;
+    setPendingEffort(level); setErr(null);
+    try {
+      const r = await apiFetch("/wrap/effort", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ session_uuid: sessionUuid, effort: level }),
+      });
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        setErr(body?.error ?? `HTTP ${r.status}`);
+      }
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setPendingEffort(null);
     }
   }
 
@@ -1950,6 +1994,29 @@ function ModelChip({ sessionUuid, current }: { sessionUuid: string | null; curre
               disabled={!custom.trim() || pending !== null}
               onClick={(e) => { e.stopPropagation(); if (custom.trim()) void pick(custom.trim()); }}
             >{t("model.applyCustom")}</button>
+          </div>
+          {/* Effort selector — sister of the model list. SDK 'xhigh' falls
+              back to 'high' on models that don't support it; 'max' is
+              model-gated. We don't pre-filter — the daemon round-trip
+              echoes back whatever the SDK accepted. */}
+          <div class="pmode-menu-head" style={{ borderTop: "1px solid var(--border)" }}>{t("model.effortTitle")}</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "6px 10px 10px" }}>
+            {EFFORT_LEVELS.map((lvl) => {
+              const cur = currentEffort ?? "";
+              const isCurrent = cur === lvl.key;
+              const isPending = pendingEffort === lvl.key;
+              return (
+                <button
+                  key={lvl.key || "default"}
+                  class={"pmode-chip " + (isCurrent ? "pmode-chip-on" : "pmode-chip-neutral")}
+                  style={{ fontSize: 11, padding: "2px 8px", opacity: isPending ? 0.5 : 1 }}
+                  onClick={(e) => { e.stopPropagation(); void pickEffort(lvl.key); }}
+                  onMouseDown={stop}
+                  disabled={pendingEffort !== null}
+                  title={lvl.key ? t("model.effortApply", { level: lvl.label }) : t("model.effortDefault")}
+                >{lvl.label}{isCurrent ? " ✓" : ""}</button>
+              );
+            })}
           </div>
           {err && <div class="pmode-err">{err}</div>}
         </div>
@@ -2409,7 +2476,7 @@ function NewCliButton({ recentCwds }: { recentCwds: string[] }) {
 
 // ── Grid overview cell ────────────────────────────────────────────────────
 
-function Cell({ s, preview, activity, streamingText, userOverlayText, pendingAsk, askDismissed, onReopenAsk, clientType, onSetClientType, onQuickSend, onOpenModal }: {
+function Cell({ s, preview, activity, streamingText, userOverlayText, pendingAsk, askDismissed, onReopenAsk, bannerHidden, onHideBanner, clientType, onSetClientType, onQuickSend, onOpenModal }: {
   s: Session;
   preview?: SessionPreview;
   activity?: string;
@@ -2418,6 +2485,8 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, pendingAsk
   pendingAsk?: PendingAsk;
   askDismissed?: boolean;
   onReopenAsk?: (uuid: string) => void;
+  bannerHidden?: boolean;
+  onHideBanner?: (uuid: string) => void;
   clientType: ClientType;
   onSetClientType: (uuid: string, type: ClientType) => void;
   onQuickSend: (s: Session, x: number, y: number) => void;
@@ -2534,18 +2603,48 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, pendingAsk
 
   return (
     <div
-      class={"cell cell-clickable" + (flashing ? " cell-flash" : "") + (updateFlash ? " cell-flash-update" : "") + (pendingAsk && askDismissed ? " cell-ask-pending" : "")}
+      class={"cell cell-clickable" + (flashing ? " cell-flash" : "") + (updateFlash ? " cell-flash-update" : "") + (pendingAsk && askDismissed && !bannerHidden ? " cell-ask-pending" : "")}
       style={{ borderTop: `3px solid ${STATUS_BORDER_COLOR[s.status]}` }}
-      onClick={() => onOpenModal(s)}
+      onClick={(e) => {
+        // Safety net: chip popovers (PermissionMode / Model) render with
+        // position:fixed. The real fix lives in CSS — `.cell:active` used
+        // to apply `transform: scale(...)` which turned the cell into a
+        // containing block for the fixed-positioned menu, causing the
+        // menu to reanchor mid-press and the mouseup to land on the cell
+        // (opening the big-card modal instead of selecting a mode). Even
+        // with that fixed, keep this guard so any future fixed-popover
+        // child of a cell can't accidentally trigger the modal.
+        const tgt = e.target as HTMLElement | null;
+        if (tgt?.closest?.(".pmode-chip-wrap, .pmode-menu")) return;
+        onOpenModal(s);
+      }}
     >
       <div class="cell-head">
         <span class="cell-title" title={title}>{title}</span>
-        {pendingAsk && askDismissed && (
-          <button
-            class="cell-ask-bell"
-            onClick={(e) => { e.stopPropagation(); if (s.session_uuid && onReopenAsk) onReopenAsk(s.session_uuid); }}
-            title={t("session.waitingTooltip")}
-          >{t("session.waitingBadge")}</button>
+        {pendingAsk && askDismissed && !bannerHidden && (
+          <>
+            <button
+              class="cell-ask-bell"
+              onClick={(e) => { e.stopPropagation(); if (s.session_uuid && onReopenAsk) onReopenAsk(s.session_uuid); }}
+              title={t("session.waitingTooltip")}
+            >{t("session.waitingBadge")}</button>
+            {/* Tiny × to silence just this session's bell + red flash. Same
+             * semantics as the modal banner dismiss: a NEW ask_question
+             * with a different question_id wipes hiddenAskBanners so the
+             * bell nags again. Stops propagation so it doesn't bubble to
+             * the cell's onClick (which would open the big card). */}
+            <button
+              class="cell-ask-bell-dismiss"
+              onClick={(e) => { e.stopPropagation(); if (s.session_uuid && onHideBanner) onHideBanner(s.session_uuid); }}
+              title={t("session.dismissBanner")}
+              aria-label={t("session.dismissBanner")}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="6" y1="6" x2="18" y2="18"/>
+                <line x1="18" y1="6" x2="6" y2="18"/>
+              </svg>
+            </button>
+          </>
         )}
         {activity && (
           <span class="cell-activity" title={t("focus.wrapperRunning", { activity })}>
@@ -2620,6 +2719,7 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, pendingAsk
         <span class="cell-status">{statusLabel(s.status)}</span>
         <span>·</span>
         <span>{fmtRelative(s.last_event_at)}</span>
+        {s.wrapped && <ModelChip sessionUuid={s.session_uuid} current={s.current_model} currentEffort={s.current_effort} />}
         {s.wrapped && <PermissionModeChip sessionUuid={s.session_uuid} mode={s.permission_mode ?? "default"} />}
         <button
           class="cell-send-btn icon-btn"
@@ -2634,7 +2734,7 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, pendingAsk
 
 // ── Grid overview (sessions grouped by cwd) ──────────────────────────
 
-function GridOverview({ sessions, sortMode, previews, activities, streaming, userOverlay, pendingAsks, dismissedAsks, onReopenAsk, getClientType, onSetClientType, onQuickSend, onOpenModal }: {
+function GridOverview({ sessions, sortMode, previews, activities, streaming, userOverlay, pendingAsks, dismissedAsks, onReopenAsk, hiddenBanners, onHideBanner, getClientType, onSetClientType, onQuickSend, onOpenModal }: {
   sessions: Session[];
   sortMode: SortMode;
   previews: Record<string, SessionPreview>;
@@ -2644,6 +2744,8 @@ function GridOverview({ sessions, sortMode, previews, activities, streaming, use
   pendingAsks: Record<string, PendingAsk>;
   dismissedAsks: Set<string>;
   onReopenAsk: (uuid: string) => void;
+  hiddenBanners: Set<string>;
+  onHideBanner: (uuid: string) => void;
   getClientType: (uuid: string | null | undefined) => ClientType;
   onSetClientType: (uuid: string, type: ClientType) => void;
   onQuickSend: (s: Session, x: number, y: number) => void;
@@ -2674,6 +2776,8 @@ function GridOverview({ sessions, sortMode, previews, activities, streaming, use
           pendingAsk={s.session_uuid ? pendingAsks[s.session_uuid] : undefined}
           askDismissed={s.session_uuid ? dismissedAsks.has(s.session_uuid) : false}
           onReopenAsk={onReopenAsk}
+          bannerHidden={s.session_uuid ? hiddenBanners.has(s.session_uuid) : false}
+          onHideBanner={onHideBanner}
           clientType={getClientType(s.session_uuid)}
           onSetClientType={onSetClientType}
           onQuickSend={onQuickSend}
@@ -2916,7 +3020,7 @@ function ActivityLog({ entries, onClear }: { entries: LogEntry[]; onClear: () =>
 // composer) in a centered modal. Closes on backdrop click, Esc key, or after
 // a successful send (via Card's onAfterSend hook).
 
-function CellModal({ s, onClose, clientType, onSetClientType, onFocus, onSend, sendKey, pendingAsk, askDismissed, onReopenAsk, activity, transcript, transcriptLoading, transcriptError, transcriptLimit, onSetTranscriptLimit, onReloadTranscript, showTools, onSetShowTools, streamingText, streamingStartTs, userOverlayText, userOverlayTs }: {
+function CellModal({ s, onClose, clientType, onSetClientType, onFocus, onSend, sendKey, pendingAsk, askDismissed, onReopenAsk, bannerHidden, onHideBanner, activity, transcript, transcriptLoading, transcriptError, transcriptLimit, onSetTranscriptLimit, onReloadTranscript, showTools, onSetShowTools, streamingText, streamingStartTs, userOverlayText, userOverlayTs }: {
   s: Session;
   onClose: () => void;
   clientType: ClientType;
@@ -2927,6 +3031,8 @@ function CellModal({ s, onClose, clientType, onSetClientType, onFocus, onSend, s
   pendingAsk?: PendingAsk;
   askDismissed?: boolean;
   onReopenAsk?: (uuid: string) => void;
+  bannerHidden?: boolean;
+  onHideBanner?: (uuid: string) => void;
   activity?: string;
   transcript: TranscriptResp | null;
   transcriptLoading: boolean;
@@ -3096,14 +3202,36 @@ function CellModal({ s, onClose, clientType, onSetClientType, onFocus, onSend, s
         onClick={(e) => e.stopPropagation()}
       >
         <button class="cell-modal-close" onClick={onClose} title={t("session.modalClose")}>×</button>
-        {pendingAsk && askDismissed && (
+        {pendingAsk && askDismissed && !bannerHidden && (
           <div class="cell-modal-ask-banner">
             <span>{t("session.claudeWaitingHere")}</span>
+            {/* Re-open the AskQuestionModal. SVG eye icon, not a labelled
+                button — the previous "重新顯示問題" text button collided
+                with the modal's × close button (top:8 right:8). */}
             <button
-              class="btn-primary"
-              style={{ height: 26, padding: "0 10px", fontSize: 12 }}
+              class="cell-modal-ask-banner-btn"
               onClick={() => { if (s.session_uuid && onReopenAsk) onReopenAsk(s.session_uuid); }}
-            >{t("session.showQuestion")}</button>
+              title={t("session.showQuestion")}
+              aria-label={t("session.showQuestion")}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+            {/* Hide just this banner — the small-card 🔔 still nags so
+                the user doesn't lose track of the unanswered question. */}
+            <button
+              class="cell-modal-ask-banner-btn cell-modal-ask-banner-dismiss"
+              onClick={() => { if (s.session_uuid && onHideBanner) onHideBanner(s.session_uuid); }}
+              title={t("session.dismissBanner")}
+              aria-label={t("session.dismissBanner")}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="6" y1="6" x2="18" y2="18"/>
+                <line x1="18" y1="6" x2="6" y2="18"/>
+              </svg>
+            </button>
           </div>
         )}
         <Card
@@ -3181,6 +3309,35 @@ function loadThemeFromLS(): Theme {
 }
 function saveThemeToLS(v: Theme) {
   try { localStorage.setItem(THEME_LS_KEY, v); } catch { /* quota / disabled */ }
+}
+
+// AskUserQuestion dismiss state — persisted by question_id (NOT session
+// uuid) so that:
+//   (a) F5 → the user's "I already X'd this" decision survives. Without
+//       this, the daemon resends `ask_question` on WS reconnect and the
+//       modal pops back up immediately, ignoring the user's dismiss.
+//   (b) A new question (different question_id) naturally falls outside
+//       the persisted set → modal/banner show again — no manual cleanup
+//       needed when claude moves on.
+// Bounded to MAX_TRACKED so the LS entry can't grow unboundedly across
+// long sessions; oldest entries roll off FIFO-ish (we just slice).
+const ASK_DISMISSED_LS_KEY = "miki-moni:ask-dismissed-qids";
+const ASK_HIDDEN_BANNER_LS_KEY = "miki-moni:ask-hidden-banner-qids";
+const MAX_TRACKED_ASK_QIDS = 200;
+function loadQidSetFromLS(key: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? new Set(arr.filter((s) => typeof s === "string")) : new Set();
+  } catch { return new Set(); }
+}
+function saveQidSetToLS(key: string, s: Set<string>) {
+  try {
+    const arr = Array.from(s);
+    const bounded = arr.length > MAX_TRACKED_ASK_QIDS ? arr.slice(-MAX_TRACKED_ASK_QIDS) : arr;
+    localStorage.setItem(key, JSON.stringify(bounded));
+  } catch { /* quota / disabled */ }
 }
 function resolveTheme(t: Theme): "light" | "dark" {
   if (t === "system") {
@@ -3325,7 +3482,17 @@ function App() {
   const [asks, setAsks] = useState<Record<string, PendingAsk>>({});
   // Asks the user clicked-away from (modal closed but question still unanswered).
   // Card flashes red + shows 🔔 button to re-open. Submitted / wrap-side answered clears.
+  // Keyed by session uuid; the persisted counterpart below is keyed by question_id
+  // so F5 / WS reconnect restores the user's "I dismissed this" decision without
+  // resurrecting it when a NEW question (different qid) arrives.
   const [dismissedAsks, setDismissedAsks] = useState<Set<string>>(new Set());
+  const [dismissedAskQids, setDismissedAskQids] = useState<Set<string>>(() => loadQidSetFromLS(ASK_DISMISSED_LS_KEY));
+  // Sessions whose "Claude is waiting" banner (big-card banner + small-card 🔔
+  // + red flash) the user explicitly X'd. Separate from dismissedAsks so we
+  // could decouple them later if needed. Auto-clears on new question (in
+  // ask_question handler) or on answer (ask_question_done).
+  const [hiddenAskBanners, setHiddenAskBanners] = useState<Set<string>>(new Set());
+  const [hiddenAskBannerQids, setHiddenAskBannerQids] = useState<Set<string>>(() => loadQidSetFromLS(ASK_HIDDEN_BANNER_LS_KEY));
   const [wsConn, setWsConn] = useState<"connecting" | "open" | "closed">("connecting");
   const [log, setLog] = useState<LogEntry[]>([]);
   const [clientTypes, setClientTypesState] = useState<Record<string, ClientType>>(() => loadClientTypesFromLS());
@@ -3407,6 +3574,46 @@ function App() {
     setTranscript(null);
     setTranscriptError(null);
     transcriptMetaRef.current = null;
+  }
+
+  // Shared helpers for ask-dismiss / banner-hide / re-open. They mutate the
+  // session-uuid-keyed in-memory sets AND the question-id-keyed persisted
+  // sets so the user's decision survives F5 / WS reconnect. The qid lookup
+  // uses functional setState on `asks` to avoid stale closures.
+  function dismissAskForSession(uuid: string) {
+    setDismissedAsks((prev) => { if (prev.has(uuid)) return prev; const next = new Set(prev); next.add(uuid); return next; });
+    setAsks((prev) => {
+      const qid = prev[uuid]?.question_id;
+      if (qid) {
+        setDismissedAskQids((q) => { if (q.has(qid)) return q; const next = new Set(q); next.add(qid); saveQidSetToLS(ASK_DISMISSED_LS_KEY, next); return next; });
+      }
+      return prev;
+    });
+  }
+  function hideBannerForSession(uuid: string) {
+    setHiddenAskBanners((prev) => { if (prev.has(uuid)) return prev; const next = new Set(prev); next.add(uuid); return next; });
+    setAsks((prev) => {
+      const qid = prev[uuid]?.question_id;
+      if (qid) {
+        setHiddenAskBannerQids((q) => { if (q.has(qid)) return q; const next = new Set(q); next.add(qid); saveQidSetToLS(ASK_HIDDEN_BANNER_LS_KEY, next); return next; });
+      }
+      return prev;
+    });
+  }
+  function reopenAskForSession(uuid: string) {
+    setDismissedAsks((prev) => { if (!prev.has(uuid)) return prev; const next = new Set(prev); next.delete(uuid); return next; });
+    setHiddenAskBanners((prev) => { if (!prev.has(uuid)) return prev; const next = new Set(prev); next.delete(uuid); return next; });
+    setAsks((prev) => {
+      const qid = prev[uuid]?.question_id;
+      if (qid) {
+        // Clear persisted "dismissed" + "hidden" for this qid — user is
+        // engaging with it again, so a future F5 should let the modal
+        // auto-open if it's still unanswered.
+        setDismissedAskQids((q) => { if (!q.has(qid)) return q; const next = new Set(q); next.delete(qid); saveQidSetToLS(ASK_DISMISSED_LS_KEY, next); return next; });
+        setHiddenAskBannerQids((q) => { if (!q.has(qid)) return q; const next = new Set(q); next.delete(qid); saveQidSetToLS(ASK_HIDDEN_BANNER_LS_KEY, next); return next; });
+      }
+      return prev;
+    });
   }
 
   // Keep refs in sync with state so the WS handler and 2s polling tick
@@ -3697,12 +3904,60 @@ function App() {
         }
       } else if (msg.type === "ask_question") {
         const uuid = msg.session_uuid as string;
-        const ask: PendingAsk = { question_id: msg.question_id, questions: msg.questions };
-        setAsks((prev) => ({ ...prev, [uuid]: ask }));
+        const newQid = msg.question_id as string;
+        const ask: PendingAsk = { question_id: newQid, questions: msg.questions };
+        // Snapshot the persisted qid sets via setState callbacks (avoid
+        // racing with concurrent updates).
+        let alreadyDismissed = false;
+        let alreadyHidden = false;
+        setDismissedAskQids((qs) => { alreadyDismissed = qs.has(newQid); return qs; });
+        setHiddenAskBannerQids((qs) => { alreadyHidden = qs.has(newQid); return qs; });
+        setAsks((prev) => {
+          // qid changed → clear any stale per-session flags carried over
+          // from the previous question so the new one is actually visible.
+          const existing = prev[uuid];
+          const qidChanged = !existing || existing.question_id !== newQid;
+          if (qidChanged) {
+            setDismissedAsks((d) => {
+              const has = d.has(uuid);
+              if (alreadyDismissed) {
+                // F5 / WS reconnect: persisted set says user X'd this qid
+                // before → keep dismissedAsks set for this session.
+                if (has) return d;
+                const n = new Set(d); n.add(uuid); return n;
+              }
+              if (!has) return d;
+              const n = new Set(d); n.delete(uuid); return n;
+            });
+            setHiddenAskBanners((h) => {
+              const has = h.has(uuid);
+              if (alreadyHidden) {
+                if (has) return h;
+                const n = new Set(h); n.add(uuid); return n;
+              }
+              if (!has) return h;
+              const n = new Set(h); n.delete(uuid); return n;
+            });
+          }
+          return { ...prev, [uuid]: ask };
+        });
       } else if (msg.type === "ask_question_done") {
         const uuid = msg.session_uuid as string;
-        setAsks((prev) => { const next = { ...prev }; delete next[uuid]; return next; });
-        setDismissedAsks((prev) => { const next = new Set(prev); next.delete(uuid); return next; });
+        // The question for `uuid` has been answered/cancelled wrap-side.
+        // Forget every trace of it (in-memory + persisted) so a future
+        // re-emission of the same qid (defensive) doesn't auto-dismiss it.
+        let doneQid: string | null = null;
+        setAsks((prev) => {
+          doneQid = prev[uuid]?.question_id ?? null;
+          const next = { ...prev }; delete next[uuid]; return next;
+        });
+        setDismissedAsks((prev) => { if (!prev.has(uuid)) return prev; const next = new Set(prev); next.delete(uuid); return next; });
+        setHiddenAskBanners((prev) => { if (!prev.has(uuid)) return prev; const next = new Set(prev); next.delete(uuid); return next; });
+        if (doneQid) {
+          const qid = doneQid;
+          setDismissedAskQids((prev) => { if (!prev.has(qid)) return prev; const next = new Set(prev); next.delete(qid); saveQidSetToLS(ASK_DISMISSED_LS_KEY, next); return next; });
+          setHiddenAskBannerQids((prev) => { if (!prev.has(qid)) return prev; const next = new Set(prev); next.delete(qid); saveQidSetToLS(ASK_HIDDEN_BANNER_LS_KEY, next); return next; });
+        }
       }
     }
     connectWs();
@@ -4000,7 +4255,9 @@ function App() {
           userOverlay={userOverlay}
           pendingAsks={asks}
           dismissedAsks={dismissedAsks}
-          onReopenAsk={(uuid) => setDismissedAsks((prev) => { const next = new Set(prev); next.delete(uuid); return next; })}
+          onReopenAsk={reopenAskForSession}
+          hiddenBanners={hiddenAskBanners}
+          onHideBanner={hideBannerForSession}
           getClientType={getClientType}
           onSetClientType={setClientType}
           onQuickSend={openQuickSend}
@@ -4047,7 +4304,9 @@ function App() {
           sendKey={sendKey}
           pendingAsk={modalFor.session_uuid ? asks[modalFor.session_uuid] : undefined}
           askDismissed={modalFor.session_uuid ? dismissedAsks.has(modalFor.session_uuid) : false}
-          onReopenAsk={(uuid) => setDismissedAsks((prev) => { const next = new Set(prev); next.delete(uuid); return next; })}
+          onReopenAsk={reopenAskForSession}
+          bannerHidden={modalFor.session_uuid ? hiddenAskBanners.has(modalFor.session_uuid) : false}
+          onHideBanner={hideBannerForSession}
           activity={modalFor.session_uuid ? activities[modalFor.session_uuid] : undefined}
           transcript={transcript}
           transcriptLoading={transcriptLoading}
@@ -4076,13 +4335,21 @@ function App() {
             sessionUuid={askUuid}
             ask={ask}
             onSubmitted={() => {
+              const qid = ask.question_id;
               setAsks((prev) => { const next = { ...prev }; delete next[askUuid]; return next; });
               setDismissedAsks((prev) => { const next = new Set(prev); next.delete(askUuid); return next; });
+              setHiddenAskBanners((prev) => { if (!prev.has(askUuid)) return prev; const next = new Set(prev); next.delete(askUuid); return next; });
+              // Clear persisted qid flags — the answered question shouldn't
+              // sit in LS forever (bounded but still wasted).
+              setDismissedAskQids((prev) => { if (!prev.has(qid)) return prev; const next = new Set(prev); next.delete(qid); saveQidSetToLS(ASK_DISMISSED_LS_KEY, next); return next; });
+              setHiddenAskBannerQids((prev) => { if (!prev.has(qid)) return prev; const next = new Set(prev); next.delete(qid); saveQidSetToLS(ASK_HIDDEN_BANNER_LS_KEY, next); return next; });
               addLog("info", `ask answered`, { uuid: askUuid.slice(0, 8), project: s?.project_name });
             }}
             onDismiss={() => {
-              // Modal closed but question still pending — flag it so card pulses red + shows 🔔.
-              setDismissedAsks((prev) => { const next = new Set(prev); next.add(askUuid); return next; });
+              // Modal closed but question still pending — flag it so card
+              // pulses red + shows 🔔, and persist by question_id so F5 /
+              // WS reconnect doesn't resurrect the modal.
+              dismissAskForSession(askUuid);
             }}
           />
         );

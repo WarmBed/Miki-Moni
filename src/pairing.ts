@@ -42,6 +42,24 @@ export interface PairingQrInput {
  *  Config.remote.phone_pwa_url + pass through the input. */
 export const PHONE_PWA_URL = "https://miki-moni.pages.dev/";
 
+/** Normalize a worker_url for embedding in the pair QR.
+ *
+ *  Some configs (e.g. legacy local-relay setups, self-host wizards) store
+ *  worker_url with the daemon path baked in: `ws://host:port/v1/daemon`.
+ *  That works for the daemon's relay-client (which knows to detect the
+ *  `/v1/` suffix), but the phone client just appends `/v1/phone` to the
+ *  embedded `r=` value — yielding `/v1/daemon/v1/phone`, a 404.
+ *
+ *  Strip the trailing `/v1/daemon` (and a trailing slash) so the QR carries
+ *  a clean BASE url that downstream consumers can safely append paths to.
+ */
+function normalizeWorkerBaseForQr(workerUrl: string): string {
+  return workerUrl
+    .replace(/\/+$/, "")              // drop trailing slashes
+    .replace(/\/v1\/daemon$/i, "")    // drop the daemon endpoint suffix
+    .replace(/\/v1\/phone$/i, "");    // (defensive — also strip if someone mistakenly stored phone path)
+}
+
 /** HTTPS URL with token + relay + daemon pubkey in the URL fragment.
  *
  *  Including `&k=<daemon_x25519_pubkey_b64>` closes the relay-MITM hole:
@@ -58,9 +76,10 @@ export const PHONE_PWA_URL = "https://miki-moni.pages.dev/";
  *  use with a console warning. The fix is forward-only.
  */
 export function pairingQrPayload(input: PairingQrInput): string {
+  const base_url = normalizeWorkerBaseForQr(input.worker_url);
   const fragment =
     `t=${input.pairing_token}` +
-    `&r=${encodeURIComponent(input.worker_url)}` +
+    `&r=${encodeURIComponent(base_url)}` +
     `&k=${encodeURIComponent(input.daemon_pubkey)}`;
   const base = input.phone_pwa_url ?? PHONE_PWA_URL;
   return `${base}#${fragment}`;
