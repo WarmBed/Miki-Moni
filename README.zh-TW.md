@@ -36,7 +36,6 @@ miki start
 
 首次啟動跑 wizard：選語言、選 relay 模式（hosted / self-host / local-only）、印永久配對 QR：
 
-<!-- TODO(screenshot): wizard output with QR -->
 <p align="center">
   <img src="docs/images/cli-banner.png" width="520" alt="miki start 印 QR + URL + 16 碼">
 </p>

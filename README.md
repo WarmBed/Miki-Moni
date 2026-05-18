@@ -36,7 +36,6 @@ miki start
 
 First run launches a wizard that asks for language, relay mode (hosted / self-host / local-only), and prints a permanent pairing QR:
 
-<!-- TODO(screenshot): wizard output with QR -->
 <p align="center">
   <img src="docs/images/cli-banner.png" width="520" alt="miki start prints QR + URL + 16-char code">
 </p>
