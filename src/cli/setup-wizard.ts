@@ -43,17 +43,14 @@ export interface SetupWizardOpts {
 
 export async function runSetupWizard(cfg: Config, opts: SetupWizardOpts = {}): Promise<Config> {
   // Step 0: pick UI language (English / Traditional / Simplified Chinese)
-  // BEFORE anything else, so subsequent prompts speak the user's language.
-  // Respects cfg.locale if already set (e.g. re-running `miki setup`).
+  // ALWAYS asked first — even on re-running `miki setup`, the user might
+  // want to switch. cfg.locale (if present) becomes the default so existing
+  // users can just hit Enter to keep it.
   let cfgWithLocale = cfg;
   if (!opts.forceChoice) {
-    const existing = cfg.locale;
-    if (existing) setLocale(existing);
-    else {
-      const lang = await pickLocale();
-      setLocale(lang);
-      cfgWithLocale = { ...cfg, locale: lang };
-    }
+    const lang = await pickLocale(cfg.locale);
+    setLocale(lang);
+    if (lang !== cfg.locale) cfgWithLocale = { ...cfg, locale: lang };
   }
 
   const choice = opts.forceChoice ?? await pickChoice();
@@ -77,15 +74,17 @@ export async function shouldRunWizard(cfg: Config): Promise<boolean> {
   return true;
 }
 
-async function pickLocale(): Promise<Locale> {
-  // Language picker shown in English-only since user hasn't told us yet.
+async function pickLocale(current?: Locale): Promise<Locale> {
+  // Tri-lingual banner — at this point we don't know which language the user
+  // reads so all three are shown side by side. Default falls back to the
+  // existing config locale (re-running `miki setup`) or "en" on first run.
   console.log("");
   console.log("✨ Welcome to miki-moni! / 歡迎 / 欢迎");
   console.log("");
   return await select<Locale>({
     message: "Language / 語言 / 语言：",
     choices: LOCALE_CHOICES.map((c) => ({ name: c.name, value: c.value })),
-    default: "en",
+    default: current ?? "en",
   });
 }
 
