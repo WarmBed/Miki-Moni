@@ -650,6 +650,11 @@ function TurnView({ turn }: { turn: TranscriptTurn }) {
   const isUser = turn.role === "user" && !turn.tool_result;
   const isSystem = turn.role === "system";
   const isTool = !!(turn.tool_use || turn.tool_result);
+  // Streaming turns are synthesised by assembleRenderTurns from the live
+  // WS assistant_delta_* buffer (see web/lib/transcript-assembly.ts). The
+  // raw_type tag is the only signal we get here — use it to mirror the
+  // small-cell "streaming…" + ▌ cue inside the big-card bubble.
+  const isStreaming = turn.raw_type === "synthetic-streaming";
   const roleLabel = isSystem ? "system" : isUser ? "user" : "claude";
   // Tool turns: dim role color (de-emphasized) since the tool box is the main signal.
   const roleColor = isTool
@@ -671,7 +676,9 @@ function TurnView({ turn }: { turn: TranscriptTurn }) {
       <div class={`turn-bubble ${bgClass}${isTool ? " turn-bubble-tool" : ""}`}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: headerMb, flexWrap: "wrap" }}>
           <span style={{ color: roleColor, fontWeight: 600, fontSize: headerFontSize }}>{roleLabel}</span>
-          <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>{fmtDateTime(turn.ts)}</span>
+          {isStreaming
+            ? <span style={{ color: "var(--pass)", fontSize: 10 }}>streaming…</span>
+            : <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>{fmtDateTime(turn.ts)}</span>}
           {turn.tool_use && (
             <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>· 🔧 {turn.tool_use.name}</span>
           )}
@@ -680,6 +687,12 @@ function TurnView({ turn }: { turn: TranscriptTurn }) {
           )}
         </div>
         {turn.text && <MD text={turn.text} />}
+        {/* Trailing blink cursor for the live-streaming bubble. Lives outside
+         * <MD> because markdown output can end with a block-level element
+         * (paragraph / list / code fence) — making it a sibling guarantees
+         * a visible cue even when CSS would otherwise put it on its own
+         * line. Matches the small-cell `▌` so the two views feel identical. */}
+        {isStreaming && <span class="streaming-cursor" aria-hidden="true">▌</span>}
         {turn.images && turn.images.length > 0 && (
           <div style={{ marginTop: turn.text ? 8 : 0 }}>
             {/* Text label first — guaranteed visible even if img tag fails
@@ -1811,6 +1824,165 @@ const EFFORT_LEVELS: ReadonlyArray<{ key: string; label: string }> = [
   { key: "max",     label: "max"     },
 ];
 
+// VSCode-style discrete slider over EFFORT_LEVELS. Click any dot to jump,
+// or grab the indicator and drag — release fires onPick with the snapped
+// level's key. While dragging we update a local `dragIdx` so the indicator
+// follows the pointer live; the actual /wrap/effort POST only fires on
+// pointerup to avoid flooding the daemon with intermediate values.
+//
+// Pointer events (not separate mouse + touch) cover desktop + phone with
+// one code path; setPointerCapture keeps the drag glued to this element
+// even if the pointer slides outside the popover.
+function EffortSlider({
+  currentEffort, pending, onPick, title, stopPropagation,
+}: {
+  currentEffort: string;
+  pending: boolean;
+  onPick: (key: string) => void;
+  title: string;
+  stopPropagation: (e: { stopPropagation: () => void }) => void;
+}) {
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+
+  const curIdx = Math.max(0, EFFORT_LEVELS.findIndex((l) => l.key === currentEffort));
+  const displayIdx = dragIdx !== null ? dragIdx : curIdx;
+  const displayLabel = EFFORT_LEVELS[displayIdx]?.label ?? "default";
+
+  function clientXToIdx(clientX: number): number {
+    const el = trackRef.current;
+    if (!el) return displayIdx;
+    const r = el.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+    return Math.round(ratio * (EFFORT_LEVELS.length - 1));
+  }
+
+  function onPointerDown(e: PointerEvent) {
+    if (pending) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    setDragIdx(clientXToIdx(e.clientX));
+  }
+  function onPointerMove(e: PointerEvent) {
+    if (dragIdx === null) return;
+    setDragIdx(clientXToIdx(e.clientX));
+  }
+  function onPointerUp(e: PointerEvent) {
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* */ }
+    if (dragIdx === null) return;
+    const finalIdx = clientXToIdx(e.clientX);
+    setDragIdx(null);
+    const picked = EFFORT_LEVELS[finalIdx];
+    if (picked && picked.key !== currentEffort) onPick(picked.key);
+  }
+
+  return (
+    <div onClick={stopPropagation} onMouseDown={stopPropagation}>
+      <div style={{
+        padding: "8px 10px 4px",
+        borderTop: "1px solid var(--border)",
+        display: "flex",
+        alignItems: "baseline",
+        gap: 6,
+        fontSize: 10,
+        fontWeight: 600,
+        color: "var(--fg-subtle)",
+        textTransform: "uppercase",
+        letterSpacing: "0.06em",
+      }}>
+        <span>{title}</span>
+        <span style={{ textTransform: "none", letterSpacing: 0, fontWeight: 500, color: "var(--fg)" }}>
+          ({displayLabel})
+        </span>
+      </div>
+      <div
+        ref={trackRef}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        style={{
+          position: "relative",
+          margin: "2px 14px 4px",
+          height: 20,
+          cursor: pending ? "wait" : "pointer",
+          opacity: pending ? 0.5 : 1,
+          touchAction: "none",
+          userSelect: "none",
+        }}
+      >
+        {/* Track line behind the dots */}
+        <div style={{
+          position: "absolute",
+          top: "50%",
+          left: 0,
+          right: 0,
+          height: 2,
+          background: "var(--border)",
+          borderRadius: 1,
+          transform: "translateY(-50%)",
+        }} />
+        {/* Filled portion left of the indicator */}
+        <div style={{
+          position: "absolute",
+          top: "50%",
+          left: 0,
+          width: `${(displayIdx / (EFFORT_LEVELS.length - 1)) * 100}%`,
+          height: 2,
+          background: "var(--accent, #4f6dff)",
+          borderRadius: 1,
+          transform: "translateY(-50%)",
+          transition: dragIdx === null ? "width 0.12s ease-out" : "none",
+        }} />
+        {/* Dots */}
+        {EFFORT_LEVELS.map((lvl, i) => {
+          const isActive = i === displayIdx;
+          return (
+            <span
+              key={lvl.key || "default"}
+              title={lvl.label}
+              style={{
+                position: "absolute",
+                top: "50%",
+                left: `${(i / (EFFORT_LEVELS.length - 1)) * 100}%`,
+                transform: "translate(-50%, -50%)",
+                width: isActive ? 10 : 6,
+                height: isActive ? 10 : 6,
+                borderRadius: "50%",
+                background: i <= displayIdx ? "var(--accent, #4f6dff)" : "var(--bg-elevated, #fff)",
+                border: i <= displayIdx ? "none" : "1.5px solid var(--border)",
+                boxShadow: isActive ? "0 0 0 2px var(--bg-elevated, #fff), 0 1px 3px rgba(0,0,0,0.18)" : "none",
+                transition: dragIdx === null ? "all 0.12s ease-out" : "none",
+                pointerEvents: "none",
+              }}
+            />
+          );
+        })}
+      </div>
+      {/* Tick labels — half the size of body text, neutral colour. */}
+      <div style={{
+        position: "relative",
+        margin: "0 8px 8px",
+        height: 12,
+        fontSize: 9,
+        color: "var(--fg-subtle)",
+        userSelect: "none",
+      }}>
+        {EFFORT_LEVELS.map((lvl, i) => (
+          <span
+            key={lvl.key || "default"}
+            style={{
+              position: "absolute",
+              left: `${(i / (EFFORT_LEVELS.length - 1)) * 100}%`,
+              transform: "translateX(-50%)",
+              whiteSpace: "nowrap",
+            }}
+          >{lvl.label}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ModelChip({ sessionUuid, current, currentEffort }: {
   sessionUuid: string | null;
   current: string | null | undefined;
@@ -1995,29 +2167,19 @@ function ModelChip({ sessionUuid, current, currentEffort }: {
               onClick={(e) => { e.stopPropagation(); if (custom.trim()) void pick(custom.trim()); }}
             >{t("model.applyCustom")}</button>
           </div>
-          {/* Effort selector — sister of the model list. SDK 'xhigh' falls
-              back to 'high' on models that don't support it; 'max' is
-              model-gated. We don't pre-filter — the daemon round-trip
-              echoes back whatever the SDK accepted. */}
-          <div class="pmode-menu-head" style={{ borderTop: "1px solid var(--border)" }}>{t("model.effortTitle")}</div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "6px 10px 10px" }}>
-            {EFFORT_LEVELS.map((lvl) => {
-              const cur = currentEffort ?? "";
-              const isCurrent = cur === lvl.key;
-              const isPending = pendingEffort === lvl.key;
-              return (
-                <button
-                  key={lvl.key || "default"}
-                  class={"pmode-chip " + (isCurrent ? "pmode-chip-on" : "pmode-chip-neutral")}
-                  style={{ fontSize: 11, padding: "2px 8px", opacity: isPending ? 0.5 : 1 }}
-                  onClick={(e) => { e.stopPropagation(); void pickEffort(lvl.key); }}
-                  onMouseDown={stop}
-                  disabled={pendingEffort !== null}
-                  title={lvl.key ? t("model.effortApply", { level: lvl.label }) : t("model.effortDefault")}
-                >{lvl.label}{isCurrent ? " ✓" : ""}</button>
-              );
-            })}
-          </div>
+          {/* Effort selector — VSCode-style discrete slider over the 6 SDK
+              levels. Click a dot or drag the indicator. SDK silently
+              downgrades unsupported levels (xhigh → high on non-Opus-4.7,
+              max gated to select models); we don't pre-filter — the
+              daemon echoes back whatever the SDK accepted via
+              effort_changed. */}
+          <EffortSlider
+            currentEffort={currentEffort ?? ""}
+            pending={pendingEffort !== null}
+            onPick={(key) => { void pickEffort(key); }}
+            title={t("model.effortTitle")}
+            stopPropagation={stop}
+          />
           {err && <div class="pmode-err">{err}</div>}
         </div>
       )}
