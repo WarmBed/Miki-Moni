@@ -280,6 +280,10 @@ const zhTW: Dict = {
   "settings.sortRecentLabel":    "⏱ 最近活動",
   "settings.sortRecentTitle":    "最近有事件的排前面（last_event_at DESC），會隨活動跳動",
   "settings.sortHelp":           "影響首頁卡片順序。F5 後位置會記住（除了「最近活動」模式，這個本來就會隨活動移動）。",
+  "settings.pinWaitingTitle":     "等待回應置頂",
+  "settings.pinWaitingLabel":     "需要你回應的 session 永遠排在最上面",
+  "settings.pinWaitingHelp":      "獨立於卡片排序：開啟後 status=waiting 的小卡會強制置頂，不會被 UUID 序或最近活動排序蓋掉。",
+  "settings.pinWaitingTitleAttr": "等待你回應的 session 永遠浮到最上方，不論卡片排序怎麼選",
   "settings.close":              "關閉",
   "settings.language":           "語言",
 
@@ -554,6 +558,10 @@ const zhCN: Dict = {
   "settings.sortRecentLabel":   "⏱ 最近活动",
   "settings.sortRecentTitle":   "最近有事件的排前面（last_event_at DESC），会随活动跳动",
   "settings.sortHelp":          "影响首页卡片顺序。F5 后位置会记住（除了「最近活动」模式，这个本来就会随活动移动）。",
+  "settings.pinWaitingTitle":     "等待回应置顶",
+  "settings.pinWaitingLabel":     "需要你回应的 session 永远排在最上面",
+  "settings.pinWaitingHelp":      "独立于卡片排序：开启后 status=waiting 的小卡会强制置顶，不会被 UUID 序或最近活动排序盖掉。",
+  "settings.pinWaitingTitleAttr": "等待你回应的 session 永远浮到最上方，不论卡片排序怎么选",
   "settings.close":             "关闭",
   "settings.language":          "语言",
 
@@ -827,6 +835,10 @@ const en: Dict = {
   "settings.sortRecentLabel":   "⏱ Recent",
   "settings.sortRecentTitle":   "Most recent activity first (last_event_at DESC), shuffles as events arrive",
   "settings.sortHelp":          "Affects overview card ordering. Position persists across F5 (except for the Recent mode, which is meant to shuffle).",
+  "settings.pinWaitingTitle":     "Pin waiting to top",
+  "settings.pinWaitingLabel":     "Always float sessions awaiting your reply to the top",
+  "settings.pinWaitingHelp":      "Independent of card sort: when on, status=waiting cards are forced to the top regardless of whether you picked UUID order or Recent activity.",
+  "settings.pinWaitingTitleAttr": "Sessions awaiting your reply always float to the very top, regardless of card sort",
   "settings.close":             "Close",
   "settings.language":          "Language",
 

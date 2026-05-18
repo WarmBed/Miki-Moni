@@ -456,7 +456,14 @@ html, body { overflow-x: hidden; max-width: 100vw; }
   min-height: 130px;
 }
 .cell:hover { border-color: var(--border-hi); background: var(--cell-bg-hover); }
-.cell:active { transform: scale(0.995); }
+/* Press feedback: was `transform: scale(0.995)` but `transform` makes the
+ * cell a containing block for any descendant `position:fixed` element,
+ * which broke the PermissionModeChip dropdown — pressing a menu item put
+ * the cell into :active, the menu (descendant fixed popover) reanchored to
+ * the cell's box, mouse-down hit the item but mouse-up landed on the cell
+ * behind, and the cell's onClick opened the big-card modal. Use an inset
+ * shadow instead — same "pressed" feel, no containing-block side effect. */
+.cell:active { box-shadow: inset 0 0 0 1px var(--border-hi); }
 .cell-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
 .cell-title { font-weight: 500; font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cell-status { font-size: 10px; color: var(--fg-subtle); text-transform: uppercase; letter-spacing: 0.06em; }
@@ -773,13 +780,38 @@ html, body { overflow-x: hidden; max-width: 100vw; }
   0%, 100% { transform: scale(1); }
   50%      { transform: scale(1.06); }
 }
+/* Silence-the-bell × — pill that matches .cell-ask-bell's red theme so it
+ * reads as part of the same alert cluster, but static (no pulse) so it
+ * reads as a control. Same height as the bell, just narrower. A new
+ * ask_question with a different question_id wipes hiddenAskBanners so the
+ * bell re-appears for the next question. */
+.cell-ask-bell-dismiss {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px;
+  padding: 0;
+  margin-left: 2px;
+  border: 1px solid rgba(220, 50, 50, 0.45);
+  border-radius: 999px;
+  background: rgba(220, 50, 50, 0.10);
+  color: #b3261e;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.cell-ask-bell-dismiss:hover {
+  background: #b3261e;
+  color: #fff;
+  border-color: #b3261e;
+}
 
 /* Banner inside CellModal when session has a dismissed-but-pending ask */
 .cell-modal-ask-banner {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
+  gap: 8px;
+  /* padding-right reserves space for the modal's × close button which sits
+   * absolutely at top:8 right:8 width:28 — without this the banner's own
+   * action buttons collided with it. */
+  padding: 10px 52px 10px 16px;
   background: rgba(220, 50, 50, 0.10);
   border-bottom: 1px solid rgba(220, 50, 50, 0.35);
   font-size: 12px;
@@ -787,6 +819,20 @@ html, body { overflow-x: hidden; max-width: 100vw; }
   flex-shrink: 0;
 }
 .cell-modal-ask-banner > span { flex: 1; font-weight: 500; }
+.cell-modal-ask-banner-btn {
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0;
+  background: rgba(220, 50, 50, 0.08);
+  color: #b3261e;
+  border: 1px solid rgba(220, 50, 50, 0.30);
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.cell-modal-ask-banner-btn:hover { background: rgba(220, 50, 50, 0.18); }
+.cell-modal-ask-banner-dismiss { color: var(--fg-subtle); background: transparent; border-color: transparent; }
+.cell-modal-ask-banner-dismiss:hover { color: var(--fg); background: var(--bg-subtle); border-color: var(--border); }
 
 .pmode-badge-auto {
   background: rgba(40, 140, 100, 0.14);

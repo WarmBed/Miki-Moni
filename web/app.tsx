@@ -2011,7 +2011,15 @@ function ModelChip({ sessionUuid, current, currentEffort }: {
   // mid-row in the status line — neither anchor stays inside the viewport.
   // We measure the chip rect on open + resize and clamp the popover into
   // the viewport (left 8px gutter, width = min(content, vw-16)).
-  const [popPos, setPopPos] = useState<{ left: number; bottom: number; width: number } | null>(null);
+  //
+  // Vertical: prefer growing UPWARD (bottom anchor). For cells in the top row
+  // there isn't enough room above — flip to grow DOWNWARD (top anchor) and
+  // bound by maxHeight so the menu never overflows the viewport.
+  const [popPos, setPopPos] = useState<
+    | { left: number; bottom: number; top: "auto"; width: number; maxHeight: number }
+    | { left: number; top: number; bottom: "auto"; width: number; maxHeight: number }
+    | null
+  >(null);
 
   useEffect(() => {
     if (!open) return;
@@ -2032,17 +2040,39 @@ function ModelChip({ sessionUuid, current, currentEffort }: {
       // Prefer 300px wide; cap so the popover always fits with 8px gutters
       // on both sides regardless of chip horizontal position.
       const width = Math.min(300, vw - 16);
-      // Try aligning left edge to chip's left. If that would overflow the
-      // right gutter, slide left until it fits. If chip is to the right of
-      // the available room, this becomes "anchor right gutter".
       const desiredLeft = r.left;
       const maxLeft = vw - width - 8;
       const left = Math.max(8, Math.min(desiredLeft, maxLeft));
-      // Distance from viewport bottom to where the popover bottom edge
-      // should sit (i.e. the chip's top - 6px gap). Using `bottom` instead
-      // of `top` so menu grows upward and never extends below the chip.
-      const bottom = vh - r.top + 6;
-      setPopPos({ left, bottom, width });
+
+      // Pick the side with more room. The popover's natural height is around
+      // 280-340px (title + 3 model rows + custom input + effort slider). If
+      // we anchor upward but the chip is in the top row, the popover would
+      // extend above the viewport (the original bug). Anchoring downward
+      // covers that case; maxHeight clamps to whichever side wins so neither
+      // direction ever overflows.
+      const GAP = 6;
+      const GUTTER = 8;
+      const spaceAbove = Math.max(0, r.top - GAP - GUTTER);
+      const spaceBelow = Math.max(0, vh - r.bottom - GAP - GUTTER);
+      if (spaceAbove >= spaceBelow) {
+        // Anchor by bottom edge so menu grows upward from the chip.
+        setPopPos({
+          left,
+          bottom: vh - r.top + GAP,
+          top: "auto",
+          width,
+          maxHeight: spaceAbove,
+        });
+      } else {
+        // Anchor by top edge so menu grows downward from the chip.
+        setPopPos({
+          left,
+          top: r.bottom + GAP,
+          bottom: "auto",
+          width,
+          maxHeight: spaceBelow,
+        });
+      }
     }
     measure();
     window.addEventListener("resize", measure);
@@ -2124,7 +2154,10 @@ function ModelChip({ sessionUuid, current, currentEffort }: {
         // position: fixed with measured coords — see effect above. We
         // bypass .pmode-menu's CSS anchoring entirely (no left:0 / right:0)
         // so the popover is guaranteed to stay inside the viewport on any
-        // chip position. Width is min(300, vw-16).
+        // chip position. Width is min(300, vw-16); maxHeight clamps to the
+        // chosen side's available space; overflow-y: auto so the menu
+        // scrolls internally if its content (default + 3 models + custom
+        // input + effort slider) exceeds the available room.
         <div
           class="pmode-menu"
           onClick={stop}
@@ -2132,12 +2165,14 @@ function ModelChip({ sessionUuid, current, currentEffort }: {
           style={{
             position: "fixed",
             left: popPos.left,
+            top: popPos.top,
             bottom: popPos.bottom,
-            top: "auto",
             right: "auto",
             width: popPos.width,
             maxWidth: "none",
             minWidth: 0,
+            maxHeight: popPos.maxHeight,
+            overflowY: "auto",
           }}
         >
           <div class="pmode-menu-head">{t("model.menuTitle")}</div>
@@ -2950,9 +2985,10 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, userOverla
 
 // ── Grid overview (sessions grouped by cwd) ──────────────────────────
 
-function GridOverview({ sessions, sortMode, previews, activities, streaming, userOverlay, pendingAsks, dismissedAsks, onReopenAsk, hiddenBanners, onHideBanner, getClientType, onSetClientType, onQuickSend, onOpenModal }: {
+function GridOverview({ sessions, sortMode, pinWaiting, previews, activities, streaming, userOverlay, pendingAsks, dismissedAsks, onReopenAsk, hiddenBanners, onHideBanner, getClientType, onSetClientType, onQuickSend, onOpenModal }: {
   sessions: Session[];
   sortMode: SortMode;
+  pinWaiting: boolean;
   previews: Record<string, SessionPreview>;
   activities: Record<string, string>;
   streaming: Record<string, string>;
@@ -2970,15 +3006,26 @@ function GridOverview({ sessions, sortMode, previews, activities, streaming, use
   // Deterministic ordering. The previous implementation used a useRef Map to
   // assign first-seen slot indexes, which was stable within a session but reset
   // on F5 (since useRef is per-mount). The user explicitly wanted F5-stable
-  // ordering — so we now use a pure function of (sessions, sortMode), making
-  // the layout reproducible across reloads.
+  // ordering — so we now use a pure function of (sessions, sortMode, pinWaiting),
+  // making the layout reproducible across reloads.
   //   priority → status (waiting first) then cwd alpha (default)
   //   cwd      → pure cwd alpha (most stable; never moves on activity)
   //   recent   → last_event_at DESC (mirrors backend; intentionally drifts)
-  const ordered = useMemo(
-    () => sessions.slice().sort(compareFor(sortMode)),
-    [sessions, sortMode],
-  );
+  //
+  // pinWaiting overlays on top: when on, any session with status === "waiting"
+  // is partitioned to the top regardless of the base sort. Both partitions
+  // keep their base-sort order internally so the relative position of cards
+  // within each group is still F5-stable.
+  const ordered = useMemo(() => {
+    const sorted = sessions.slice().sort(compareFor(sortMode));
+    if (!pinWaiting) return sorted;
+    const waiting: Session[] = [];
+    const rest: Session[] = [];
+    for (const s of sorted) {
+      (s.status === "waiting" ? waiting : rest).push(s);
+    }
+    return waiting.concat(rest);
+  }, [sessions, sortMode, pinWaiting]);
   return (
     <div class="cwd-group-grid">
       {ordered.map((s) => (
@@ -3591,6 +3638,23 @@ function saveSortModeToLS(v: SortMode): void {
   try { localStorage.setItem(SORT_MODE_LS_KEY, v); } catch { /* quota / disabled */ }
 }
 
+// "Pin waiting" toggle. Orthogonal to sortMode: when on, sessions whose
+// status === "waiting" (Claude is blocked on user input) float to the top
+// regardless of which base sort is selected. Default on — Miki the Monitor's
+// whole job is to surface these, so users shouldn't have to opt in.
+const PIN_WAITING_LS_KEY = "miki-moni:pin-waiting";
+function loadPinWaitingFromLS(): boolean {
+  try {
+    const raw = localStorage.getItem(PIN_WAITING_LS_KEY);
+    if (raw === "0") return false;
+    if (raw === "1") return true;
+  } catch { /* SSR / disabled */ }
+  return true;
+}
+function savePinWaitingToLS(v: boolean): void {
+  try { localStorage.setItem(PIN_WAITING_LS_KEY, v ? "1" : "0"); } catch { /* quota / disabled */ }
+}
+
 // Default = "live" (online only): users opening miki-moni almost always want
 // to see what's running right now, not every stale session in their history.
 // Persisted to LS so the user's choice — including clicking "all" back on —
@@ -3758,6 +3822,7 @@ function App() {
     saveStatusFilterToLS(v);
   }
   const [sortMode, setSortModeState] = useState<SortMode>(() => loadSortModeFromLS());
+  const [pinWaiting, setPinWaitingState] = useState<boolean>(() => loadPinWaitingFromLS());
 
   function setSendKey(v: SendKey) {
     setSendKeyState(v);
@@ -3770,6 +3835,10 @@ function App() {
   function setSortMode(v: SortMode) {
     setSortModeState(v);
     saveSortModeToLS(v);
+  }
+  function setPinWaiting(v: boolean) {
+    setPinWaitingState(v);
+    savePinWaitingToLS(v);
   }
 
   // Apply theme on mount + when it changes. In "system" mode, also listen for
@@ -4419,6 +4488,29 @@ function App() {
               {t("settings.sortHelp")}
             </div>
 
+            {/* Pin-waiting toggle — orthogonal to sortMode. Default on so a
+                user never misses a session blocked on their input. */}
+            <div style={{ fontSize: 12, fontWeight: 600, marginTop: 14, marginBottom: 8, paddingTop: 12, borderTop: "1px solid var(--border)" }}>{t("settings.pinWaitingTitle")}</div>
+            <label
+              style={{
+                display: "flex", alignItems: "center", gap: 8,
+                fontSize: 12, color: "var(--fg)", cursor: "pointer", userSelect: "none",
+                padding: "4px 0",
+              }}
+              title={t("settings.pinWaitingTitleAttr")}
+            >
+              <input
+                type="checkbox"
+                checked={pinWaiting}
+                onChange={(e) => setPinWaiting((e.currentTarget as HTMLInputElement).checked)}
+                style={{ margin: 0, width: 14, height: 14 }}
+              />
+              <span>{t("settings.pinWaitingLabel")}</span>
+            </label>
+            <div style={{ fontSize: 10, color: "var(--fg-subtle)", marginTop: 4, lineHeight: 1.5 }}>
+              {t("settings.pinWaitingHelp")}
+            </div>
+
             {/* Language selector — added 2026-05-17. Switches the entire UI
                 between 繁體中文 / 简体中文 / English; persisted to localStorage. */}
             <div style={{ fontSize: 12, fontWeight: 600, marginTop: 14, marginBottom: 8, paddingTop: 12, borderTop: "1px solid var(--border)" }}>{t("settings.language")}</div>
@@ -4466,6 +4558,7 @@ function App() {
             return s.status === statusFilter;
           })}
           sortMode={sortMode}
+          pinWaiting={pinWaiting}
           previews={previews}
           activities={activities}
           streaming={streaming}
