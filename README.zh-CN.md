@@ -148,15 +148,38 @@ miki start
 
 ## 安全
 
-Daemon **只绑 `127.0.0.1`** — 公网永远戳不到。手机端走端对端加密（配对时 X25519 ECDH → 每个 envelope NaCl `secretbox`）。Relay 只路由密文，不持有任何共享密钥。
+Daemon **只绑 `127.0.0.1`** — 公网永远戳不到。手机端走端对端加密：配对时 X25519 ECDH，每个 envelope NaCl `secretbox`。加密用的私钥永远不离开 daemon 跟配对好的手机。
 
 Daemon 信任**所有以你身份跑的进程**去调用 `/event`、`/send`、`/focus`、`/ws_ext`。这让 hooks 跟 helper extension 不用带 token，但代价是：任何以你身份跑的进程都能跟 daemon 讲话。`~/.miki-moni/` 请当 `~/.ssh/` 那样保护。
+
+### 手机能 / 不能做什么
 
 | 手机**可以** | 手机**不可以** |
 |---|---|
 | 看实时 session 状态 + transcript | 在你电脑上跑任意 shell 命令 |
 | 推 prompt（pre-fill 进 VSCode、直送 wrap CLI） | 不经你 VSCode 按键就自动送出 prompt |
 | Focus 已存在的 panel | 绕过 Claude Code 每个工具的权限提示 |
+
+### Relay 看得到 / 看不到什么
+
+daemon 跟手机之间全程走 WSS（到 CF edge 为止都是 TLS）。Worker 在 edge 解 TLS 之后看到的：
+
+| Relay (Worker) **看得到** | Relay **看不到** |
+|---|---|
+| Daemon 的公钥（Ed25519 + X25519） | **消息内容**（每个 envelope 都是 NaCl `secretbox` 在两端加密） |
+| Pairing token（配对那一刻，用完即丢） | 私钥（X25519 / Ed25519 留在 daemon 跟手机 — 手机侧存在 IndexedDB） |
+| 手机公钥 + reconnect 签名 | 你打了什么、Claude 回了什么、transcript、tool I/O |
+| Metadata：谁跟谁配对、连线时间、envelope 大小、peer ID | |
+
+Hosted relay 模式下这些 metadata 运维者（作者 + Cloudflare）看得到。Self-host 就避开这层 — 运维者变你自己。
+
+### Relay 唯一现实的攻击路径：PWA bundle swap
+
+手机端是从 Cloudflare Pages 出的 PWA。被攻陷的 relay 运维者可以**推一份恶意 bundle**，在首次加载时把手机 IndexedDB 里的 X25519 私钥偷走。端对端加密的安全性最后还是取决于两端跑的代码。缓解：
+
+- **Self-host** — Worker 跟 Pages bundle 都你掌控
+- **Pin bundle** — 在已知干净的日子配对，然后关掉 PWA 自动更新（看 browser）
+- **看 source** — Pages bundle 可以从这个 repo 对应 daemon 版本的 tag 重现
 
 风险表、硬化选项、完整 hooks / extension 信赖分析见 [`docs/security/`](docs/security/)。
 

@@ -148,15 +148,38 @@ Default is **Hosted**, pointing at `relay.f1telemetrystationpro.org`. The wizard
 
 ## Security
 
-The daemon binds **`127.0.0.1` only** — nothing on the public network can reach it. Phone access is end-to-end encrypted (X25519 ECDH at pair time → NaCl `secretbox` per envelope). The relay only routes opaque ciphertext and never holds shared secrets.
+The daemon binds **`127.0.0.1` only** — nothing on the public network can reach it. Phone access is end-to-end encrypted: X25519 ECDH at pair time, NaCl `secretbox` per envelope. Encryption keys never leave the daemon and the paired phone.
 
 The daemon trusts any process running as your user to call `/event`, `/send`, `/focus`, and connect to `/ws_ext`. This keeps hooks and the helper extension token-free but means: anything that runs as your user can talk to the daemon. Treat `~/.miki-moni/` like `~/.ssh/`.
+
+### What the phone can / can't do
 
 | The phone **can** | The phone **cannot** |
 |---|---|
 | See live session state + transcript | Run arbitrary shell commands |
 | Push prompts (pre-fill in VSCode; direct send to wrap CLI) | Auto-submit a prompt into VSCode without your keystroke |
 | Focus an existing panel | Bypass Claude Code's per-tool permission prompts |
+
+### What the relay can / can't see
+
+Everything between daemon and phone runs over WSS (TLS to the CF edge). Once the Worker terminates TLS, it sees:
+
+| The relay (Worker) **sees** | The relay **cannot see** |
+|---|---|
+| Daemon's public keys (Ed25519 + X25519) | Message contents (every envelope is NaCl-`secretbox`-sealed end-to-end) |
+| Pairing token at pair time (one-shot, then discarded) | Private keys (X25519 / Ed25519 stay on daemon and phone — IndexedDB on the phone) |
+| Phone's public key + reconnect signatures | What you typed, what Claude said, transcripts, tool I/O |
+| Metadata: who's paired with whom, connection times, envelope sizes, peer IDs | |
+
+For the hosted relay this metadata is visible to the operator (the author + Cloudflare). Self-host avoids that — you become the operator.
+
+### The one realistic relay attack: PWA bundle swap
+
+The phone client is a PWA served from Cloudflare Pages. A compromised relay operator could push a malicious bundle that exfiltrates the phone's X25519 private key from IndexedDB on first load. End-to-end encryption is only as trustworthy as the code running on both ends. Mitigations:
+
+- **Self-host** — you control both the Worker and the Pages bundle.
+- **Pin the bundle** — pair on a known-good day, then disable PWA updates (browser-dependent).
+- **Watch the source** — the Pages bundle is reproducible from this repo at the tag matching the daemon version.
 
 Risk table, hardening options, and the full hooks / extension trust analysis: [`docs/security/`](docs/security/).
 
