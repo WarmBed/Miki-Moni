@@ -681,8 +681,13 @@ function TurnView({ turn }: { turn: TranscriptTurn }) {
       <div class={`turn-bubble ${bgClass}${isTool ? " turn-bubble-tool" : ""}`}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: headerMb, flexWrap: "wrap" }}>
           <span style={{ color: roleColor, fontWeight: 600, fontSize: headerFontSize }}>{roleLabel}</span>
+          {/* Header label suppressed during isThinking: the blue ▌ in the
+           * body already signals "claude is busy", and an explicit
+           * "Ideating…" word here was visually noisy (per user feedback,
+           * mirroring the small-cell fix in d99f615). No timestamp either
+           * since turn.ts is Date.now() — meaningless to show. */}
           {isThinking
-            ? <span style={{ color: "#3b82f6", fontSize: 10 }}>{turn.text}…</span>
+            ? null
             : isStreaming
               ? <span style={{ color: "var(--pass)", fontSize: 10 }}>streaming…</span>
               : <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>{fmtDateTime(turn.ts)}</span>}
@@ -693,9 +698,11 @@ function TurnView({ turn }: { turn: TranscriptTurn }) {
             <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>· 📤 tool result</span>
           )}
         </div>
-        {/* Thinking bubble: only the cursor, no body text — the activity
-         * label sits in the header. Suppress <MD> so we don't accidentally
-         * render "Ideating" as markdown content. */}
+        {/* Thinking bubble: render NOTHING in the body text slot — turn.text
+         * holds the activity label ("Ideating" / "Using Bash" / …) which
+         * we deliberately don't show (cursor alone is the signal). Suppress
+         * <MD> so we don't accidentally render the activity word as
+         * markdown content. */}
         {!isThinking && turn.text && <MD text={turn.text} />}
         {/* Trailing blink cursor. Two flavours:
          *   - synthetic-streaming → black ▌  (= claude is actively typing)
@@ -4413,14 +4420,21 @@ function App() {
           <div
             class="settings-popover"
             style={{
-              position: "absolute", top: "100%", right: 0, marginTop: 6, zIndex: 50,
+              // position: fixed (not absolute) so the popover anchors to the
+              // viewport, not <header>. With absolute + short-page (cards fit
+              // in 1 row), body height ≈ viewport and absolute-positioned
+              // elements don't push body taller — so when the popover
+              // extends below the visible area, the browser has nothing to
+              // scroll into view and the bottom half (語言 / 關閉) silently
+              // gets clipped. fixed avoids that entirely: maxHeight clamps
+              // the popover inside the viewport every time.
+              position: "fixed", top: 50, right: 8, zIndex: 50,
               background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 6,
               padding: "12px 14px", minWidth: 280, boxShadow: "0 6px 24px rgba(0,0,0,0.18)",
-              // Constrain to viewport so a tall popover (multi-section settings)
-              // doesn't overflow off-screen on mobile / short viewports / when
-              // there's no card content to push the page taller. 100px leaves
-              // room for the header above + a few px breathing room.
-              maxHeight: "calc(100vh - 100px)",
+              // 58px = top(50) + bottom gutter(8). Ensures the popover always
+              // fits within viewport and scrolls internally if content is
+              // taller than available space.
+              maxHeight: "calc(100vh - 58px)",
               overflowY: "auto",
               overscrollBehavior: "contain",
             }}

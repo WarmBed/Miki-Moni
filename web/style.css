@@ -561,6 +561,16 @@ html, body { overflow-x: hidden; max-width: 100vw; }
    * past the overflow:hidden cutoff. */
   position: relative;
 }
+/* Reserve a right-edge gutter on the assistant body so the absolute-
+ * positioned cursor (.streaming-cursor below) doesn't sit on top of the
+ * last visible characters when the prev reply fills the 4-line clamp.
+ * Symptom before this rule: cursor visually overlapped the trailing
+ * "…" / final glyph; user reported "光標壓字". Scoped to assistant
+ * because only the assistant strip ever renders a cursor — user strip
+ * keeps the full content width. */
+.cell-turn-assistant .cell-turn-body {
+  padding-right: 14px;
+}
 /* When the body wraps a streaming/thinking cursor, pin the cursor to the
  * body's bottom-right corner instead of letting it flow inline at the end
  * of the text. Rationale: -webkit-line-clamp:4 + overflow:hidden silently
