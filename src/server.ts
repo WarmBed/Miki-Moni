@@ -356,6 +356,12 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
           return;
         } catch { /* keep looking */ }
       }
+      // Same pending-session courtesy as the full /transcript endpoint:
+      // freshly-spawned wrap CLI may not have a .jsonl yet.
+      if (deps.store.get(sessionUuid)) {
+        res.json({ session_uuid: sessionUuid, file_size: 0, last_modified: null, pending: true });
+        return;
+      }
       res.status(404).json({ error: "transcript not found", session_uuid: sessionUuid });
     } catch {
       res.status(404).json({ error: "projects dir not found" });
@@ -377,6 +383,22 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       }
     } catch { /* no projects dir */ }
     if (!transcriptPath) {
+      // Session may have been just spawned — wrap CLI registered with daemon
+      // but Claude SDK hasn't written the .jsonl yet. If it's a known session
+      // in our store, return an empty pending transcript instead of 404 so
+      // the dashboard can show "waiting for first message" cleanly.
+      if (deps.store.get(sessionUuid)) {
+        res.json({
+          session_uuid: sessionUuid,
+          transcript_path: null,
+          file_size: 0,
+          last_modified: null,
+          turn_count: 0,
+          turns: [],
+          pending: true,
+        });
+        return;
+      }
       deps.log?.warn({ route: "/sessions/:id/transcript", sessionUuid }, "transcript not found");
       res.status(404).json({ error: "transcript not found", session_uuid: sessionUuid });
       return;
