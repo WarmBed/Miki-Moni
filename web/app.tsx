@@ -201,6 +201,92 @@ function IconUndo({ size = 13 }: { size?: number }) {
     </svg>
   );
 }
+
+// ── Close card button ──────────────────────────────────────────────────
+//
+// State-aware top-right button for each grid cell:
+//   - wrapped   → IconStop  → POST /wrap/stop  (cell flips non-wrapped)
+//   - non-wrap  → IconX     → hide locally     (cell disappears)
+//   - hidden    → IconUndo  → un-hide locally  (cell returns)
+//
+// Failure of /wrap/stop is surfaced inline (red border + tooltip for 3s)
+// matching ModelChip's pattern so we don't need a global toast system.
+// localStorage failures are silent (in-memory state still works) — see
+// web/lib/hidden-sessions.ts.
+
+function CloseCardButton({
+  sessionUuid, wrapped, isHiddenView, onHide, onUnhide,
+}: {
+  sessionUuid: string;
+  wrapped: boolean;
+  isHiddenView: boolean;
+  onHide: (uuid: string) => void;
+  onUnhide: (uuid: string) => void;
+}) {
+  const [pending, setPending] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function handle(e: MouseEvent) {
+    e.stopPropagation();
+    if (!sessionUuid || pending) return;
+
+    if (isHiddenView) {
+      onUnhide(sessionUuid);
+      return;
+    }
+    if (!wrapped) {
+      onHide(sessionUuid);
+      return;
+    }
+
+    // wrapped: kill via daemon
+    setPending(true); setErr(null);
+    try {
+      const r = await apiFetch("/wrap/stop", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ session_uuid: sessionUuid }),
+      });
+      if (!r.ok && r.status !== 404) {
+        // 404 = already stopped (race with WS close). Treat as success.
+        throw new Error(`HTTP ${r.status}`);
+      }
+      // No optimistic UI: daemon's WS session_changed event will flip wrapped=false.
+    } catch (e: unknown) {
+      setErr(String(e));
+      window.setTimeout(() => setErr(null), 3000);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const title = isHiddenView
+    ? t("session.unhide")
+    : wrapped
+      ? t("session.closeWrapped")
+      : t("session.closeHidden");
+
+  const icon = isHiddenView
+    ? <IconUndo size={11} />
+    : wrapped
+      ? <IconStop size={11} />
+      : <IconX size={11} />;
+
+  return (
+    <button
+      class="btn-ghost icon-btn"
+      style={{
+        padding: "3px 6px",
+        opacity: pending ? 0.5 : 1,
+        borderColor: err ? "var(--err, #d33)" : undefined,
+      }}
+      onClick={(e) => { void handle(e); }}
+      title={err ?? title}
+      disabled={!sessionUuid || pending}
+    >{icon}</button>
+  );
+}
+
 function IconList({ size = 13 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -2681,7 +2767,7 @@ function NewCliButton({ recentCwds }: { recentCwds: string[] }) {
 
 // ── Grid overview cell ────────────────────────────────────────────────────
 
-function Cell({ s, preview, activity, streamingText, userOverlayText, userOverlayTs, pendingAsk, askDismissed, onReopenAsk, bannerHidden, onHideBanner, clientType, onSetClientType, onQuickSend, onOpenModal }: {
+function Cell({ s, preview, activity, streamingText, userOverlayText, userOverlayTs, pendingAsk, askDismissed, onReopenAsk, bannerHidden, onHideBanner, clientType, onSetClientType, onQuickSend, onOpenModal, showHidden, onHide, onUnhide }: {
   s: Session;
   preview?: SessionPreview;
   activity?: string;
@@ -2697,6 +2783,9 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, userOverla
   onSetClientType: (uuid: string, type: ClientType) => void;
   onQuickSend: (s: Session, x: number, y: number) => void;
   onOpenModal: (s: Session) => void;
+  showHidden: boolean;
+  onHide: (uuid: string) => void;
+  onUnhide: (uuid: string) => void;
 }) {
   const title = preview?.ai_title ?? s.project_name;
   // Optimistic overlay wins over JSONL-derived text while we wait for the
@@ -2874,7 +2963,13 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, userOverla
          * the top row reads: title … [🔌 CLI] [📋 copy]. Hidden for wrapped
          * sessions (already wrapped — nothing to start). */}
         {!s.wrapped && s.session_uuid && <WrapStartButton sessionUuid={s.session_uuid} />}
-        {/* CopyResumeButton removed in 0.3.11 — CloseCardButton lands in Task 6 */}
+        <CloseCardButton
+          sessionUuid={s.session_uuid ?? ""}
+          wrapped={s.wrapped ?? false}
+          isHiddenView={showHidden}
+          onHide={onHide}
+          onUnhide={onUnhide}
+        />
       </div>
       <div class="cell-cwd" style={{ color: c.label, display: "flex", alignItems: "center", gap: 6 }} title={s.cwd}>
         <strong style={{ fontWeight: 600 }}>{s.project_name}</strong>
@@ -2987,7 +3082,7 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, userOverla
 
 // ── Grid overview (sessions grouped by cwd) ──────────────────────────
 
-function GridOverview({ sessions, sortMode, pinWaiting, previews, activities, streaming, userOverlay, pendingAsks, dismissedAsks, onReopenAsk, hiddenBanners, onHideBanner, getClientType, onSetClientType, onQuickSend, onOpenModal }: {
+function GridOverview({ sessions, sortMode, pinWaiting, previews, activities, streaming, userOverlay, pendingAsks, dismissedAsks, onReopenAsk, hiddenBanners, onHideBanner, getClientType, onSetClientType, onQuickSend, onOpenModal, showHidden, onHide, onUnhide }: {
   sessions: Session[];
   sortMode: SortMode;
   pinWaiting: boolean;
@@ -3004,6 +3099,9 @@ function GridOverview({ sessions, sortMode, pinWaiting, previews, activities, st
   onSetClientType: (uuid: string, type: ClientType) => void;
   onQuickSend: (s: Session, x: number, y: number) => void;
   onOpenModal: (s: Session) => void;
+  showHidden: boolean;
+  onHide: (uuid: string) => void;
+  onUnhide: (uuid: string) => void;
 }) {
   // Deterministic ordering. The previous implementation used a useRef Map to
   // assign first-seen slot indexes, which was stable within a session but reset
@@ -3048,6 +3146,9 @@ function GridOverview({ sessions, sortMode, pinWaiting, previews, activities, st
           onSetClientType={onSetClientType}
           onQuickSend={onQuickSend}
           onOpenModal={onOpenModal}
+          showHidden={showHidden}
+          onHide={onHide}
+          onUnhide={onUnhide}
         />
       ))}
     </div>
@@ -4606,6 +4707,9 @@ function App() {
           onSetClientType={setClientType}
           onQuickSend={openQuickSend}
           onOpenModal={openCellModal}
+          showHidden={showHidden}
+          onHide={hideSession}
+          onUnhide={unhideSession}
         />
       )}
 
