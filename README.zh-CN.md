@@ -31,6 +31,35 @@
 
 ---
 
+## v0.3.0 新功能
+
+- **动态切模型** — 每张 session 卡都有 Model chip，点开可以中途切 default / Sonnet / Opus / Haiku / 自定义 model id，改动实时同步到所有 dashboard
+- **手机 UX 大改** — 聊天气泡 transcript（user 右、assistant 左）、session modal 可右滑关闭、composer 多了图片上传按钮、修好 iOS focus-zoom 跟键盘缩放、textarea 自动长高
+- **模式 chip 带颜色** — `acceptEdits` 蓝、`bypass` 红，不再是死灰色
+- **新 CLI popover** 加了最近 cwd 的原生下拉选单
+- **手机端 transcript 控制** 折叠成一个 sliders popover（show-tool / limit / load-all / reload）
+
+<table>
+<tr>
+<td align="center" width="25%">
+  <img src="docs/images/phone-session-modal.png" width="220" alt="手机 session modal — 聊天气泡 transcript、可右滑关闭">
+  <br /><em>手机聊天气泡 transcript</em>
+</td>
+<td align="center" width="25%">
+  <img src="docs/images/model-picker.png" width="220" alt="Model 切换 popover — default / Sonnet / Opus / Haiku / 自定义 id">
+  <br /><em>动态切模型</em>
+</td>
+<td align="center" width="25%">
+  <img src="docs/images/mode-picker.jpg" width="220" alt="Mode 切换 popover — Ask before edits / Edit automatically / Plan / Auto / Bypass">
+  <br /><em>每个模式自己的颜色</em>
+</td>
+<td align="center" width="25%">
+  <img src="docs/images/composer-bar.jpg" width="220" alt="Composer 状态栏 — 模式 chip、activity、图片上传按钮">
+  <br /><em>composer + 图片上传</em>
+</td>
+</tr>
+</table>
+
 ## 为什么
 
 - 两个 VSCode 窗口开了三个 Claude Code panel，其中一个跑完了，你 20 分钟后才发现
@@ -139,9 +168,11 @@ Session 卡片：
 |---|---|
 | **项目名 + cwd** | 卡片标题 — 点开查看完整 transcript |
 | **🖥️ VSCode / 📟 CLI 切换** | 决定 *发送 / focus* 走哪边。**VSCode**：用 `vscode://anthropic.claude-code/open?session=…` 把 prompt 预填 VSCode panel。**CLI**：直接打 wrap CLI 的 WebSocket。 |
-| **权限 badge**（`✏️ auto edit` / `🚀 bypass`） | 只有跑 `miki claude --permission-mode acceptEdits` / `--bypass-permissions` 的 wrap CLI session 才显示，整个 session lifetime 锁定不能改 |
-| **Transcript view** | 实时渲染 Claude 对话。可开关 tool call。滚动门槛 10 / 50 / 200 / 全部。 |
-| **发送输入框** | 多行 prompt。Enter 或 Ctrl/⌘+Enter 发送（按你的设置）。支持粘贴/拖图片。 |
+| **权限 badge**（`✏️ auto edit` 蓝 / `🚀 bypass` 红） | 只有跑 `miki claude --permission-mode acceptEdits` / `--bypass-permissions` 的 wrap CLI session 才显示，整个 session lifetime 锁定不能改。每个模式自己的颜色 |
+| **Model chip** ⭐ | 点开即时切模型 — default / Sonnet / Opus / Haiku / 自定义 id。改动广播到所有 dashboard。底层走 `POST /wrap/model` |
+| **Transcript view** | 聊天气泡版面（user 右、assistant/system/tool 左）。可开关 tool call。滚动门槛 10 / 50 / 200 / 全部。手机端控制折叠成一个 sliders popover |
+| **发送输入框** | 多行 prompt，自动长高。Enter 或 Ctrl/⌘+Enter 发送（按你的设置）。支持粘贴/拖图片**或**按钮选档（手机友好） |
+| **右滑关闭**（手机） | session modal 往右拖即可关掉；document 层级手势 + translateX 预览 |
 | **开 CLI 按钮** ⭐ | **从 CLI 接管这个 session，完整上下文都在。** 开 `wt.exe`（Windows Terminal）跑 `miki claude -r <session-uuid>` — Claude 从 VSCode panel 停的那回合接着做。原本从哪起的都不重要；panel 可以已关、已 crash、在另一个窗口。配上手机 dashboard，同一个 session 你在哪都能继续打 |
 | **Focus 按钮** | `POST /focus` — 把对应 VSCode 窗口（或 CLI tab）提到最前 |
 
@@ -245,7 +276,7 @@ Source 结构：
 
 ## 分支
 
-- `main` — 版本化 release（当前：v0.0.0）
+- `main` — 版本化 release（当前：v0.3.3）
 - `dev` — 开发中；每改动 bump `package.json` version
 
 ## 相关项目

@@ -31,6 +31,35 @@ Aggregate the state of every VSCode Claude Code panel into a single local dashbo
 
 ---
 
+## What's new in v0.3.0
+
+- **Dynamic model switching** — every session card has a Model chip; pop it open to switch between default / Sonnet / Opus / Haiku / a custom model id mid-conversation. Change propagates live to all dashboards.
+- **Mobile UX overhaul** — chat-bubble transcript (user right, assistant left), swipe-right-to-close on session modals, image-upload button in the composer, iOS focus-zoom + keyboard-resize fixes, textarea auto-grow.
+- **Mode chips show color** — `acceptEdits` blue, `bypass` red — not just neutral grey.
+- **New CLI popover** now includes a native picker for recent cwds.
+- **Transcript controls collapse** into a single sliders popover on phone modals (show-tool / limit / load-all / reload).
+
+<table>
+<tr>
+<td align="center" width="25%">
+  <img src="docs/images/phone-session-modal.png" width="220" alt="Phone session modal — chat-bubble transcript, swipe-right-to-close">
+  <br /><em>Chat-bubble transcript on phone</em>
+</td>
+<td align="center" width="25%">
+  <img src="docs/images/model-picker.png" width="220" alt="Model picker popover — default / Sonnet / Opus / Haiku / custom id">
+  <br /><em>Dynamic model switching</em>
+</td>
+<td align="center" width="25%">
+  <img src="docs/images/mode-picker.jpg" width="220" alt="Mode picker popover — Ask before edits / Edit automatically / Plan / Auto / Bypass">
+  <br /><em>Per-mode color chips</em>
+</td>
+<td align="center" width="25%">
+  <img src="docs/images/composer-bar.jpg" width="220" alt="Composer status bar — mode chip, activity, image-upload button">
+  <br /><em>Composer with image upload</em>
+</td>
+</tr>
+</table>
+
 ## Why
 
 - Three Claude Code panels open across two VSCode windows. One finishes; you don't notice for 20 minutes.
@@ -147,9 +176,11 @@ Session cards:
 |---|---|
 | **Project name + cwd** | Header — click to expand the card / view full transcript |
 | **🖥️ VSCode / 📟 CLI badge** | Toggles how *send* / *focus* dispatches. **VSCode**: prompt fills the VSCode panel via `vscode://anthropic.claude-code/open?session=…`. **CLI**: prompt goes through the wrap CLI's WebSocket directly. |
-| **Permission badge** (`✏️ auto edit`, `🚀 bypass`) | Only on wrapped CLI sessions started with `--permission-mode acceptEdits` / `--bypass-permissions`. Locked for the session lifetime. |
-| **Transcript view** | Live-rendered Claude turns. Toggle tool calls. Limit slider (10 / 50 / 200 / all). |
-| **Send composer** | Multi-line prompt input. Enter or Ctrl/⌘+Enter to send (per your settings choice). Supports image attachment via paste/drop. |
+| **Permission badge** (`✏️ auto edit` blue, `🚀 bypass` red) | Only on wrapped CLI sessions started with `--permission-mode acceptEdits` / `--bypass-permissions`. Locked for the session lifetime. Per-mode color. |
+| **Model chip** ⭐ | Pop open to switch model live — default / Sonnet / Opus / Haiku / custom id. Broadcasts to every dashboard. Backed by `POST /wrap/model`. |
+| **Transcript view** | Chat-bubble layout (user right, assistant/system/tool left). Toggle tool calls. Limit slider (10 / 50 / 200 / all). On phone the controls collapse into a single sliders popover. |
+| **Send composer** | Multi-line prompt input with auto-grow. Enter or Ctrl/⌘+Enter to send (per your settings choice). Image attachment via paste/drop *and* a file-picker button (mobile-friendly). |
+| **Swipe-right-to-close** (phone) | Drag the session modal right to dismiss; document-level gesture with translateX preview. |
 | **Open CLI button** ⭐ | **Take over the session from a CLI, with full context.** Spawns `wt.exe` (Windows Terminal) running `miki claude -r <session-uuid>` — Claude resumes from the exact turn the VSCode panel was on. Works regardless of where the session was originally started; the panel can be closed, crashed, or on a different window. Pair with the phone dashboard and you keep prompting the same session from anywhere. |
 | **Focus button** | `POST /focus` — raises the matching VSCode window (or new CLI tab) to foreground. |
 
@@ -253,7 +284,7 @@ Source tree:
 
 ## Branches
 
-- `main` — versioned releases (current: v0.0.0)
+- `main` — versioned releases (current: v0.3.3)
 - `dev` — active development; every change gets a `package.json` version bump
 
 ## Related projects
