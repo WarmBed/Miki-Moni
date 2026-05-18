@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseAnswers, type QQuestion } from "../src/cli/ask-question-answer.js";
+import { parseAnswers, type QQuestion, buildAskQuestionToolResultMessage } from "../src/cli/ask-question-answer.js";
 
 function q(question: string, options: string[], multiSelect = false): QQuestion {
   return {
@@ -62,5 +62,59 @@ describe("parseAnswers", () => {
     const r = parseAnswers([[]], questions);
     expect(r.structured).toEqual({});
     expect(r.display).toBe("");
+  });
+});
+
+describe("buildAskQuestionToolResultMessage", () => {
+  const questions = [
+    {
+      question: "Use TypeScript?",
+      header: "TS",
+      options: [
+        { label: "Yes", description: "" },
+        { label: "No", description: "" },
+      ],
+    },
+  ];
+
+  it("returns an SDKUserMessage with one tool_result block matching the tool_use_id", () => {
+    const msg = buildAskQuestionToolResultMessage({
+      toolUseId: "toolu_abc",
+      parentToolUseId: null,
+      sessionId: "session-1",
+      questions,
+      structuredAnswers: { "Use TypeScript?": "Yes" },
+    });
+    expect(msg.type).toBe("user");
+    expect(msg.parent_tool_use_id).toBeNull();
+    expect(msg.session_id).toBe("session-1");
+    const content = (msg.message as { content: unknown[] }).content;
+    expect(content).toHaveLength(1);
+    expect(content[0]).toMatchObject({ type: "tool_result", tool_use_id: "toolu_abc" });
+  });
+
+  it("serializes the content as JSON matching the SDK AskUserQuestionOutput schema", () => {
+    const msg = buildAskQuestionToolResultMessage({
+      toolUseId: "toolu_xyz",
+      parentToolUseId: null,
+      sessionId: "session-1",
+      questions,
+      structuredAnswers: { "Use TypeScript?": "Yes" },
+    });
+    const block = (msg.message as { content: Array<{ type: string; content: string }> }).content[0]!;
+    const parsed = JSON.parse(block.content);
+    expect(parsed.questions).toEqual(questions);
+    expect(parsed.answers).toEqual({ "Use TypeScript?": "Yes" });
+  });
+
+  it("propagates parent_tool_use_id for subagent-spawned questions", () => {
+    const msg = buildAskQuestionToolResultMessage({
+      toolUseId: "toolu_inner",
+      parentToolUseId: "toolu_outer_task",
+      sessionId: "session-2",
+      questions,
+      structuredAnswers: { "Use TypeScript?": "No" },
+    });
+    expect(msg.parent_tool_use_id).toBe("toolu_outer_task");
   });
 });

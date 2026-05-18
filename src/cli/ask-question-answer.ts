@@ -47,3 +47,42 @@ export function parseAnswers(
 
   return { display: displayLines.join("\n"), structured };
 }
+
+import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+
+export interface BuildToolResultArgs {
+  toolUseId: string;            // the AskUserQuestion's tool_use.id
+  parentToolUseId: string | null; // from the SDKAssistantMessage carrying the tool_use
+  sessionId: string;
+  questions: QQuestion[];
+  structuredAnswers: Record<string, string>;
+}
+
+/**
+ * Construct an SDKUserMessage whose content is a single tool_result block
+ * pointing back at the AskUserQuestion's tool_use_id. The result content is
+ * a JSON-stringified AskUserQuestionOutput ({ questions, answers }) so the
+ * SDK / Claude can parse it as the structured tool response.
+ *
+ * Pushing this into the SDK's prompt iterable closes the tool_use loop and
+ * Claude continues the turn instead of saying "I didn't see your answer".
+ */
+export function buildAskQuestionToolResultMessage(args: BuildToolResultArgs): SDKUserMessage {
+  const { toolUseId, parentToolUseId, sessionId, questions, structuredAnswers } = args;
+  const payload = { questions, answers: structuredAnswers };
+  return {
+    type: "user",
+    parent_tool_use_id: parentToolUseId,
+    session_id: sessionId,
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: toolUseId,
+          content: JSON.stringify(payload),
+        },
+      ],
+    },
+  } as SDKUserMessage;
+}
