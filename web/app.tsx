@@ -1518,33 +1518,6 @@ function colorForCwd(cwd: string) {
   return CWD_PALETTE[h % CWD_PALETTE.length]!;
 }
 
-// ── Copy resume command ─────────────────────────────────────────────────────
-
-// Copies `pnpm --dir D:\code\cc-hub miki claude -r <uuid>` so user can quickly
-// re-arm a wrap session after killing it.
-function CopyResumeButton({ sessionUuid, compact }: { sessionUuid: string; compact?: boolean }) {
-  const [copied, setCopied] = useState(false);
-  function handle(e: MouseEvent) {
-    e.stopPropagation();
-    if (!sessionUuid) return;
-    const cmd = `pnpm --dir D:\\code\\cc-hub miki claude -r ${sessionUuid}`;
-    void navigator.clipboard.writeText(cmd).then(
-      () => { setCopied(true); window.setTimeout(() => setCopied(false), 1500); },
-      () => { /* clipboard perm denied — silent */ },
-    );
-  }
-  const iconSize = compact ? 11 : 13;
-  return (
-    <button
-      class="btn-ghost icon-btn"
-      style={{ padding: compact ? "3px 6px" : "4px 8px" }}
-      onClick={handle}
-      title={t("session.copyRestart", { uuid: sessionUuid })}
-      disabled={!sessionUuid}
-    >{copied ? <IconCheck size={iconSize} /> : <IconCopy size={iconSize} />}</button>
-  );
-}
-
 // ── Client type toggle badge ───────────────────────────────────────────────
 
 function ClientTypeBadge({ type, onToggle, size = "sm" }: {
@@ -2900,7 +2873,7 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, userOverla
          * the top row reads: title … [🔌 CLI] [📋 copy]. Hidden for wrapped
          * sessions (already wrapped — nothing to start). */}
         {!s.wrapped && s.session_uuid && <WrapStartButton sessionUuid={s.session_uuid} />}
-        <CopyResumeButton sessionUuid={s.session_uuid ?? ""} compact />
+        {/* CopyResumeButton removed in 0.3.11 — CloseCardButton lands in Task 6 */}
       </div>
       <div class="cell-cwd" style={{ color: c.label, display: "flex", alignItems: "center", gap: 6 }} title={s.cwd}>
         <strong style={{ fontWeight: 600 }}>{s.project_name}</strong>

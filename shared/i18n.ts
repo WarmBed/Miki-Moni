@@ -68,7 +68,7 @@ export function useLocale(): [Locale, (l: Locale) => void] {
 
 type Dict = Record<string, string>;
 
-const zhTW: Dict = {
+export const zhTW: Dict = {
   // status
   "status.active":  "進行中",
   "status.waiting": "等你回應",
@@ -187,13 +187,17 @@ const zhTW: Dict = {
   "header.settingsTitle": "設定",
 
   // session card / row
-  "session.copyRestart":      "複製重啟指令：pnpm --dir D:\\code\\cc-hub miki claude -r {uuid}",
   "session.cliMarkTooltip":   "標記為 CLI session — 預填送出已停用（URI handler 不支援 terminal）。點一下改回 VSCode。",
   "session.vscodeMarkTooltip":"標記為 VSCode session — 點一下改成 CLI。",
   "session.waitingBadge":     "🔔 待回應",
   "session.waitingTooltip":   "Claude 還在等你回答 — 點開重新顯示問題",
   "session.openTab":          "開到 tab",
   "session.wrappedDetailed":  "這個 session 被 `miki claude` wrapper 接管（CLI session）— 送出走 push、不再 spawn / 不花 $$",
+  "session.closeWrapped":     "停止 wrap（保留 session）",
+  "session.closeHidden":      "從本機隱藏這張卡",
+  "session.unhide":           "取消隱藏",
+  "filter.hiddenLabel":       "🙈 已隱藏",
+  "filter.hiddenTooltip":     "顯示已從本機隱藏的卡片（{n} 張）",
   "session.empty":            "(尚未開始對話)",
   "session.quickSend":        "快速送出（彈出小卡片，不展開 transcript）",
   "session.openCli":          "開 CLI",
@@ -360,7 +364,7 @@ const zhTW: Dict = {
   "phone.log.sendClick":          "click 送出 prompt",
 };
 
-const zhCN: Dict = {
+export const zhCN: Dict = {
   "status.active":  "进行中",
   "status.waiting": "等你回应",
   "status.idle":    "闲置",
@@ -469,13 +473,17 @@ const zhCN: Dict = {
   "header.settingsBtn":   "⚙️ 设置",
   "header.settingsTitle": "设置",
 
-  "session.copyRestart":       "复制重启指令：pnpm --dir D:\\code\\cc-hub miki claude -r {uuid}",
   "session.cliMarkTooltip":    "标记为 CLI session — 预填送出已停用（URI handler 不支持 terminal）。点一下改回 VSCode。",
   "session.vscodeMarkTooltip": "标记为 VSCode session — 点一下改成 CLI。",
   "session.waitingBadge":      "🔔 待回应",
   "session.waitingTooltip":    "Claude 还在等你回答 — 点开重新显示问题",
   "session.openTab":           "开到 tab",
   "session.wrappedDetailed":   "这个 session 被 `miki claude` wrapper 接管（CLI session）— 送出走 push、不再 spawn / 不花 $$",
+  "session.closeWrapped":      "停止 wrap（保留 session）",
+  "session.closeHidden":       "从本机隐藏这张卡",
+  "session.unhide":            "取消隐藏",
+  "filter.hiddenLabel":        "🙈 已隐藏",
+  "filter.hiddenTooltip":      "显示已从本机隐藏的卡片（{n} 张）",
   "session.empty":             "(尚未开始对话)",
   "session.quickSend":         "快速送出（弹出小卡片，不展开 transcript）",
   "session.openCli":           "开 CLI",
@@ -637,7 +645,7 @@ const zhCN: Dict = {
   "phone.log.sendClick":          "click 送出 prompt",
 };
 
-const en: Dict = {
+export const en: Dict = {
   "status.active":  "Active",
   "status.waiting": "Awaiting you",
   "status.idle":    "Idle",
@@ -746,13 +754,17 @@ const en: Dict = {
   "header.settingsBtn":   "⚙️ Settings",
   "header.settingsTitle": "Settings",
 
-  "session.copyRestart":       "Copy restart command: pnpm --dir D:\\code\\cc-hub miki claude -r {uuid}",
   "session.cliMarkTooltip":    "Marked as CLI session — prefilled send is disabled (URI handler doesn't support terminal). Click to switch back to VSCode.",
   "session.vscodeMarkTooltip": "Marked as VSCode session — click to switch to CLI.",
   "session.waitingBadge":      "🔔 Awaiting reply",
   "session.waitingTooltip":    "Claude is still waiting for your answer — click to re-show the question",
   "session.openTab":           "Open in tab",
   "session.wrappedDetailed":   "This session is taken over by the `miki claude` wrapper (CLI session) — sends go via push, no spawn / no $$",
+  "session.closeWrapped":      "Stop wrap (keep session)",
+  "session.closeHidden":       "Hide this card on this device",
+  "session.unhide":            "Un-hide",
+  "filter.hiddenLabel":        "🙈 Hidden",
+  "filter.hiddenTooltip":      "Show cards hidden on this device ({n})",
   "session.empty":             "(no conversation yet)",
   "session.quickSend":         "Quick send (pops a small card, no transcript expand)",
   "session.openCli":           "Open CLI",
