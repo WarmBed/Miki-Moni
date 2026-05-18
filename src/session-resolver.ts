@@ -79,6 +79,14 @@ export interface TranscriptTurn {
   text: string;                  // free-form markdown content
   tool_use?: ToolUseInfo;
   tool_result?: ToolResultInfo;
+  /**
+   * Image blocks pasted/uploaded by the user (or returned in a multi-block
+   * message). Each entry is a base64 payload — same shape Anthropic's
+   * content blocks use ({ type: "image", source: { type: "base64", … } }).
+   * Without this, image blocks in the JSONL were silently dropped and the
+   * bubble rendered text-only.
+   */
+  images?: Array<{ media_type: string; data: string }>;
   raw_type?: string;
 }
 
@@ -381,6 +389,23 @@ export async function readTranscriptTail(
     }
     if (!Array.isArray(content)) continue;
 
+    // Pre-scan image blocks so we can attach them to the same turn as the
+    // text block (one chat bubble = text + image, like a normal chat app).
+    // The SDK stores user-uploaded images as content blocks of shape
+    // { type:"image", source:{ type:"base64", media_type, data } }. Without
+    // this pass, the loop below (which only knew text/tool_use/tool_result)
+    // silently dropped them and the bubble was text-only.
+    const msgImages: Array<{ media_type: string; data: string }> = [];
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      if (block.type !== "image") continue;
+      const src = (block as any).source;
+      if (src?.type === "base64" && typeof src.media_type === "string" && typeof src.data === "string") {
+        msgImages.push({ media_type: src.media_type, data: src.data });
+      }
+    }
+    let imagesAttached = false;
+
     // For multi-block messages: emit ONE turn per "interesting block" so the
     // dashboard can render text vs tool_use vs tool_result distinctly.
     //
@@ -395,7 +420,15 @@ export async function readTranscriptTail(
       if (!block || typeof block !== "object") continue;
       if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
         const role: TranscriptTurn["role"] = injected ? "system" : rawRole;
-        turns.push({ ts, role, text: block.text, raw_type: entry.type });
+        // Attach images to the first (= latest in original order, since we
+        // iterate backward) text block we find, so the bubble shows text +
+        // its image together.
+        const turn: TranscriptTurn = { ts, role, text: block.text, raw_type: entry.type };
+        if (!imagesAttached && msgImages.length > 0) {
+          turn.images = msgImages;
+          imagesAttached = true;
+        }
+        turns.push(turn);
       } else if (block.type === "tool_use") {
         const name = block.name ?? "?";
         const input = block.input ?? {};
@@ -425,6 +458,13 @@ export async function readTranscriptTail(
           },
         });
       }
+    }
+
+    // Image-only message (no text block in this entry): emit a synthetic
+    // turn so the image still shows up in the dashboard instead of vanishing.
+    if (!imagesAttached && msgImages.length > 0) {
+      const role: TranscriptTurn["role"] = injected ? "system" : rawRole;
+      turns.push({ ts, role, text: "", raw_type: entry.type, images: msgImages });
     }
   }
 

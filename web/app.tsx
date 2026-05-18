@@ -32,7 +32,7 @@ interface PendingAsk { question_id: string; questions: AskQuestion[] }
 
 interface ToolUseInfo { id: string; name: string; description?: string; input: unknown; input_summary: string }
 interface ToolResultInfo { tool_use_id?: string; content: string; truncated: boolean; is_error?: boolean }
-interface TranscriptTurn { ts: string; role: "user" | "assistant" | "system"; text: string; tool_use?: ToolUseInfo; tool_result?: ToolResultInfo; raw_type?: string }
+interface TranscriptTurn { ts: string; role: "user" | "assistant" | "system"; text: string; tool_use?: ToolUseInfo; tool_result?: ToolResultInfo; images?: Array<{ media_type: string; data: string }>; raw_type?: string }
 interface TranscriptResp { session_uuid: string; transcript_path: string; file_size: number; last_modified: string; turn_count: number; turns: TranscriptTurn[] }
 
 interface LogEntry { ts: number; level: "info" | "warn" | "error"; msg: string; ctx?: Record<string, unknown> }
@@ -677,6 +677,18 @@ function TurnView({ turn }: { turn: TranscriptTurn }) {
           )}
         </div>
         {turn.text && <MD text={turn.text} />}
+        {turn.images && turn.images.length > 0 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: turn.text ? 8 : 0 }}>
+            {turn.images.map((img, i) => (
+              <img
+                key={i}
+                src={`data:${img.media_type};base64,${img.data}`}
+                alt=""
+                style={{ display: "block", maxHeight: 200, maxWidth: "100%", borderRadius: 4, border: "1px solid var(--border)" }}
+              />
+            ))}
+          </div>
+        )}
         {turn.tool_use && <ToolUseBox turn={turn} />}
         {turn.tool_result && <ToolResultBox turn={turn} />}
       </div>
