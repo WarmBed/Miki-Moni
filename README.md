@@ -2,243 +2,181 @@
 
 **[English](README.md) · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md)**
 
-> 巫女 (Miki the Monitor) — watches your Claude Code sessions and pings you when one needs attention.
+> 巫女 (Miki the Monitor) — one dashboard for every Claude Code session you have open, with end-to-end encrypted remote control from your phone.
 
-Aggregate the state of every VSCode Claude Code panel into a single local dashboard. Connect to it from your phone or another laptop through an end-to-end encrypted relay.
-
+<!-- TODO(screenshot): desktop dashboard, post-0.3.0 chat-bubble layout -->
 <p align="center">
-  <img src="docs/images/dashboard-desktop.png" width="800" alt="Desktop dashboard — session cards with live transcript">
-  <br />
-  <em>Desktop dashboard at <code>http://127.0.0.1:8765</code></em>
+  <img src="docs/images/dashboard-desktop.png" width="820" alt="Desktop dashboard — session grid with live transcripts">
 </p>
 
-<table>
-<tr>
-<td align="center" width="33%">
-  <img src="docs/images/dashboard-phone.png" width="280" alt="Phone dashboard — same content, single-column mobile layout">
-  <br /><em>Phone dashboard (mobile viewport)</em>
-</td>
-<td align="center" width="33%">
-  <img src="docs/images/phone-pair-screen.png" width="280" alt="Phone pairing screen — QR scan + 16-char code">
-  <br /><em>Phone pairing screen — scan QR or type code</em>
-</td>
-<td align="center" width="33%">
-  <img src="docs/images/cli-banner.png" width="280" alt="CLI banner — miki start prints QR + URL + 16-char code on startup">
-  <br /><em><code>miki start</code> prints QR + URL + code on every startup</em>
-</td>
-</tr>
-</table>
+<p align="center">
+  <a href="#quick-start">Install</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#self-host">Self-host</a> ·
+  <a href="#security">Security</a>
+</p>
 
 ---
 
-## What's new in v0.3.0
+## What it is
 
-- **Dynamic model switching** — every session card has a Model chip; pop it open to switch between default / Sonnet / Opus / Haiku / a custom model id mid-conversation. Change propagates live to all dashboards.
-- **Mobile UX overhaul** — chat-bubble transcript (user right, assistant left), swipe-right-to-close on session modals, image-upload button in the composer, iOS focus-zoom + keyboard-resize fixes, textarea auto-grow.
-- **Mode chips show color** — `acceptEdits` blue, `bypass` red — not just neutral grey.
-- **New CLI popover** now includes a native picker for recent cwds.
-- **Transcript controls collapse** into a single sliders popover on phone modals (show-tool / limit / load-all / reload).
+You run several Claude Code panels at once. One finishes; you don't notice. You walk away from your desk and can't peek. A teammate's machine has the context; you can't see it.
 
-<table>
-<tr>
-<td align="center" width="25%">
-  <img src="docs/images/phone-session-modal.png" width="220" alt="Phone session modal — chat-bubble transcript, swipe-right-to-close">
-  <br /><em>Chat-bubble transcript on phone</em>
-</td>
-<td align="center" width="25%">
-  <img src="docs/images/model-picker.png" width="220" alt="Model picker popover — default / Sonnet / Opus / Haiku / custom id">
-  <br /><em>Dynamic model switching</em>
-</td>
-<td align="center" width="25%">
-  <img src="docs/images/mode-picker.jpg" width="220" alt="Mode picker popover — Ask before edits / Edit automatically / Plan / Auto / Bypass">
-  <br /><em>Per-mode color chips</em>
-</td>
-<td align="center" width="25%">
-  <img src="docs/images/composer-bar.jpg" width="220" alt="Composer status bar — mode chip, activity, image-upload button">
-  <br /><em>Composer with image upload</em>
-</td>
-</tr>
-</table>
+Miki-Moni hooks into every Claude Code panel on your machine and aggregates them into a single dashboard at `http://127.0.0.1:8765`. An optional encrypted relay lets a phone or second laptop see the same view and push prompts back.
 
-## Why
+- **Aggregates, doesn't replace.** Hooks sit alongside `claude` — you keep starting sessions the way you already do.
+- **Sessions are durable.** Every session can be resumed from any terminal by UUID — `miki claude -r <uuid>` brings back full context, even if the original window crashed.
+- **Local by default, remote when you opt in.** The daemon binds `127.0.0.1` only. Phone access flows through E2E-encrypted envelopes via a Cloudflare Worker that never holds keys.
 
-- Three Claude Code panels open across two VSCode windows. One finishes; you don't notice for 20 minutes.
-- You walk away from your desk; you want to peek at "did it finish yet?" from your phone without VPN-ing in.
-- A teammate's machine has the project loaded; you want a read-only view from yours.
-
-Miki-Moni gives you **one dashboard** that aggregates every Claude Code session (across windows, projects, machines) and lets you respond from anywhere.
-
-**Resume any session from any terminal.** Started a session in VSCode and your editor crashed? Closed the wrong window? Switched to a different terminal? Every session — VSCode-spawned or CLI-spawned — is resumable with its **full context** by running `miki claude -r <session-uuid>`. The dashboard exposes a one-click *Open CLI* button on each session card; from your phone, just keep prompting the same session through the relay. No more "I lost my Claude context" — the session UUID is the durable handle, not the window that started it.
-
-## Install
+## Quick start
 
 ```bash
 npm install -g miki-moni
 miki start
 ```
 
-Or from source (for contributing / unreleased changes):
+First run launches a wizard that asks for language, relay mode (hosted / self-host / local-only), and prints a permanent pairing QR:
 
-```bash
-git clone https://github.com/WarmBed/Miki-Moni
-cd Miki-Moni
-pnpm install
-pnpm build:all
-pnpm link --global       # makes `miki` available on PATH
-miki start
-```
+<!-- TODO(screenshot): wizard output with QR -->
+<p align="center">
+  <img src="docs/images/cli-banner.png" width="520" alt="miki start prints QR + URL + 16-char code">
+</p>
 
-On first run, a setup wizard asks:
-
-1. **Language** — English / 繁體中文 / 简体中文
-2. **Relay mode** — pick one:
-   - **Hosted** (default) — uses the author's free `relay.f1telemetrystationpro.org`. Zero setup.
-   - **Self-host** — auto-deploys a Cloudflare Worker + Pages site to *your* CF account (needs `wrangler`).
-   - **Local-only** — no phone access; dashboard at `127.0.0.1:8765` only.
-
-Then it prints a permanent pairing QR + 16-char code:
-
-```
-📱 Phone pairing — scan QR, open URL, or type the 16-char code:
-
-  [QR code]
-
-   URL:    https://miki-moni.pages.dev/#t=XXXX...&r=wss://...
-   Code:   XXXX-XXXX-XXXX-XXXX
-   Local:  http://127.0.0.1:8765
-   (QR / URL / Code are permanent — rotate with `miki pair --rotate`)
-```
-
-That QR works permanently — scan once on each device you want to pair. Rotate when leaked.
-
-## Three deployment modes
-
-|  | Hosted | Self-host | Local-only |
-|---|---|---|---|
-| **Setup** | 0 sec | ~5 min wizard | 0 sec |
-| **Needs CF account** | No | Yes | No |
-| **Phone access** | Yes | Yes | No |
-| **Trust author's infra** | Yes ([§ Security](#security)) | No | N/A |
-| **Bandwidth limits** | Author's CF free tier (100k req/day) | Your CF free tier | N/A |
-| **Rotate later** | `miki setup` | `miki setup` | `miki setup` |
+Scan the QR once on each device. The token is permanent until you `miki pair --rotate`. Dashboard is live at [http://127.0.0.1:8765](http://127.0.0.1:8765).
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                                                                          │
-│  ╭─ Your machine ────────────────────────────────────────────────────╮   │
-│  │                                                                   │   │
-│  │  miki-moni daemon (Node, 127.0.0.1:8765)                          │   │
-│  │    POST /event   GET /sessions   POST /focus /send  WS /ws        │   │
-│  │                                                                   │   │
-│  │     ▲                       ▲                            ▲       │   │
-│  │ PS hooks            web dashboard               RelayClient       │   │
-│  │ (~/.claude/         (browser at 127.0.0.1)                        │   │
-│  │  settings.json)                                                   │   │
-│  ╰────────────────────────────────────────────────────┬──────────────╯   │
-│                                                       │ E2E encrypted    │
-│                                                       │ envelope         │
-│                                          ╭────────────▼─────────────╮   │
-│                                          │ Cloudflare Worker relay  │   │
-│                                          │ (zero-knowledge: routes  │   │
-│                                          │  encrypted blobs only)   │   │
-│                                          ╰────────────┬─────────────╯   │
-│                                                       │ E2E encrypted    │
-│                                                       ▼                  │
-│                                          ╭──────────────────────────╮   │
-│                                          │ Phone / 2nd laptop /     │   │
-│                                          │ tablet (web PWA)         │   │
-│                                          │  · scans QR → auto-pair  │   │
-│                                          │  · sees same dashboard   │   │
-│                                          ╰──────────────────────────╯   │
-└──────────────────────────────────────────────────────────────────────────┘
+┌─ your machine ─────────────────────────────────────────────────────────┐
+│                                                                        │
+│  Claude Code (any panel)                                               │
+│   │                                                                    │
+│   │ PS hooks (SessionStart / Stop / UserPromptSubmit / PreToolUse /    │
+│   │            PostToolUse)                                            │
+│   │  ── POST /event ──▶                                                │
+│   │                                                                    │
+│   │   ┌──────────────────────────────────────────────────────────┐    │
+│   │   │  miki-moni daemon  (Node, 127.0.0.1:8765)                │    │
+│   │   │  ─ session store (better-sqlite3)                        │    │
+│   │   │  ─ HTTP:  /event /sessions /focus /send /wrap/*          │    │
+│   │   │  ─ WS:    /ws (dashboard)   /wrap (CLI)   /ws_ext (ext)  │    │
+│   │   │  ─ RelayClient (X25519 + NaCl secretbox)                 │    │
+│   │   └─────┬──────────────┬────────────────┬───────────┬───────┘    │
+│   │         │ WS /ws       │ WS /ws_ext     │ WS /wrap  │ relay      │
+│   ▼         ▼              ▼                ▼           │ envelope   │
+│  hooks    web dashboard   VSCode helper   miki claude   │            │
+│           (Preact SPA)    extension       (wrap CLI)    │            │
+│                                                          │            │
+└──────────────────────────────────────────────────────────┼────────────┘
+                                                           │
+                                       ╭───────────────────▼──────────╮
+                                       │ Cloudflare Worker relay      │
+                                       │ (zero-knowledge: opaque blobs│
+                                       │  only, never holds keys)     │
+                                       ╰───────────────────┬──────────╯
+                                                           │ E2E encrypted
+                                                           ▼
+                                       ╭──────────────────────────────╮
+                                       │ Phone PWA / 2nd laptop       │
+                                       │ Ed25519 keypair in IndexedDB │
+                                       ╰──────────────────────────────╯
 ```
 
-**Encryption**: X25519 ECDH at pair time → per-peer shared secret → NaCl `secretbox` on every envelope. The relay never holds keys; only the daemon and the paired phone can read content.
-
-**Auth**: each phone holds an Ed25519 signing keypair (in IndexedDB). On reconnect, it signs `daemon_id || utc_minute` — relay verifies before routing. Revoke per-device with `miki pair --revoke <peer_id>`.
-
-## Dashboard features
-
-Top bar:
-
-| | What it does |
+| Component | Role |
 |---|---|
-| **Counters** (`5 active · 0 idle · 56 total`) | Click to filter the grid to that status (click again to clear) |
-| **➕ New CLI** | Open a new wrapped Claude session in a fresh folder (`miki claude --fresh`) |
-| **⚙️ Settings** | Send key (Enter vs Ctrl/⌘+Enter), theme (light/dark), language (en / 繁中 / 简中) |
-| **WS status dot** | Green = receiving live updates · amber = reconnecting |
+| **PS hooks** | Posted by Claude Code to `/event` on every session/tool boundary so non-wrapped panels show up in the dashboard. |
+| **daemon** | Node + express + ws + better-sqlite3. Holds session state and routes the four WS planes. |
+| **web dashboard** | Preact + Tailwind SPA mounted at `/`. Reads `/ws`, posts `/send` and `/focus`. |
+| **wrap CLI** (`miki claude`) | Wraps a Claude Code session so the daemon can push prompts (`/send`), switch model (`/wrap/model`), and resume by UUID. |
+| **VSCode helper extension** | Connects to `/ws_ext`; receives `claude-vscode.focus` and pre-fills prompts into the active panel. |
+| **RelayClient** | E2E-encrypts envelopes (X25519 ECDH per peer → NaCl secretbox) and ships them to the Worker. |
+| **Cloudflare Worker** | Stateless relay. Routes opaque ciphertext between daemon and paired peers. Verifies Ed25519 signatures on `daemon_id ‖ utc_minute`. |
+| **Phone PWA** | Web client served from Pages. Scans QR, holds an Ed25519 signing key in IndexedDB, talks to the relay. |
 
-Session cards:
+Full protocol details in [`docs/protocols/relay-protocol.md`](docs/protocols/relay-protocol.md).
 
-| Element | What it does |
+## Features
+
+### Dashboard
+
+- **Multi-session grid** — every Claude Code panel on the machine, regardless of which VSCode window or terminal started it.
+- **Status counters** that filter — click `5 active` to scope the grid; click again to clear.
+- **Live transcript** in chat-bubble layout (user right, assistant/system/tool left). Toggle tool calls, limit slider (10 / 50 / 200 / all).
+- **WS status dot** — green when receiving live updates, amber while reconnecting.
+
+<!-- TODO(screenshot): desktop dashboard, session card close-up -->
+
+### Session control
+
+- **Model chip** — pop open to switch model live: default / Sonnet / Opus / Haiku / custom id. Broadcasts to every connected dashboard via `POST /wrap/model`.
+- **Mode chip with color** — `acceptEdits` blue, `bypass` red, plain ask grey. Locked for the session's lifetime.
+- **Open CLI** — spawn `wt.exe` running `miki claude -r <session-uuid>` to take over a session from a terminal with full context. Works even if the original panel has been closed or crashed.
+- **Send composer** — multi-line input with auto-grow. Enter or Ctrl/⌘+Enter to send (your choice). Paste, drop, or pick image attachments.
+
+<p align="center">
+  <img src="docs/images/model-picker.png" width="240" alt="Model picker popover">
+  <img src="docs/images/mode-picker.jpg" width="240" alt="Mode picker popover">
+</p>
+
+### Mobile
+
+- **Phone dashboard** — same grid, single-column layout, scoped tap targets.
+- **Chat-bubble transcript** matches the desktop, fits a phone viewport.
+- **Swipe-right-to-close** session modals — document-level gesture with translateX preview.
+- **Composer** with image-upload button (mobile file picker), textarea auto-grow, and iOS focus-zoom + keyboard-resize fixes.
+- **Collapsible transcript controls** (show-tool / limit / load-all / reload) tucked behind one sliders popover.
+
+<p align="center">
+  <img src="docs/images/dashboard-phone.png" width="220" alt="Phone dashboard">
+  <img src="docs/images/phone-session-modal.png" width="220" alt="Phone session modal">
+  <img src="docs/images/composer-bar.jpg" width="220" alt="Composer bar">
+</p>
+
+## Deployment modes
+
+|  | Hosted | Self-host | Local-only |
+|---|---|---|---|
+| Setup | 0 sec | ~5 min wizard | 0 sec |
+| Needs CF account | No | Yes | No |
+| Phone access | Yes | Yes | No |
+| Trust author's infra | Yes | No | N/A |
+| Bandwidth ceiling | Author's CF free tier (~100k req/day) | Your CF free tier | N/A |
+| Switch later | `miki setup` | `miki setup` | `miki setup` |
+
+Default is **Hosted**, pointing at `relay.f1telemetrystationpro.org`. The wizard will deploy a Worker + Pages site to your own CF account if you pick Self-host.
+
+## Security
+
+The daemon binds **`127.0.0.1` only** — nothing on the public network can reach it. Phone access is end-to-end encrypted (X25519 ECDH at pair time → NaCl `secretbox` per envelope). The relay only routes opaque ciphertext and never holds shared secrets.
+
+The daemon trusts any process running as your user to call `/event`, `/send`, `/focus`, and connect to `/ws_ext`. This keeps hooks and the helper extension token-free but means: anything that runs as your user can talk to the daemon. Treat `~/.miki-moni/` like `~/.ssh/`.
+
+| The phone **can** | The phone **cannot** |
 |---|---|
-| **Project name + cwd** | Header — click to expand the card / view full transcript |
-| **🖥️ VSCode / 📟 CLI badge** | Toggles how *send* / *focus* dispatches. **VSCode**: prompt fills the VSCode panel via `vscode://anthropic.claude-code/open?session=…`. **CLI**: prompt goes through the wrap CLI's WebSocket directly. |
-| **Permission badge** (`✏️ auto edit` blue, `🚀 bypass` red) | Only on wrapped CLI sessions started with `--permission-mode acceptEdits` / `--bypass-permissions`. Locked for the session lifetime. Per-mode color. |
-| **Model chip** ⭐ | Pop open to switch model live — default / Sonnet / Opus / Haiku / custom id. Broadcasts to every dashboard. Backed by `POST /wrap/model`. |
-| **Transcript view** | Chat-bubble layout (user right, assistant/system/tool left). Toggle tool calls. Limit slider (10 / 50 / 200 / all). On phone the controls collapse into a single sliders popover. |
-| **Send composer** | Multi-line prompt input with auto-grow. Enter or Ctrl/⌘+Enter to send (per your settings choice). Image attachment via paste/drop *and* a file-picker button (mobile-friendly). |
-| **Swipe-right-to-close** (phone) | Drag the session modal right to dismiss; document-level gesture with translateX preview. |
-| **Open CLI button** ⭐ | **Take over the session from a CLI, with full context.** Spawns `wt.exe` (Windows Terminal) running `miki claude -r <session-uuid>` — Claude resumes from the exact turn the VSCode panel was on. Works regardless of where the session was originally started; the panel can be closed, crashed, or on a different window. Pair with the phone dashboard and you keep prompting the same session from anywhere. |
-| **Focus button** | `POST /focus` — raises the matching VSCode window (or new CLI tab) to foreground. |
+| See live session state + transcript | Run arbitrary shell commands |
+| Push prompts (pre-fill in VSCode; direct send to wrap CLI) | Auto-submit a prompt into VSCode without your keystroke |
+| Focus an existing panel | Bypass Claude Code's per-tool permission prompts |
+
+Risk table, hardening options, and the full hooks / extension trust analysis: [`docs/security/`](docs/security/).
 
 ## CLI reference
 
 | Command | What it does |
 |---|---|
-| `miki start` | Run daemon + print pairing banner. First run launches the setup wizard. |
-| `miki setup` | Re-run the wizard (change language, switch relay mode, etc.) |
-| `miki pair` | Show the current permanent QR + paired-phones list. |
-| `miki pair --rotate` | Generate a new pair token (invalidates the old QR; paired phones keep working). |
-| `miki pair --list` | List paired phones with their IDs + paired timestamps. |
-| `miki pair --revoke <peer_id>` | Remove a phone from local config AND tell the relay to drop it. |
-| `miki pair --new` | One-shot ephemeral token (10 min TTL) — legacy / debugging. |
-| `miki claude [...args]` | Wrap a Claude Code session and auto-spawn the daemon if down. |
-| `miki install-hooks` | Merge Claude Code hooks into `~/.claude/settings.json` so non-wrapped panels show up too. |
+| `miki start` | Run the daemon; first run launches the setup wizard. |
+| `miki setup` | Re-run the wizard (change language, switch relay mode). |
+| `miki pair` | Show the permanent QR + paired-phones list. |
+| `miki pair --rotate` | Invalidate the current QR; already-paired phones keep working. |
+| `miki claude [...args]` | Wrap a Claude Code session; auto-spawns the daemon if down. |
+| `miki install-hooks` | Merge Claude Code hooks into `~/.claude/settings.json`. |
 
-Verbose daemon logs: `MIKI_LOG_LEVEL=info miki start`. Full trace always in `~/.miki-moni/miki-moni.log`.
+`miki --help` for the full list. Verbose logs: `MIKI_LOG_LEVEL=info miki start`. Full trace always in `~/.miki-moni/miki-moni.log`.
 
-## Security
+## Self-host
 
-### What the phone can and can't do
-
-Designed conservatively to keep the threat model small:
-
-| The phone **can** | The phone **cannot** |
-|---|---|
-| See live session state + transcript | Run arbitrary shell commands on your machine |
-| Pre-fill a prompt into a VSCode panel (`/focus`) | Auto-submit a prompt without your VSCode keystroke (Anthropic's design) |
-| Push a prompt through the wrap CLI WebSocket for sessions started with `miki claude` | Spawn new processes or read files outside the session transcript |
-| Trigger a focus on an existing panel | Bypass Claude Code's tool-permission prompts (those still gate every tool call) |
-
-### Trust boundaries
-
-The daemon binds **`127.0.0.1` only** — nothing on the public network can reach it, ever. Remote access flows through the encrypted relay, not the local HTTP port.
-
-The daemon trusts any process running on the same machine to call `/event`, `/send`, `/focus`, and connect to `/ws_ext`. This is intentional (so Claude Code hooks and the VSCode helper extension don't need a token) but means: **anything that runs as your user can talk to the daemon**. See [`docs/security/hooks-trust-model.md`](docs/security/hooks-trust-model.md) and [`docs/security/extension-ws-trust-model.md`](docs/security/extension-ws-trust-model.md) for the full local-trust analysis and hardening options.
-
-### Risk table
-
-Ordered by realism:
-
-| Risk | Mitigation |
-|---|---|
-| 🔴 **Pairing QR leaks** (screenshot in chat, photo of screen, posted publicly) | Permanent QR means anyone with it can pair. Treat the QR like an SSH key. Rotate immediately if leaked: `miki pair --rotate`. |
-| 🟡 **Paired phone stolen** | Phone holds an Ed25519 signing key that grants relay access. Revoke from the daemon: `miki pair --revoke <peer_id>`. |
-| 🟡 **Local machine compromised** | The daemon trusts loopback. Any malicious process running as your user can read sessions and intercept prompts via `/ws_ext`. Treat `~/.miki-moni/` (private keys, paired-phone records) like `~/.ssh/`. |
-| 🟢 Brute-force pair token | 16 Crockford base32 chars ≈ 80 bits of entropy. Computationally infeasible. |
-| 🟢 Relay sees content | Zero-knowledge by design — relay only routes opaque ciphertext, never holds shared secrets. |
-| 🟡 You trust the hosted relay operator | Self-host avoids this entirely. The author can see metadata (peer IDs, timing, sizes) and theoretically swap the PWA bundle. Source is open; verify or self-host. |
-| 🟢 DDoS on hosted relay | Cloudflare rate-limit binding caps at 30 req/60s per IP. Worst case: your daily quota burns. |
-
-## Self-host (manual)
-
-The `miki setup` wizard automates this end-to-end, but if you prefer manual:
+The setup wizard does this end-to-end; for manual deployment:
 
 ```bash
-# In a cloned cc-hub source tree:
 cd worker
 wrangler login
 wrangler deploy --config wrangler-selfhost.toml --name my-relay
@@ -246,7 +184,7 @@ wrangler pages project create my-phone --production-branch=main
 wrangler pages deploy ../dist/web-phone --project-name my-phone --branch=main
 ```
 
-Then edit `~/.miki-moni/config.json`:
+Then point `~/.miki-moni/config.json` at your endpoints:
 
 ```json
 {
@@ -257,53 +195,33 @@ Then edit `~/.miki-moni/config.json`:
 }
 ```
 
-`miki start` will pick up the new endpoints on next run.
-
 ## Development
 
 ```bash
 git clone https://github.com/WarmBed/Miki-Moni
 cd Miki-Moni
 pnpm install
-pnpm typecheck
-pnpm test         # daemon + worker test suites
 pnpm dev          # tsx watch src/index.ts
+pnpm test         # daemon + worker test suites
+pnpm typecheck
 ```
 
-Source tree:
+Source tree: `src/` daemon · `web/` dashboard SPA · `web-phone/` phone bootstrap · `worker/` Cloudflare Worker · `extension/` VSCode helper · `hooks/` PS hook scripts · `bin/miki.mjs` CLI entry.
 
-| Path | Purpose |
-|---|---|
-| `src/` | Node daemon (express + ws + better-sqlite3) — hooks, pairing, RelayClient |
-| `web/` | Desktop / phone full dashboard (Preact + Tailwind + Vite) |
-| `web-phone/` | Phone bootstrap shell (QR scanner + tunnel setup) — mounts web/ |
-| `worker/` | Cloudflare Worker relay (DaemonRelay + PairingCoordinator DOs) |
-| `extension/` | VSCode helper extension — handles `claude-vscode.send` |
-| `hooks/` | Claude Code hook scripts (PowerShell) — POST events to daemon |
-| `bin/miki.mjs` | npm-published CLI entry |
+Branch model: `main` ships releases (current **v0.3.3**), `dev` carries active work with a `package.json` version bump on every change.
 
-## Branches
+## Related
 
-- `main` — versioned releases (current: v0.3.3)
-- `dev` — active development; every change gets a `package.json` version bump
+**[Happy](https://happy.engineering)** (`slopus/happy-cli`) solves an overlapping itch from a different angle. Both can coexist on the same machine.
 
-## Related projects
-
-**[Happy](https://happy.engineering)** (`slopus/happy-cli`, MIT) solves an overlapping itch — controlling Claude Code from your phone — from a different angle. Both can coexist on the same machine.
-
-|  | Miki-Moni | Happy |
+| | Miki-Moni | Happy |
 |---|---|---|
-| Primary entry point | VSCode panel — hooks pull every panel into a dashboard | Terminal wrapper that replaces `claude` |
-| Relay | Cloudflare Worker; self-host in ~5 min on your own CF account | Author-hosted socket.io server (`api.cluster-fluster.com`) |
-| Phone client | Web PWA — scan QR, no app install | Native iOS / Android apps |
-| Supported agents | Claude Code | Claude Code, Codex, Gemini, generic ACP |
-| Voice input | — | Yes |
-| Multi-session visual dashboard | Yes — aggregates across windows | Sessions managed independently |
-| Replaces `claude`? | No — hooks in alongside | Yes — spawns `claude` itself |
-| Remote spawn (start a session away from your desk) | — | Yes (`happy daemon`) |
-| End-to-end encrypted relay | Yes (X25519 + NaCl secretbox) | Yes (X25519 + NaCl secretbox + AES-GCM) |
+| Entry point | Hooks into existing panels | Replaces `claude` |
+| Phone client | Web PWA (no install) | Native iOS / Android |
+| Multi-session dashboard | Yes — aggregated grid | Per-session |
+| Supported agents | Claude Code | Claude Code, Codex, Gemini, ACP |
 
-Use Happy if you want a polished mobile-first experience across multiple AI agents and don't mind a SaaS relay. Use Miki-Moni if you live in VSCode, want a single dashboard for many parallel panels, or want to self-host the relay on your own CF account in minutes.
+Use Happy for a polished mobile-first multi-agent experience. Use Miki-Moni if you live in VSCode and want a single dashboard for every parallel panel, with a relay you can self-host in minutes.
 
 ## License
 

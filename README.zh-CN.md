@@ -2,235 +2,181 @@
 
 **[English](README.md) · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md)**
 
-> 巫女 (Miki the Monitor) — 看着你所有 Claude Code session，要回应的时候叫你。
+> 巫女 (Miki the Monitor) — 一张 dashboard 收齐你所有 Claude Code session，可端对端加密从手机遥控。
 
-把散落在各个 VSCode 窗口的 Claude Code panel 收进一张本机仪表板，手机或第二台笔电可以通过端对端加密 relay 连进来。
-
+<!-- TODO(screenshot): desktop dashboard, post-0.3.0 chat-bubble layout -->
 <p align="center">
-  <img src="docs/images/dashboard-desktop.png" width="800" alt="桌面 dashboard — session 卡片含实时 transcript">
-  <br />
-  <em>本机 dashboard：<code>http://127.0.0.1:8765</code></em>
+  <img src="docs/images/dashboard-desktop.png" width="820" alt="桌面 dashboard — session 卡片 + 实时 transcript">
 </p>
 
-<table>
-<tr>
-<td align="center" width="33%">
-  <img src="docs/images/dashboard-phone.png" width="280" alt="手机 dashboard — 同样内容、单列移动版">
-  <br /><em>手机 dashboard（移动设备）</em>
-</td>
-<td align="center" width="33%">
-  <img src="docs/images/phone-pair-screen.png" width="280" alt="手机配对画面 — 扫 QR + 16 码输入">
-  <br /><em>手机配对画面 — 扫 QR 或输入 16 码</em>
-</td>
-<td align="center" width="33%">
-  <img src="docs/images/cli-banner.png" width="280" alt="CLI banner — miki start 启动时打印 QR + URL + 16 码">
-  <br /><em><code>miki start</code> 每次启动打印 QR + URL + 16 码</em>
-</td>
-</tr>
-</table>
+<p align="center">
+  <a href="#快速开始">安装</a> ·
+  <a href="#架构">架构</a> ·
+  <a href="#self-host">Self-host</a> ·
+  <a href="#安全">安全</a>
+</p>
 
 ---
 
-## v0.3.0 新功能
+## 这是什么
 
-- **动态切模型** — 每张 session 卡都有 Model chip，点开可以中途切 default / Sonnet / Opus / Haiku / 自定义 model id，改动实时同步到所有 dashboard
-- **手机 UX 大改** — 聊天气泡 transcript（user 右、assistant 左）、session modal 可右滑关闭、composer 多了图片上传按钮、修好 iOS focus-zoom 跟键盘缩放、textarea 自动长高
-- **模式 chip 带颜色** — `acceptEdits` 蓝、`bypass` 红，不再是死灰色
-- **新 CLI popover** 加了最近 cwd 的原生下拉选单
-- **手机端 transcript 控制** 折叠成一个 sliders popover（show-tool / limit / load-all / reload）
+你同时开了好几个 Claude Code panel。其中一个跑完了，你 20 分钟后才发现。你离开桌前想瞄一眼"跑完没？"，但不想 VPN 进来。同事机器上有 context，你想只读看一眼。
 
-<table>
-<tr>
-<td align="center" width="25%">
-  <img src="docs/images/phone-session-modal.png" width="220" alt="手机 session modal — 聊天气泡 transcript、可右滑关闭">
-  <br /><em>手机聊天气泡 transcript</em>
-</td>
-<td align="center" width="25%">
-  <img src="docs/images/model-picker.png" width="220" alt="Model 切换 popover — default / Sonnet / Opus / Haiku / 自定义 id">
-  <br /><em>动态切模型</em>
-</td>
-<td align="center" width="25%">
-  <img src="docs/images/mode-picker.jpg" width="220" alt="Mode 切换 popover — Ask before edits / Edit automatically / Plan / Auto / Bypass">
-  <br /><em>每个模式自己的颜色</em>
-</td>
-<td align="center" width="25%">
-  <img src="docs/images/composer-bar.jpg" width="220" alt="Composer 状态栏 — 模式 chip、activity、图片上传按钮">
-  <br /><em>composer + 图片上传</em>
-</td>
-</tr>
-</table>
+Miki-Moni 用 hooks 串接每一个 Claude Code panel，把它们聚合到本机 `http://127.0.0.1:8765` 一张 dashboard 上。要的话，加密 relay 让手机或第二台电脑看到同一个画面，并能推 prompt 回来。
 
-## 为什么
+- **聚合，不是取代。** Hooks 跟 `claude` 并存 — 你照原本方式起 session
+- **Session 是耐用的。** 任何 session 都能用 UUID 从任何 terminal 接回完整 context：`miki claude -r <uuid>`，原本的 panel 已关 / crash 都不影响
+- **默认纯本机，自己选才走远端。** Daemon 只绑 `127.0.0.1`。手机端走端对端加密 envelope，relay 不持有任何 key
 
-- 两个 VSCode 窗口开了三个 Claude Code panel，其中一个跑完了，你 20 分钟后才发现
-- 离开桌前想瞥一眼"跑完没？"但不想 VPN 进来
-- 同事机器有项目，你想只读看一眼
-
-Miki-Moni 给你**一张 dashboard** 收齐所有 Claude session（跨窗口、跨项目、跨机器），任何地方都能响应。
-
-**任何 session 都能从任何 terminal 接管继续做。** VSCode 起的、CLI 起的都一样，editor 崩了、窗口误关、想换个 terminal 继续做 — 一句 `miki claude -r <session-uuid>` 把**完整上下文**接回来。dashboard 每张 session 卡都有一键"Open CLI"按钮；手机端就直接通过 relay 对同一个 session 继续打字。再也不会"Claude 上下文掉了" — session UUID 是耐用的把手，不是起它的那个窗口。
-
-## 安装
+## 快速开始
 
 ```bash
 npm install -g miki-moni
 miki start
 ```
 
-或从 source 装（要贡献 / 用未 release 的改动）：
+首次启动跑 wizard：选语言、选 relay 模式（hosted / self-host / local-only）、打印永久配对 QR：
 
-```bash
-git clone https://github.com/WarmBed/Miki-Moni
-cd Miki-Moni
-pnpm install
-pnpm build:all
-pnpm link --global       # 把 `miki` 加到 PATH
-miki start
-```
+<!-- TODO(screenshot): wizard output with QR -->
+<p align="center">
+  <img src="docs/images/cli-banner.png" width="520" alt="miki start 打印 QR + URL + 16 码">
+</p>
 
-首次启动会跳设置 wizard：
-
-1. **语言** — English / 繁體中文 / 简体中文
-2. **Relay 模式** — 三选一：
-   - **Hosted**（默认）— 用作者免费 `relay.f1telemetrystationpro.org`，零设置
-   - **Self-host** — 自动部署 Cloudflare Worker + Pages 到你 CF 账号（需要 `wrangler`）
-   - **Local-only** — 不连手机，只用本机 `127.0.0.1:8765`
-
-然后打印永久配对 QR + 16 码：
-
-```
-📱 Phone pairing — scan QR, open URL, or type the 16-char code:
-
-  [QR]
-
-   URL:    https://miki-moni.pages.dev/#t=XXXX...&r=wss://...
-   Code:   XXXX-XXXX-XXXX-XXXX
-   Local:  http://127.0.0.1:8765
-   (QR / URL / Code 永久有效 — `miki pair --rotate` 可换)
-```
-
-那个 QR 永久有效，每台要配对的设备扫一次就好。泄漏时 rotate 即可。
-
-## 三种部署模式
-
-|  | Hosted | Self-host | Local-only |
-|---|---|---|---|
-| **设置时间** | 0 秒 | 约 5 分钟 wizard | 0 秒 |
-| **需要 CF 账号** | 否 | 是 | 否 |
-| **手机可用** | 是 | 是 | 否 |
-| **信任作者基础设施** | 是（[§ 安全](#安全)） | 否 | N/A |
-| **流量限制** | 作者 CF 免费层（10 万 req/天） | 你自己 CF 免费层 | N/A |
-| **随时切换** | `miki setup` | `miki setup` | `miki setup` |
+每台要配对的设备扫一次 QR 就好。Token 永久有效，除非你 `miki pair --rotate`。Dashboard 在 [http://127.0.0.1:8765](http://127.0.0.1:8765)。
 
 ## 架构
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│  你的电脑                                                                  │
-│  ╭─────────────────────────────────────────────────────────────╮        │
-│  │  miki-moni daemon (Node, 127.0.0.1:8765)                    │        │
-│  │    POST /event   GET /sessions   POST /focus /send  WS /ws  │        │
-│  │     ▲                       ▲                       ▲       │        │
-│  │ PS hooks            浏览器 dashboard       RelayClient       │        │
-│  ╰────────────────────────────────────────────┬────────────────╯        │
-│                                                │ E2E 加密 envelope        │
-│                                  ╭─────────────▼────────────╮            │
-│                                  │ Cloudflare Worker relay  │            │
-│                                  │ (零知识：只路由密文)       │             │
-│                                  ╰─────────────┬────────────╯            │
-│                                                ▼                         │
-│                                  ╭──────────────────────────╮            │
-│                                  │ 手机 / 第二台笔电 / 平板    │            │
-│                                  │  · 扫 QR → 自动配对        │            │
-│                                  │  · 看到一样的 dashboard    │            │
-│                                  ╰──────────────────────────╯            │
-└──────────────────────────────────────────────────────────────────────────┘
+┌─ 你的电脑 ─────────────────────────────────────────────────────────────┐
+│                                                                        │
+│  Claude Code（任何 panel）                                             │
+│   │                                                                    │
+│   │ PS hooks（SessionStart / Stop / UserPromptSubmit / PreToolUse /    │
+│   │            PostToolUse）                                           │
+│   │  ── POST /event ──▶                                                │
+│   │                                                                    │
+│   │   ┌──────────────────────────────────────────────────────────┐    │
+│   │   │  miki-moni daemon（Node, 127.0.0.1:8765）                │    │
+│   │   │  ─ session 存储（better-sqlite3）                         │    │
+│   │   │  ─ HTTP：/event /sessions /focus /send /wrap/*           │    │
+│   │   │  ─ WS：  /ws（dashboard） /wrap（CLI） /ws_ext（ext）    │    │
+│   │   │  ─ RelayClient（X25519 + NaCl secretbox）                │    │
+│   │   └─────┬──────────────┬────────────────┬───────────┬───────┘    │
+│   │         │ WS /ws       │ WS /ws_ext     │ WS /wrap  │ relay      │
+│   ▼         ▼              ▼                ▼           │ envelope   │
+│  hooks    浏览器 dashboard  VSCode helper   miki claude │            │
+│           （Preact SPA）   extension       （wrap CLI）  │            │
+│                                                          │            │
+└──────────────────────────────────────────────────────────┼────────────┘
+                                                           │
+                                       ╭───────────────────▼──────────╮
+                                       │ Cloudflare Worker relay      │
+                                       │ （零知识：只路由不透明 blob，│
+                                       │   不持有任何 key）            │
+                                       ╰───────────────────┬──────────╯
+                                                           │ E2E 加密
+                                                           ▼
+                                       ╭──────────────────────────────╮
+                                       │ 手机 PWA / 第二台电脑         │
+                                       │ Ed25519 keypair 存 IndexedDB │
+                                       ╰──────────────────────────────╯
 ```
 
-**加密**：配对时 X25519 ECDH → per-peer shared secret → 每个 envelope 用 NaCl `secretbox`。Relay 没有 key；只有 daemon 跟配对好的手机能解内容。
-
-**认证**：每台手机握一对 Ed25519 签名 keypair（IndexedDB）。重连时签 `daemon_id || utc_minute`，relay 验签才放行。`miki pair --revoke <peer_id>` 删单个设备。
-
-## Dashboard 功能
-
-上方工具栏：
-
-| | 作用 |
+| 组件 | 角色 |
 |---|---|
-| **计数器**（`5 进行中 · 0 闲置 · 56 总览`） | 点击筛选只看那个状态，再点取消 |
-| **➕ 新增 CLI** | 在指定文件夹开新 wrapped session（`miki claude --fresh`） |
-| **⚙️ 设置** | 发送键（Enter vs Ctrl/⌘+Enter）、主题（亮/暗）、语言 |
-| **WS 灯号** | 绿＝实时更新中 · 黄＝重连中 |
+| **PS hooks** | Claude Code 在 session / tool 边界 POST 到 `/event`，没 wrap 的 panel 也会被 dashboard 看到 |
+| **daemon** | Node + express + ws + better-sqlite3。持有 session 状态，路由四个 WS 平面 |
+| **浏览器 dashboard** | Preact + Tailwind SPA 挂在 `/`。读 `/ws`，POST `/send` 跟 `/focus` |
+| **wrap CLI**（`miki claude`） | 包一个 Claude Code session，让 daemon 能推 prompt（`/send`）、切模型（`/wrap/model`）、用 UUID resume |
+| **VSCode helper extension** | 连 `/ws_ext`；接收 `claude-vscode.focus` 把 prompt 预填进当前 panel |
+| **RelayClient** | E2E 加密 envelope（每个 peer 一对 X25519 ECDH → NaCl secretbox），打到 Worker |
+| **Cloudflare Worker** | Stateless relay。在 daemon 跟配对 peer 之间路由密文。校验 `daemon_id ‖ utc_minute` 的 Ed25519 签名 |
+| **手机 PWA** | Web client 从 Pages 出。扫 QR，IndexedDB 存 Ed25519 签名 key，跟 relay 沟通 |
 
-Session 卡片：
+完整协议见 [`docs/protocols/relay-protocol.md`](docs/protocols/relay-protocol.md)。
 
-| 元素 | 作用 |
+## 功能
+
+### Dashboard
+
+- **多 session 网格** — 本机上每一个 Claude Code panel，不管哪个 VSCode 窗口或 terminal 起的都收进来
+- **状态计数器可筛选** — 点 `5 进行中` 把网格收敛到那个状态，再点取消
+- **实时 transcript** 用聊天气泡版面（user 右、assistant/system/tool 左）。可切 tool call 显示，滚动门槛 10 / 50 / 200 / 全部
+- **WS 灯号** — 绿 = 实时接收中，黄 = 重连中
+
+<!-- TODO(screenshot): desktop dashboard, session card 特写 -->
+
+### Session 控制
+
+- **Model chip** — 点开实时切模型：default / Sonnet / Opus / Haiku / 自定义 id。通过 `POST /wrap/model` 广播到每张 dashboard
+- **Mode chip 带颜色** — `acceptEdits` 蓝、`bypass` 红、ask 灰。整个 session lifetime 锁定
+- **Open CLI** — 开 `wt.exe` 跑 `miki claude -r <session-uuid>`，从 terminal 接管 session 带完整 context。原本的 panel 已关或 crash 都不影响
+- **发送输入框** — 多行输入自动长高。Enter 或 Ctrl/⌘+Enter 发送（按你的设置）。支持粘贴、拖拽、按钮选图片附件
+
+<p align="center">
+  <img src="docs/images/model-picker.png" width="240" alt="Model 切换 popover">
+  <img src="docs/images/mode-picker.jpg" width="240" alt="Mode 切换 popover">
+</p>
+
+### 手机
+
+- **手机 dashboard** — 一样的网格，单列、移动设备友好的点击区
+- **聊天气泡 transcript** 跟桌面同步，适配手机 viewport
+- **右滑关闭** session modal — document 层级手势 + translateX 预览
+- **Composer** 带图片上传按钮（手机 file picker）、textarea 自动长高、修好 iOS focus-zoom 跟键盘缩放
+- **Transcript 控制可折叠**（show-tool / limit / load-all / reload）藏在一个 sliders popover 里
+
+<p align="center">
+  <img src="docs/images/dashboard-phone.png" width="220" alt="手机 dashboard">
+  <img src="docs/images/phone-session-modal.png" width="220" alt="手机 session modal">
+  <img src="docs/images/composer-bar.jpg" width="220" alt="Composer 栏">
+</p>
+
+## 部署模式
+
+|  | Hosted | Self-host | Local-only |
+|---|---|---|---|
+| 设置时间 | 0 秒 | 约 5 分钟 wizard | 0 秒 |
+| 需要 CF 账号 | 否 | 是 | 否 |
+| 手机可连 | 是 | 是 | 否 |
+| 信任作者基础设施 | 是 | 否 | N/A |
+| 流量上限 | 作者 CF 免费层（约 10 万 req/天） | 你自己 CF 免费层 | N/A |
+| 之后可切换 | `miki setup` | `miki setup` | `miki setup` |
+
+默认是 **Hosted**，指向 `relay.f1telemetrystationpro.org`。选 Self-host 时 wizard 会把 Worker + Pages 部署到你的 CF 账号。
+
+## 安全
+
+Daemon **只绑 `127.0.0.1`** — 公网永远戳不到。手机端走端对端加密（配对时 X25519 ECDH → 每个 envelope NaCl `secretbox`）。Relay 只路由密文，不持有任何共享密钥。
+
+Daemon 信任**所有以你身份跑的进程**去调用 `/event`、`/send`、`/focus`、`/ws_ext`。这让 hooks 跟 helper extension 不用带 token，但代价是：任何以你身份跑的进程都能跟 daemon 讲话。`~/.miki-moni/` 请当 `~/.ssh/` 那样保护。
+
+| 手机**可以** | 手机**不可以** |
 |---|---|
-| **项目名 + cwd** | 卡片标题 — 点开查看完整 transcript |
-| **🖥️ VSCode / 📟 CLI 切换** | 决定 *发送 / focus* 走哪边。**VSCode**：用 `vscode://anthropic.claude-code/open?session=…` 把 prompt 预填 VSCode panel。**CLI**：直接打 wrap CLI 的 WebSocket。 |
-| **权限 badge**（`✏️ auto edit` 蓝 / `🚀 bypass` 红） | 只有跑 `miki claude --permission-mode acceptEdits` / `--bypass-permissions` 的 wrap CLI session 才显示，整个 session lifetime 锁定不能改。每个模式自己的颜色 |
-| **Model chip** ⭐ | 点开即时切模型 — default / Sonnet / Opus / Haiku / 自定义 id。改动广播到所有 dashboard。底层走 `POST /wrap/model` |
-| **Transcript view** | 聊天气泡版面（user 右、assistant/system/tool 左）。可开关 tool call。滚动门槛 10 / 50 / 200 / 全部。手机端控制折叠成一个 sliders popover |
-| **发送输入框** | 多行 prompt，自动长高。Enter 或 Ctrl/⌘+Enter 发送（按你的设置）。支持粘贴/拖图片**或**按钮选档（手机友好） |
-| **右滑关闭**（手机） | session modal 往右拖即可关掉；document 层级手势 + translateX 预览 |
-| **开 CLI 按钮** ⭐ | **从 CLI 接管这个 session，完整上下文都在。** 开 `wt.exe`（Windows Terminal）跑 `miki claude -r <session-uuid>` — Claude 从 VSCode panel 停的那回合接着做。原本从哪起的都不重要；panel 可以已关、已 crash、在另一个窗口。配上手机 dashboard，同一个 session 你在哪都能继续打 |
-| **Focus 按钮** | `POST /focus` — 把对应 VSCode 窗口（或 CLI tab）提到最前 |
+| 看实时 session 状态 + transcript | 在你电脑上跑任意 shell 命令 |
+| 推 prompt（pre-fill 进 VSCode、直送 wrap CLI） | 不经你 VSCode 按键就自动送出 prompt |
+| Focus 已存在的 panel | 绕过 Claude Code 每个工具的权限提示 |
+
+风险表、硬化选项、完整 hooks / extension 信赖分析见 [`docs/security/`](docs/security/)。
 
 ## CLI 命令
 
 | 命令 | 用途 |
 |---|---|
-| `miki start` | 跑 daemon + 打印配对 banner。第一次跑会跳 wizard |
-| `miki setup` | 重跑 wizard（换语言、切 relay 模式等） |
-| `miki pair` | 打印当前永久 QR + 已配对手机清单 |
+| `miki start` | 跑 daemon；首次启动会跳 wizard |
+| `miki setup` | 重跑 wizard（换语言、切 relay 模式） |
+| `miki pair` | 打印永久 QR + 已配对手机列表 |
 | `miki pair --rotate` | 换新 token（旧 QR 失效；已配对手机照常工作） |
-| `miki pair --list` | 列已配对手机 |
-| `miki pair --revoke <peer_id>` | 删除某台手机（本机 config + relay 都清） |
-| `miki pair --new` | 一次性 token（10 分钟 TTL）— 旧机制 / debug 用 |
-| `miki claude [...args]` | 包一个 Claude session，daemon 没跑会自动起 |
-| `miki install-hooks` | 把 Claude Code hooks 装进 `~/.claude/settings.json`，没 wrap 的 panel 也会出现在 dashboard |
+| `miki claude [...args]` | 包一个 Claude Code session，daemon 没跑会自动起 |
+| `miki install-hooks` | 把 Claude Code hooks merge 进 `~/.claude/settings.json` |
 
-启动时看详细 log：`MIKI_LOG_LEVEL=info miki start`。完整 trace 永远在 `~/.miki-moni/miki-moni.log`。
+完整列表见 `miki --help`。详细 log：`MIKI_LOG_LEVEL=info miki start`，完整 trace 永远在 `~/.miki-moni/miki-moni.log`。
 
-## 安全
+## Self-host
 
-### 手机能做什么、不能做什么
-
-刻意把手机端能力压到最小，威胁模型才好顾：
-
-| 手机**可以** | 手机**不可以** |
-|---|---|
-| 看实时 session 状态 + transcript | 在你电脑上跑任意 shell 命令 |
-| Pre-fill prompt 进 VSCode panel（`/focus`） | 不经你 VSCode 按键自动送出 prompt（Anthropic 设计） |
-| 对 `miki claude` 起的 session 从 wrap CLI WebSocket 推 prompt | 开新 process 或读 session 外的文件 |
-| Focus 已存在的 panel | 绕过 Claude Code 工具权限提示（每个工具调用一样会问你） |
-
-### 信赖边界
-
-daemon **只绑 `127.0.0.1`** — 公网永远戳不到。远端走加密 relay，不走本机 HTTP port。
-
-daemon 信任**所有跟你同账号**的本机程序去打 `/event`、`/send`、`/focus`、`/ws_ext`。这是故意的（Claude Code hooks 跟 VSCode helper extension 才不用带 token），但代价是：**任何以你身份跑的程序都能跟 daemon 讲话**。完整本机信赖分析跟硬化选项见 [`docs/security/hooks-trust-model.md`](docs/security/hooks-trust-model.md) 跟 [`docs/security/extension-ws-trust-model.md`](docs/security/extension-ws-trust-model.md)。
-
-### 风险表
-
-按可能性排序：
-
-| 风险 | 缓解 |
-|---|---|
-| 🔴 **配对 QR 泄漏**（截图、贴到聊天室、被路人拍） | 永久 QR = 任何人扫到都能 pair。把 QR 当 SSH key 看待。泄漏立刻 rotate：`miki pair --rotate` |
-| 🟡 **配对手机被偷** | 手机握 Ed25519 签名 key 才能连 relay。从 daemon 删：`miki pair --revoke <peer_id>` |
-| 🟡 **本机被入侵** | daemon 信任 loopback。任何以你身份跑的恶意程序可读 session、可从 `/ws_ext` 拦 prompt。`~/.miki-moni/`（私钥、配对记录）请当 `~/.ssh/` 那样保护 |
-| 🟢 暴力猜 token | 16 字符 Crockford base32 ≈ 80 bits entropy，宇宙热寂前猜不到 |
-| 🟢 Relay 看到内容 | 零知识架构 — relay 只路由密文，不持有 shared secret |
-| 🟡 信任 hosted relay 维护者 | Self-host 完全摆脱这层信任。作者看得到 metadata（peer ID、时间、大小），理论上可改 PWA bundle。源码公开，可自行 audit 或 self-host。 |
-| 🟢 Hosted relay 被 DDoS | Cloudflare rate limit 限 30 req/60 秒/IP。最坏：你的当日配额烧光 |
-
-## Self-host（手动）
-
-`miki setup` wizard 自动做完，但要手动的话：
+Wizard 会做完全程；要手动部署：
 
 ```bash
-# 在 clone 好的 cc-hub source 树：
 cd worker
 wrangler login
 wrangler deploy --config wrangler-selfhost.toml --name my-relay
@@ -238,18 +184,16 @@ wrangler pages project create my-phone --production-branch=main
 wrangler pages deploy ../dist/web-phone --project-name my-phone --branch=main
 ```
 
-然后编 `~/.miki-moni/config.json`：
+然后把 `~/.miki-moni/config.json` 指到你的 endpoint：
 
 ```json
 {
   "remote": {
-    "worker_url": "wss://my-relay.<你 CF 账号>.workers.dev",
+    "worker_url": "wss://my-relay.<你的 cf 账号>.workers.dev",
     "phone_pwa_url": "https://my-phone.pages.dev/"
   }
 }
 ```
-
-下次 `miki start` 就会用新 endpoints。
 
 ## 开发
 
@@ -257,47 +201,29 @@ wrangler pages deploy ../dist/web-phone --project-name my-phone --branch=main
 git clone https://github.com/WarmBed/Miki-Moni
 cd Miki-Moni
 pnpm install
-pnpm typecheck
-pnpm test         # daemon + worker tests
 pnpm dev          # tsx watch src/index.ts
+pnpm test         # daemon + worker tests
+pnpm typecheck
 ```
 
-Source 结构：
+Source tree：`src/` daemon · `web/` dashboard SPA · `web-phone/` 手机 bootstrap · `worker/` Cloudflare Worker · `extension/` VSCode helper · `hooks/` PS hook scripts · `bin/miki.mjs` CLI 入口。
 
-| 路径 | 用途 |
-|---|---|
-| `src/` | Node daemon（express + ws + better-sqlite3）— hooks、配对、RelayClient |
-| `web/` | 桌面 / 手机完整 dashboard（Preact + Tailwind + Vite） |
-| `web-phone/` | 手机 bootstrap（QR 扫描器 + tunnel 设置）— mount web/ |
-| `worker/` | Cloudflare Worker relay（DaemonRelay + PairingCoordinator DOs） |
-| `extension/` | VSCode helper extension — handle `claude-vscode.send` |
-| `hooks/` | Claude Code hook 脚本（PowerShell）— POST event 到 daemon |
-| `bin/miki.mjs` | npm 发布的 CLI 入口 |
-
-## 分支
-
-- `main` — 版本化 release（当前：v0.3.3）
-- `dev` — 开发中；每改动 bump `package.json` version
+Branch：`main` 出 release（当前 **v0.3.3**），`dev` 跑开发、每个改动 bump `package.json`。
 
 ## 相关项目
 
-**[Happy](https://happy.engineering)**（`slopus/happy-cli`, MIT）切的痛点有重叠 — 从手机操控 Claude Code — 但角度不同。两者可以同一台机器并存。
+**[Happy](https://happy.engineering)**（`slopus/happy-cli`）切的痛点有重叠但角度不同，两者可同机并存。
 
-|  | Miki-Moni | Happy |
+| | Miki-Moni | Happy |
 |---|---|---|
-| 主入口 | VSCode panel — hooks 把每个 panel 拉进 dashboard | 取代 `claude` 的 terminal wrapper |
-| Relay | Cloudflare Worker；可以 5 分钟 self-host 到自己 CF 账号 | 作者自架 socket.io server（`api.cluster-fluster.com`） |
-| 手机端 | Web PWA — 扫 QR 就能用，免装 app | 原生 iOS / Android app |
-| 支持 agent | Claude Code | Claude Code、Codex、Gemini、通用 ACP |
-| 语音输入 | — | 有 |
-| 多 session 可视化 dashboard | 有 — 跨窗口聚合 | 各 session 独立管 |
-| 取代 `claude` 吗 | 不取代 — hooks 并存 | 取代，自己 spawn `claude` |
-| 远端 spawn（人不在桌前也能起新 session） | — | 有（`happy daemon`） |
-| 加密 relay | 有（X25519 + NaCl secretbox） | 有（X25519 + NaCl secretbox + AES-GCM） |
+| 入口 | hooks 进现有 panel | 取代 `claude` |
+| 手机端 | Web PWA（免装） | 原生 iOS / Android |
+| 多 session dashboard | 有 — 聚合网格 | 各 session 独立 |
+| 支持 agent | Claude Code | Claude Code、Codex、Gemini、ACP |
 
-想要打磨好的手机原生体验、跨多个 AI agent、不介意 SaaS relay → 用 Happy。住在 VSCode 里、想要一张 dashboard 收齐多个并行 panel、想 self-host 到自己 CF → 用 Miki-Moni。
+想要打磨好的手机原生体验、跨多个 AI agent → 用 Happy。住在 VSCode 里、想要一张 dashboard 收齐每个 panel、想几分钟 self-host → 用 Miki-Moni。
 
-## 许可证
+## License
 
 MIT — 见 [LICENSE](LICENSE)。
 
