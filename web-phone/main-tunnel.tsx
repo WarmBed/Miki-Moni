@@ -272,7 +272,12 @@ function Bootstrap() {
           paired_at: Date.now(),
         };
         saveState(next);
-        setState(next);   // triggers the second effect
+        // CRITICAL: must transition phase too. The second useEffect gates on
+        // `phase === "connecting"`. Without this line, state is set but phase
+        // stays at "pairing-from-hash" → activateTunnel never runs → reconnect
+        // WS never opens → UI freezes at "配對中" splash indefinitely.
+        setState(next);
+        setPhase("connecting");
       } catch (e: unknown) {
         setError(e instanceof Error ? (e.message || "auto_pair_failed") : "auto_pair_failed");
         setPhase("error");
@@ -334,7 +339,11 @@ function Bootstrap() {
   }
 
   if (!state) {
-    return <PairScreen relayUrl={getDefaultRelayUrl()} onPaired={setState} />;
+    // onPaired must ALSO advance phase to "connecting"; otherwise the
+    // tunnel-activation useEffect (gated on phase==="connecting") never
+    // fires and the UI freezes at the post-pair splash. Same bug class as
+    // the hash-pair path above.
+    return <PairScreen relayUrl={getDefaultRelayUrl()} onPaired={(s) => { setState(s); setPhase("connecting"); }} />;
   }
 
   return null;
