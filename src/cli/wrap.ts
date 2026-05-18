@@ -39,6 +39,7 @@ import { WebSocket } from "ws";
 import { query, type SDKMessage, type SDKUserMessage, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { PushableAsyncIterable } from "./pushable-iter.js";
 import { PORT_FILE } from "../data-dir.js";
+import { parseAnswers, buildAskQuestionToolResultMessage, type QQuestion as QQuestionPure } from "./ask-question-answer.js";
 
 interface WrapArgs {
   resume?: string;
@@ -349,12 +350,12 @@ async function main(): Promise<void> {
           const imgs = Array.isArray(m.images) ? m.images.filter((i: any) => i?.media_type && i?.data) : undefined;
           sendUser(m.prompt, "hub", imgs);
         } else if (m?.type === "ask_question_answer" && typeof m.question_id === "string") {
-          // Dashboard answered an open AskUserQuestion. Format indices to a
-          // readable answer string and push as a user message.
+          // Dashboard answered an open AskUserQuestion. Build the structured
+          // answers map and push a tool_result block via answerAsk().
           if (!pendingAsk || pendingAsk.id !== m.question_id) return;  // stale
           const indices: string[][] = Array.isArray(m.answers) ? m.answers : [];
-          const answer = formatAnswerFromIndices(indices);
-          if (answer.trim()) answerAsk(answer);
+          const { display, structured } = parseAnswers(indices, pendingAsk.questions as QQuestionPure[]);
+          if (display.trim()) answerAsk(display, structured);
         } else if (m?.type === "set_permission_mode" && typeof m.mode === "string") {
           // Dashboard requested a mode switch. SDK only supports this in
           // streaming-input mode (we are), and `q` must exist (created after
@@ -508,27 +509,9 @@ async function main(): Promise<void> {
     printPrompt();
   }
 
-  // Convert raw user input (from stdin or dashboard) into a tidy answer string
-  // formatted as Claude expects. For dashboard, we get structured selections;
-  // for terminal, we get a string the user typed.
-  function formatAnswerFromIndices(indicesPerQuestion: string[][]): string {
-    if (!pendingAsk) return "";
-    const lines: string[] = [];
-    pendingAsk.questions.forEach((q, qi) => {
-      const idxs = indicesPerQuestion[qi] ?? [];
-      const picks = idxs.map((idx) => {
-        const n = parseInt(idx, 10);
-        if (Number.isFinite(n) && n >= 1 && n <= q.options.length) return q.options[n - 1]!.label;
-        return idx;  // free-text fallback
-      });
-      lines.push(`${q.question} → ${picks.join(" / ")}`);
-    });
-    return lines.join("\n");
-  }
-
-  function answerAsk(answer: string): void {
+  function answerAsk(display: string, structured: Record<string, string>): void {
     if (!pendingAsk) return;
-    const id = pendingAsk.id;
+    const { id, parentToolUseId, questions } = pendingAsk;
     pendingAsk = null;
     // Tell daemon to dismiss any open picker for this question
     const liveWs = getWs();
@@ -536,8 +519,34 @@ async function main(): Promise<void> {
       try { liveWs.send(JSON.stringify({ type: "ask_question_done", session_uuid: resumeUuid, question_id: id })); }
       catch { /* ignore */ }
     }
-    process.stdout.write(`${cyan("→ 回應：")}${answer}\n`);
-    sendUser(answer, "stdin");
+    process.stdout.write(`${cyan("→ 回應：")}${display}\n`);
+
+    // Push a real tool_result so Claude links the answer to the original
+    // AskUserQuestion tool_use. Plain text user messages do NOT close the
+    // tool_use loop; Claude would report "didn't see your choice".
+    messages.push(buildAskQuestionToolResultMessage({
+      toolUseId: id,
+      parentToolUseId,
+      sessionId: resumeUuid ?? "",
+      questions,
+      structuredAnswers: structured,
+    }));
+    setActivity("Ideating");
+
+    // Mirror to daemon so the dashboard cell flips "active" + shows the
+    // optimistic user line — same convention as sendUser() at L572-595.
+    if (liveWs && liveWs.readyState === liveWs.OPEN && resumeUuid) {
+      try { liveWs.send(JSON.stringify({ type: "turn_start", session_uuid: resumeUuid })); }
+      catch { /* ignore */ }
+      try {
+        liveWs.send(JSON.stringify({
+          type: "user_message",
+          session_uuid: resumeUuid,
+          text: display,
+          ts: Date.now(),
+        }));
+      } catch { /* ignore */ }
+    }
   }
 
   interface HubImage { media_type: string; data: string }  // data = base64
@@ -662,8 +671,8 @@ async function main(): Promise<void> {
         const seg = segs[qi] ?? "";
         return seg.split(",").map((s) => s.trim()).filter(Boolean);
       });
-      const answer = formatAnswerFromIndices(idxPerQ);
-      if (answer.trim()) { answerAsk(answer); return; }
+      const { display, structured } = parseAnswers(idxPerQ, pendingAsk.questions as QQuestionPure[]);
+      if (display.trim()) { answerAsk(display, structured); return; }
     }
     sendUser(trimmed, "stdin");
   });
