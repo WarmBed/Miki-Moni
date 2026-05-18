@@ -117,4 +117,18 @@ describe("buildAskQuestionToolResultMessage", () => {
     });
     expect(msg.parent_tool_use_id).toBe("toolu_outer_task");
   });
+
+  it("passes through empty questions / partial structuredAnswers unchanged", () => {
+    const msg = buildAskQuestionToolResultMessage({
+      toolUseId: "toolu_empty",
+      parentToolUseId: null,
+      sessionId: "session-3",
+      questions: [],
+      structuredAnswers: {},
+    });
+    const block = (msg.message as { content: Array<{ type: string; content: string }> }).content[0]!;
+    const parsed = JSON.parse(block.content);
+    expect(parsed.questions).toEqual([]);
+    expect(parsed.answers).toEqual({});
+  });
 });

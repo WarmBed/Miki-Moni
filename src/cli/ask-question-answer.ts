@@ -8,6 +8,8 @@
 // Numeric labels are NOT re-parsed as indices when the literal string already
 // matches a known option label.
 
+import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+
 export interface QOption { label: string; description: string }
 export interface QQuestion { question: string; header: string; multiSelect?: boolean; options: QOption[] }
 
@@ -48,8 +50,6 @@ export function parseAnswers(
   return { display: displayLines.join("\n"), structured };
 }
 
-import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-
 export interface BuildToolResultArgs {
   toolUseId: string;            // the AskUserQuestion's tool_use.id
   parentToolUseId: string | null; // from the SDKAssistantMessage carrying the tool_use
@@ -84,5 +84,5 @@ export function buildAskQuestionToolResultMessage(args: BuildToolResultArgs): SD
         },
       ],
     },
-  } as SDKUserMessage;
+  } satisfies SDKUserMessage;
 }
