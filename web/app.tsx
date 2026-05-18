@@ -1488,10 +1488,13 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
 // they're both "session is alive right now" to the user.
 type StatusFilter = "all" | "live" | "idle" | "stale";
 
-function HeaderStats({ sessions, filter, onFilter }: {
+function HeaderStats({ sessions, filter, onFilter, hiddenCount, showHidden, onToggleHidden }: {
   sessions: Session[];
   filter: StatusFilter;
   onFilter: (next: StatusFilter) => void;
+  hiddenCount: number;
+  showHidden: boolean;
+  onToggleHidden: () => void;
 }) {
   const counts = sessions.reduce(
     (acc, s) => { acc[s.status] = (acc[s.status] ?? 0) + 1; return acc; },
@@ -1506,6 +1509,19 @@ function HeaderStats({ sessions, filter, onFilter }: {
       <HeaderStatChip n={liveCount}         label={t("header.live")}  icon={<IconActivity />} dot="dot-active" active={filter === "live"}  onClick={() => toggle("live")} />
       <HeaderStatChip n={counts.idle ?? 0}  label={t("header.idle")}  icon={<IconPause />}    dot="dot-idle"   active={filter === "idle"}  onClick={() => toggle("idle")} />
       <HeaderStatChip n={counts.stale ?? 0} label={t("header.stale")} icon={<IconPlugOff />}  dot="dot-stale"  active={filter === "stale"} onClick={() => toggle("stale")} />
+      {hiddenCount > 0 && (
+        <button
+          class="btn-ghost"
+          style={{
+            marginLeft: 6, fontSize: 11, padding: "2px 6px",
+            borderColor: showHidden ? "var(--fg)" : "var(--border)",
+            background: showHidden ? "var(--sl3)" : "transparent",
+            borderWidth: 1, borderStyle: "solid", borderRadius: 4,
+          }}
+          title={t("filter.hiddenTooltip", { n: hiddenCount })}
+          onClick={onToggleHidden}
+        >{t("filter.hiddenLabel")} {hiddenCount}</button>
+      )}
     </div>
   );
 }
@@ -3944,6 +3960,11 @@ function App() {
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
+  // Auto-flip out of "show hidden" view when the user un-hides the last card,
+  // so they aren't stranded looking at an empty grid.
+  useEffect(() => {
+    if (hiddenSet.size === 0 && showHidden) setShowHidden(false);
+  }, [hiddenSet.size, showHidden]);
   const [sortMode, setSortModeState] = useState<SortMode>(() => loadSortModeFromLS());
   const [pinWaiting, setPinWaitingState] = useState<boolean>(() => loadPinWaitingFromLS());
 
@@ -4516,7 +4537,14 @@ function App() {
         >
           <IconSleepingCat size={24} />
         </h1>
-        <HeaderStats sessions={sessions} filter={statusFilter} onFilter={setStatusFilter} />
+        <HeaderStats
+          sessions={sessions}
+          filter={statusFilter}
+          onFilter={setStatusFilter}
+          hiddenCount={hiddenSet.size}
+          showHidden={showHidden}
+          onToggleHidden={() => setShowHidden(v => !v)}
+        />
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--fg-subtle)" }}>
           <NewCliButton recentCwds={recentCwds} />
           <button
