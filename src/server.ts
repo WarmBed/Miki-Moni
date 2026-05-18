@@ -669,6 +669,34 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     }
   });
 
+  // ── /wrap/stop ────────────────────────────────────────────────────────
+  // Tree-kills the wrap subprocess for a daemon-spawned wrap. The wrap WS
+  // will close naturally on process exit; the existing close handler then
+  // calls rebroadcastSession(uuid), which flips `wrapped=false` on the
+  // dashboard via session_changed broadcast. No confirm dialog — the
+  // underlying Claude Code session JSONL is untouched, so the user can
+  // re-arm via /wrap/start at any time.
+  app.post("/wrap/stop", (req: Request, res: Response) => {
+    const sessionUuid: unknown = req.body?.session_uuid;
+    if (typeof sessionUuid !== "string" || sessionUuid.length === 0) {
+      res.status(400).json({ error: "missing_session_uuid" });
+      return;
+    }
+    const spawnRec = wrapProc.takeOnClose(sessionUuid);
+    if (!spawnRec) {
+      deps.log?.info({ route: "/wrap/stop", session_uuid: sessionUuid }, "no active wrap to stop");
+      res.status(404).json({ error: "no_wrap" });
+      return;
+    }
+    if (spawnRec.pid) {
+      void killProcessTree(spawnRec.pid, deps.log);
+      deps.log?.info({ route: "/wrap/stop", session_uuid: sessionUuid, pid: spawnRec.pid }, "wrap stop requested — process tree kill issued");
+    } else {
+      deps.log?.warn({ route: "/wrap/stop", session_uuid: sessionUuid }, "wrap stop on unbound record (PID never registered)");
+    }
+    res.status(200).json({ stopped: true, pid: spawnRec.pid });
+  });
+
   app.post("/send", async (req: Request, res: Response) => {
     const prompt = typeof req.body?.prompt === "string" ? req.body.prompt : null;
     const submitFlag = req.body?.submit === true;  // false (default) = prefill via URI
@@ -1268,6 +1296,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
 
   // Expose registry for tests / startup orphan kill driver (index.ts).
   (deps as any).__wrapProc = wrapProc;
+  (app as any).__wrapProc = wrapProc;
 
   return { app, server, registry };
 }
