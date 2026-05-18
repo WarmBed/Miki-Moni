@@ -6,6 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 # Custom domain — self-host users replace with your own zone, or delete this
 # block entirely to use the default workers.dev subdomain.
 routes = [
+  { pattern = "relay.f1telemetrystationpro.org", custom_domain = true },
   { pattern = "relay.f1telemetrystationpro.org", custom_domain = true }
 ]
 
