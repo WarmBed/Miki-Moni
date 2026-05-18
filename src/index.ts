@@ -152,15 +152,26 @@ async function main(): Promise<void> {
   app.use(express.static(webDir, { fallthrough: true }));
 
   // Phase 2: optional remote relay to user's Cloudflare Worker
+  //
+  // Connect to relay whenever `remote` is configured — even with zero
+  // paired peers. Gating on `paired_peers.length > 0` created a
+  // chicken-and-egg deadlock: a fresh `miki setup` writes pair_token to
+  // config.json but no peers exist yet → daemon doesn't connect → relay
+  // never receives register_pairing → phone client hits the URL and
+  // worker returns 404 invalid_pairing_token → "連線錯誤". The first
+  // pair could only succeed if the daemon was already connected, which
+  // it couldn't be without an existing peer. Now we always start the
+  // relay when configured; the connection is cheap (a single WS) and
+  // register_pairing runs on connect so first-pair just works.
   const config = await loadOrInitConfig(CONFIG_FILE);
   let relay: RelayClient | null = null;
-  if (config.remote && config.paired_peers.length > 0) {
+  if (config.remote) {
     relay = new RelayClient({ config, store, bridge });
     await relay.start();
     log.info({ worker_url: config.remote.worker_url, peers: config.paired_peers.length }, "relay started");
     console.log(`relay -> ${config.remote.worker_url} (${config.paired_peers.length} peer${config.paired_peers.length === 1 ? "" : "s"})`);
   } else {
-    log.info("relay disabled (no remote configured or no paired peers)");
+    log.info("relay disabled (no remote configured)");
   }
 
   server.listen(port, "127.0.0.1", () => {
