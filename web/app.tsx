@@ -2924,11 +2924,16 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, userOverla
               <div class="cell-turn cell-turn-assistant">
                 <div class="cell-turn-role">
                   <span>claude</span>
+                  {/* During isThinking we deliberately fall through to the
+                   * prev reply's timestamp instead of showing "{activity}…"
+                   * here — the cell already has a global activity badge at
+                   * the top-right (next to the wrapped/CLI chip), so a
+                   * second "Ideating…" under CLAUDE was just visual
+                   * duplication. The blue ▌ in the body is the only
+                   * thinking-specific cue this strip needs. */}
                   {isStreaming
                     ? <span class="cell-turn-ts" style={{ color: "var(--pass)" }}>streaming…</span>
-                    : isThinking
-                      ? <span class="cell-turn-ts" style={{ color: "#3b82f6" }}>{activity}…</span>
-                      : preview?.last_assistant_ts && <span class="cell-turn-ts" title={preview.last_assistant_ts}>{fmtTurnTs(preview.last_assistant_ts)}</span>}
+                    : preview?.last_assistant_ts && <span class="cell-turn-ts" title={preview.last_assistant_ts}>{fmtTurnTs(preview.last_assistant_ts)}</span>}
                 </div>
                 {/* Body shape: optional prev-assistant text, then a trailing
                  * cursor when claude is "live":

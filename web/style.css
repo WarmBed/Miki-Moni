@@ -554,6 +554,35 @@ html, body { overflow-x: hidden; max-width: 100vw; }
   -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   word-break: break-word;
+  /* Containing block for the absolute-positioned trailing cursor below.
+   * Required so the cursor's right:0 / bottom:0 anchors to the body's
+   * clipped box (not to the page) — keeping ▌ visible even when text
+   * fills the 4-line clamp and would otherwise push an inline cursor
+   * past the overflow:hidden cutoff. */
+  position: relative;
+}
+/* When the body wraps a streaming/thinking cursor, pin the cursor to the
+ * body's bottom-right corner instead of letting it flow inline at the end
+ * of the text. Rationale: -webkit-line-clamp:4 + overflow:hidden silently
+ * clip anything that wraps past line 4, including an inline ▌ sibling.
+ * User-visible bug: cell looked "frozen" while claude was busy because the
+ * blue thinking cursor at the end of a 4-line prev reply was hidden.
+ *
+ * Trade-off vs. true inline: for SHORT prev replies (1-2 lines), the
+ * cursor now sits at the bottom-right of the strip rather than glued to
+ * the last char. We accept this because:
+ *   - It's predictable across all text lengths
+ *   - The user's spec was "ideally inline, at minimum at right edge"
+ *   - Streaming cursor benefits too — it stays visible through long
+ *     replies instead of disappearing once the stream wraps past 4 lines
+ * Scoped to .cell-turn-body so the big-card TurnView (which uses .md not
+ * line-clamp) keeps its inline ▌ at end of <MD> content. */
+.cell-turn-body .streaming-cursor {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  margin-left: 0;
+  pointer-events: none;
 }
 .cell-turn-user { background: var(--turn-bg-user); }
 .cell-turn-user .cell-turn-role { color: var(--neutral, #607080); }
