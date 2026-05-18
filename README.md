@@ -24,7 +24,8 @@ You run several Claude Code panels at once. One finishes; you don't notice. You 
 Miki-Moni hooks into every Claude Code panel on your machine and aggregates them into a single dashboard at `http://127.0.0.1:8765`. An optional encrypted relay lets a phone or second laptop see the same view and push prompts back.
 
 - **Aggregates, doesn't replace.** Hooks sit alongside `claude` — you keep starting sessions the way you already do.
-- **Sessions are durable.** Every session can be resumed from any terminal by UUID — `miki claude -r <uuid>` brings back full context, even if the original window crashed.
+- **One conversation, any device.** Start on laptop A, keep prompting from your phone on the train, finish on laptop B at home — same session UUID, same transcript, same context. No copy-paste of where you were.
+- **Sessions outlive windows.** Every session is resumable from any terminal by UUID. `miki claude -r <uuid>` brings back full context even if the original panel was closed or crashed.
 - **Local by default, remote when you opt in.** The daemon binds `127.0.0.1` only. Phone access flows through E2E-encrypted envelopes via a Cloudflare Worker that never holds keys.
 
 ## Quick start

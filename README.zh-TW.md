@@ -24,7 +24,8 @@
 Miki-Moni 用 hooks 串接每一個 Claude Code panel，把它們聚合到本機 `http://127.0.0.1:8765` 一張 dashboard 上。要的話，加密 relay 讓手機或第二台電腦看到同一個畫面，並能推 prompt 回來。
 
 - **聚合，不是取代。** Hooks 跟 `claude` 並存 — 你照原本方式起 session
-- **Session 是耐用的。** 任何 session 都能用 UUID 從任何 terminal 接回完整 context：`miki claude -r <uuid>`，原本的 panel 已關 / crash 都不影響
+- **同一個對話，跨任何裝置。** 在電腦 A 起的話，搭車路上用手機繼續打，回家再用電腦 B 接著做 — 同一個 session UUID、同一份 transcript、同一份 context。不用把進度貼到新 prompt 裡
+- **Session 撐得比視窗久。** 任何 session 都能用 UUID 從任何 terminal 接回完整 context：`miki claude -r <uuid>`，原本的 panel 已關 / crash 都不影響
 - **預設純本機，自己選才走遠端。** Daemon 只綁 `127.0.0.1`。手機端走端對端加密 envelope，relay 不持有任何 key
 
 ## 快速開始
