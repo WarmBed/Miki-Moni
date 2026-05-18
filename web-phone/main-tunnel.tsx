@@ -251,38 +251,53 @@ function Bootstrap() {
   const [error, setError] = useState<string | null>(null);
 
   // First effect: handle URL-hash auto-pair OR resolve into "connecting"/"pair-needed"
+  //
+  // Priority order (matters!):
+  //   1. URL has #t=…&r=… → explicit user intent. ALWAYS try to pair with
+  //      that, even if localStorage already has a previous peer. Falling
+  //      back to the cached peer would silently connect to a DIFFERENT
+  //      daemon than the URL points at, fooling the user into thinking
+  //      they reached the URL's target. Better to fail loudly.
+  //   2. localStorage has saved state → reconnect via sig (returning user).
+  //   3. Neither → show PairScreen.
   useEffect(() => {
-    if (state) { setPhase("connecting"); return; }
     const fromHash = parsePairFragment(window.location.hash);
-    if (!fromHash) { setPhase("checking"); return; }  // show PairScreen
-    clearHash();
-    setPhase("pairing-from-hash");
-    void (async () => {
-      try {
-        const identity = await loadOrCreateIdentity();
-        const peer = await performPairing(fromHash.relay, fromHash.token, identity);
-        const next: PhoneState = {
-          relay_url: fromHash.relay,
-          daemon_id: peer.daemon_id,
-          daemon_name: peer.daemon_id,
-          daemon_pk_b64: peer.daemon_pubkey_b64,
-          shared_secret_b64: peer.shared_secret_b64,
-          phone_pk_b64: identity.encryption_pubkey,
-          phone_privkey_b64: identity.encryption_privkey,
-          paired_at: Date.now(),
-        };
-        saveState(next);
-        // CRITICAL: must transition phase too. The second useEffect gates on
-        // `phase === "connecting"`. Without this line, state is set but phase
-        // stays at "pairing-from-hash" → activateTunnel never runs → reconnect
-        // WS never opens → UI freezes at "配對中" splash indefinitely.
-        setState(next);
-        setPhase("connecting");
-      } catch (e: unknown) {
-        setError(e instanceof Error ? (e.message || "auto_pair_failed") : "auto_pair_failed");
-        setPhase("error");
-      }
-    })();
+    if (fromHash) {
+      // Explicit pair URL — wipe any previously cached peer so we don't
+      // accidentally fall back to it if the new pair fails.
+      if (state) { clearState(); setState(null); }
+      clearHash();
+      setPhase("pairing-from-hash");
+      void (async () => {
+        try {
+          const identity = await loadOrCreateIdentity();
+          const peer = await performPairing(fromHash.relay, fromHash.token, identity);
+          const next: PhoneState = {
+            relay_url: fromHash.relay,
+            daemon_id: peer.daemon_id,
+            daemon_name: peer.daemon_id,
+            daemon_pk_b64: peer.daemon_pubkey_b64,
+            shared_secret_b64: peer.shared_secret_b64,
+            phone_pk_b64: identity.encryption_pubkey,
+            phone_privkey_b64: identity.encryption_privkey,
+            paired_at: Date.now(),
+          };
+          saveState(next);
+          // CRITICAL: must transition phase too. The second useEffect gates on
+          // `phase === "connecting"`. Without this line, state is set but phase
+          // stays at "pairing-from-hash" → activateTunnel never runs → reconnect
+          // WS never opens → UI freezes at "配對中" splash indefinitely.
+          setState(next);
+          setPhase("connecting");
+        } catch (e: unknown) {
+          setError(e instanceof Error ? (e.message || "auto_pair_failed") : "auto_pair_failed");
+          setPhase("error");
+        }
+      })();
+      return;
+    }
+    if (state) { setPhase("connecting"); return; }
+    setPhase("checking");  // show PairScreen
   }, []);
 
   // Second effect: once we have state, open tunnel + mount web/App
