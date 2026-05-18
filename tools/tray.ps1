@@ -47,7 +47,18 @@ function New-CatIcon {
   $g.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
   $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
 
-  $color = [System.Drawing.Color]::FromArgb(255, 28, 32, 36)
+  # Windows 11 taskbar is dark by default; honour SystemUsesLightTheme so the
+  # stroke flips to dark navy on a light taskbar instead of drawing black-on-
+  # black on the dark one.
+  $lightTaskbar = 0
+  try {
+    $lightTaskbar = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name SystemUsesLightTheme -ErrorAction Stop).SystemUsesLightTheme
+  } catch { }
+  $color = if ($lightTaskbar -eq 1) {
+    [System.Drawing.Color]::FromArgb(255, 28, 32, 36)
+  } else {
+    [System.Drawing.Color]::FromArgb(255, 228, 228, 231)
+  }
   $pen = New-Object System.Drawing.Pen $color, ([float](1.6 * $scale))
   $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
   $pen.EndCap   = [System.Drawing.Drawing2D.LineCap]::Round
