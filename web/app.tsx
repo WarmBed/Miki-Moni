@@ -5,6 +5,7 @@ import { marked } from "marked";
 import { t, useLocale, setLocale as setLocaleGlobal, LOCALES, LOCALE_LABELS, type Locale } from "@shared/i18n";
 import { apiFetch, apiWebSocket } from "./api";
 import { assembleRenderTurns } from "./lib/transcript-assembly";
+import { loadHiddenSet, addHidden, removeHidden, HIDDEN_KEY } from "./lib/hidden-sessions.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -3822,6 +3823,26 @@ function App() {
     setStatusFilterState(v);
     saveStatusFilterToLS(v);
   }
+  // Hidden-cards state. Per-browser via localStorage. Cross-tab sync is
+  // wired via the `storage` event in a useEffect below.
+  const [hiddenSet, setHiddenSet] = useState<Set<string>>(() => loadHiddenSet());
+  const [showHidden, setShowHidden] = useState(false);
+
+  function hideSession(uuid: string) {
+    setHiddenSet(prev => addHidden(prev, uuid));
+  }
+  function unhideSession(uuid: string) {
+    setHiddenSet(prev => removeHidden(prev, uuid));
+  }
+
+  useEffect(() => {
+    function onStorage(e: StorageEvent) {
+      if (e.key !== HIDDEN_KEY) return;
+      setHiddenSet(loadHiddenSet());
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
   const [sortMode, setSortModeState] = useState<SortMode>(() => loadSortModeFromLS());
   const [pinWaiting, setPinWaitingState] = useState<boolean>(() => loadPinWaitingFromLS());
 
@@ -4564,6 +4585,11 @@ function App() {
             if (statusFilter === "all") return true;
             if (statusFilter === "live") return s.status === "active" || s.status === "waiting";
             return s.status === statusFilter;
+          }).filter((s) => {
+            // Hidden filter is orthogonal to status filter. Default view excludes
+            // hidden cards; the 🙈 chip flips showHidden true to inspect them.
+            const uuid = s.session_uuid ?? "";
+            return showHidden ? hiddenSet.has(uuid) : !hiddenSet.has(uuid);
           })}
           sortMode={sortMode}
           pinWaiting={pinWaiting}
