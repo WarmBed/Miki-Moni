@@ -1629,6 +1629,14 @@ function PermissionModeChip({ sessionUuid, mode }: { sessionUuid: string | null;
   const [pending, setPending] = useState<PMode | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement | null>(null);
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  // Viewport-clamped popover coords — same trick as ModelChip. CSS-only
+  // anchoring (left:0 / right:0 relative to the chip) cut the menu off when
+  // the chip sat near the right edge of the modal status line (especially
+  // on phones), hiding the icon column + first chars of each label. We now
+  // measure the chip rect on open + resize/scroll and clamp the popover
+  // into the viewport with an 8px gutter, growing upward from the chip.
+  const [popPos, setPopPos] = useState<{ left: number; bottom: number; width: number } | null>(null);
   const cfg = pmodeCfg(mode);
 
   useEffect(() => {
@@ -1638,6 +1646,35 @@ function PermissionModeChip({ sessionUuid, mode }: { sessionUuid: string | null;
     }
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) { setPopPos(null); return; }
+    function measure() {
+      const r = btnRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      // 300px is enough for label + desc (e.g. "Bypass permissions / Always
+      // run (dangerous)"); cap so 8px gutters fit on narrow phones.
+      const width = Math.min(300, vw - 16);
+      // Anchor menu's left edge to chip's left, but slide left if it would
+      // overflow the right gutter.
+      const desiredLeft = r.left;
+      const maxLeft = vw - width - 8;
+      const left = Math.max(8, Math.min(desiredLeft, maxLeft));
+      // Distance from viewport bottom to where popover bottom edge sits
+      // (= chip top - 6px gap). Using `bottom` so menu grows upward.
+      const bottom = vh - r.top + 6;
+      setPopPos({ left, bottom, width });
+    }
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
   }, [open]);
 
   async function pick(next: PMode) {
@@ -1670,6 +1707,7 @@ function PermissionModeChip({ sessionUuid, mode }: { sessionUuid: string | null;
   return (
     <div ref={ref} class="pmode-chip-wrap" onClick={stop} onMouseDown={stop}>
       <button
+        ref={btnRef}
         // Apply the per-mode color class (pmode-chip-bypass / -plan / etc)
         // so the chip itself tints by mode — red for bypass, blue for plan,
         // green for accept-edits, etc. Previously stuck on the neutral
@@ -1684,8 +1722,25 @@ function PermissionModeChip({ sessionUuid, mode }: { sessionUuid: string | null;
         <PModeIcon mode={pending ?? mode} />
         <span>{pending ? `${PMODE_STATIC[pending].short}…` : cfg.short}</span>
       </button>
-      {open && (
-        <div class="pmode-menu" onClick={stop} onMouseDown={stop}>
+      {open && popPos && (
+        // position: fixed with measured coords — bypass .pmode-menu's CSS
+        // anchoring so the popover always sits inside the viewport even
+        // when the chip is near the right edge.
+        <div
+          class="pmode-menu"
+          onClick={stop}
+          onMouseDown={stop}
+          style={{
+            position: "fixed",
+            left: popPos.left,
+            bottom: popPos.bottom,
+            top: "auto",
+            right: "auto",
+            width: popPos.width,
+            maxWidth: "none",
+            minWidth: 0,
+          }}
+        >
           <div class="pmode-menu-head">Modes</div>
           {(["default", "acceptEdits", "plan", "auto", "bypassPermissions"] as PMode[]).map((m) => (
             <button
