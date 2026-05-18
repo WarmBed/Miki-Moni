@@ -655,6 +655,11 @@ function TurnView({ turn }: { turn: TranscriptTurn }) {
   // raw_type tag is the only signal we get here — use it to mirror the
   // small-cell "streaming…" + ▌ cue inside the big-card bubble.
   const isStreaming = turn.raw_type === "synthetic-streaming";
+  // Thinking turn: same module synthesises this when the wrap session has
+  // a live activity ("Ideating" / "Using Bash" / …) but no streaming text
+  // has arrived yet. turn.text holds the activity label so users can tell
+  // at a glance whether claude is ideating vs. running a tool.
+  const isThinking = turn.raw_type === "synthetic-thinking";
   const roleLabel = isSystem ? "system" : isUser ? "user" : "claude";
   // Tool turns: dim role color (de-emphasized) since the tool box is the main signal.
   const roleColor = isTool
@@ -676,9 +681,11 @@ function TurnView({ turn }: { turn: TranscriptTurn }) {
       <div class={`turn-bubble ${bgClass}${isTool ? " turn-bubble-tool" : ""}`}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: headerMb, flexWrap: "wrap" }}>
           <span style={{ color: roleColor, fontWeight: 600, fontSize: headerFontSize }}>{roleLabel}</span>
-          {isStreaming
-            ? <span style={{ color: "var(--pass)", fontSize: 10 }}>streaming…</span>
-            : <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>{fmtDateTime(turn.ts)}</span>}
+          {isThinking
+            ? <span style={{ color: "#3b82f6", fontSize: 10 }}>{turn.text}…</span>
+            : isStreaming
+              ? <span style={{ color: "var(--pass)", fontSize: 10 }}>streaming…</span>
+              : <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>{fmtDateTime(turn.ts)}</span>}
           {turn.tool_use && (
             <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>· 🔧 {turn.tool_use.name}</span>
           )}
@@ -686,13 +693,17 @@ function TurnView({ turn }: { turn: TranscriptTurn }) {
             <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>· 📤 tool result</span>
           )}
         </div>
-        {turn.text && <MD text={turn.text} />}
-        {/* Trailing blink cursor for the live-streaming bubble. Lives outside
-         * <MD> because markdown output can end with a block-level element
-         * (paragraph / list / code fence) — making it a sibling guarantees
-         * a visible cue even when CSS would otherwise put it on its own
-         * line. Matches the small-cell `▌` so the two views feel identical. */}
+        {/* Thinking bubble: only the cursor, no body text — the activity
+         * label sits in the header. Suppress <MD> so we don't accidentally
+         * render "Ideating" as markdown content. */}
+        {!isThinking && turn.text && <MD text={turn.text} />}
+        {/* Trailing blink cursor. Two flavours:
+         *   - synthetic-streaming → black ▌  (= claude is actively typing)
+         *   - synthetic-thinking  → blue  ▌  (= claude is pre-typing busy)
+         * Lives outside <MD> so markdown block-level endings don't push it
+         * onto a new line — matches the small-cell behaviour. */}
         {isStreaming && <span class="streaming-cursor" aria-hidden="true">▌</span>}
+        {isThinking && <span class="streaming-cursor streaming-cursor--thinking" aria-hidden="true">▌</span>}
         {turn.images && turn.images.length > 0 && (
           <div style={{ marginTop: turn.text ? 8 : 0 }}>
             {/* Text label first — guaranteed visible even if img tag fails
@@ -1151,7 +1162,7 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
               const stream = streamingText && streamingText.length > 0
                 ? { text: streamingText, startTs: streamingStartTs ?? 0 }
                 : undefined;
-              const renderTurns = assembleRenderTurns(baseTurns, overlay, stream);
+              const renderTurns = assembleRenderTurns(baseTurns, overlay, stream, activity);
               return (
                 <div style={fixedHeight ? { flex: 1, minHeight: 0, display: "flex" } : { maxHeight: 480, overflow: "hidden", display: "flex" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -2638,12 +2649,13 @@ function NewCliButton({ recentCwds }: { recentCwds: string[] }) {
 
 // ── Grid overview cell ────────────────────────────────────────────────────
 
-function Cell({ s, preview, activity, streamingText, userOverlayText, pendingAsk, askDismissed, onReopenAsk, bannerHidden, onHideBanner, clientType, onSetClientType, onQuickSend, onOpenModal }: {
+function Cell({ s, preview, activity, streamingText, userOverlayText, userOverlayTs, pendingAsk, askDismissed, onReopenAsk, bannerHidden, onHideBanner, clientType, onSetClientType, onQuickSend, onOpenModal }: {
   s: Session;
   preview?: SessionPreview;
   activity?: string;
   streamingText?: string;
   userOverlayText?: string;
+  userOverlayTs?: number;
   pendingAsk?: PendingAsk;
   askDismissed?: boolean;
   onReopenAsk?: (uuid: string) => void;
@@ -2666,6 +2678,19 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, pendingAsk
   const lastUser = useMemo(() => (lastUserRaw ? mdToPlainText(lastUserRaw) : ""), [lastUserRaw]);
   const lastAssistant = useMemo(() => (lastAssistantRaw ? mdToPlainText(lastAssistantRaw) : ""), [lastAssistantRaw]);
   const isStreaming = !!streamingText && streamingText.length > 0;
+  // Thinking state — claude received the user msg, wrap is busy (activity
+  // != null), but no streaming text has arrived yet. We only show the cue
+  // when the latest user turn is newer than the latest assistant turn so
+  // the indicator vanishes the moment claude's reply lands. userOverlayTs
+  // wins over preview.last_user_ts because the preview poll lags.
+  const isThinking = (() => {
+    if (!activity || isStreaming) return false;
+    const userTs = userOverlayTs && userOverlayTs > 0
+      ? userOverlayTs
+      : (preview?.last_user_ts ? Date.parse(preview.last_user_ts) : 0);
+    const assistantTs = preview?.last_assistant_ts ? Date.parse(preview.last_assistant_ts) : 0;
+    return userTs > assistantTs;
+  })();
   const c = colorForCwd(s.cwd);
 
   // Flash whole card light-yellow when AI is genuinely idle waiting for user.
@@ -2847,21 +2872,50 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, pendingAsk
         )}
       </div>
       <div class="cell-preview cell-convo">
-        {!lastUser && !lastAssistant ? (
+        {!lastUser && !lastAssistant && !isThinking ? (
           <span class="cell-empty">{t("session.empty")}</span>
         ) : (
           <>
-            {lastAssistant && (
+            {/* Claude strip — rendered whenever there's a prev reply to show
+             * OR when we're synthesising a thinking state. Plan X: instead
+             * of opening a SEPARATE thinking strip below the user msg, we
+             * reuse this strip so the blinking cursor sits at the end of
+             * the previous claude reply (matches the user's mental model
+             * of "cursor lives at end of text"). The two booleans
+             * isStreaming and isThinking are mutually exclusive
+             * (isThinking's definition requires !isStreaming), so the
+             * header and body each show exactly one variant at a time. */}
+            {(lastAssistant || isThinking) && (
               <div class="cell-turn cell-turn-assistant">
                 <div class="cell-turn-role">
                   <span>claude</span>
                   {isStreaming
                     ? <span class="cell-turn-ts" style={{ color: "var(--pass)" }}>streaming…</span>
-                    : preview?.last_assistant_ts && <span class="cell-turn-ts" title={preview.last_assistant_ts}>{fmtTurnTs(preview.last_assistant_ts)}</span>}
+                    : isThinking
+                      ? <span class="cell-turn-ts" style={{ color: "#3b82f6" }}>{activity}…</span>
+                      : preview?.last_assistant_ts && <span class="cell-turn-ts" title={preview.last_assistant_ts}>{fmtTurnTs(preview.last_assistant_ts)}</span>}
                 </div>
+                {/* Body shape: optional prev-assistant text, then a trailing
+                 * cursor when claude is "live":
+                 *   - isStreaming → black ▌  (claude is actively typing —
+                 *                              lastAssistant is the live
+                 *                              streaming text)
+                 *   - isThinking  → blue  ▌  (claude is busy with no text
+                 *                              yet — cursor sits at end of
+                 *                              the prev reply we keep on
+                 *                              screen as scaffolding)
+                 * lastAssistant may be empty when isThinking fires on the
+                 * very first turn (no prior reply); the body then shows
+                 * just the cursor at the start of an empty line — graceful
+                 * fallback. .cell-turn-body has overflow:hidden +
+                 * -webkit-line-clamp:4 so when the prev reply fills the
+                 * box, the trailing inline cursor can be clipped; we
+                 * accept this for now since ASSISTANT_MAX=260 chars +
+                 * 4-line clamp keeps it rare. */}
                 <div class="cell-turn-body">
                   {lastAssistant.slice(0, ASSISTANT_MAX)}{lastAssistant.length > ASSISTANT_MAX ? "…" : ""}
                   {isStreaming && <span class="streaming-cursor">▌</span>}
+                  {isThinking && <span class="streaming-cursor streaming-cursor--thinking">▌</span>}
                 </div>
               </div>
             )}
@@ -2935,6 +2989,7 @@ function GridOverview({ sessions, sortMode, previews, activities, streaming, use
           activity={s.session_uuid ? activities[s.session_uuid] : undefined}
           streamingText={s.session_uuid ? streaming[s.session_uuid] : undefined}
           userOverlayText={s.session_uuid ? userOverlay[s.session_uuid]?.text : undefined}
+          userOverlayTs={s.session_uuid ? userOverlay[s.session_uuid]?.ts : undefined}
           pendingAsk={s.session_uuid ? pendingAsks[s.session_uuid] : undefined}
           askDismissed={s.session_uuid ? dismissedAsks.has(s.session_uuid) : false}
           onReopenAsk={onReopenAsk}

@@ -32,6 +32,12 @@ export type TranscriptTurnLike = {
 
 export type UserOverlayInput = { text: string; ts: number } | undefined;
 export type StreamingInput = { text: string; startTs: number } | undefined;
+// Activity from the wrap session ("Ideating" / "Using Bash" / "Replying" / null).
+// When the wrapper has a live activity AND no streaming text has arrived yet
+// AND claude hasn't replied to the latest user message, we synthesise a
+// "thinking" bubble so the user gets a blinking-cursor cue immediately on
+// send (instead of staring at a static transcript while the SDK churns).
+export type ActivityInput = string | null | undefined;
 
 function tsMs(t: { ts: string }): number {
   const n = Date.parse(t.ts);
@@ -42,6 +48,7 @@ export function assembleRenderTurns<T extends TranscriptTurnLike>(
   baseTurns: T[],
   userOverlay: UserOverlayInput,
   streaming: StreamingInput,
+  activity?: ActivityInput,
 ): T[] {
   const extras: TranscriptTurnLike[] = [];
 
@@ -86,6 +93,38 @@ export function assembleRenderTurns<T extends TranscriptTurnLike>(
         role: "assistant",
         text: streaming.text,
         raw_type: "synthetic-streaming",
+      });
+    }
+  }
+
+  // "Thinking" placeholder: only when activity is live, no streaming text yet,
+  // and the most recent canonical (or overlay) user turn is NEWER than the
+  // most recent canonical assistant turn — i.e. claude hasn't started typing
+  // a reply yet. Stamped with Date.now() so it always sorts to the bottom.
+  // Disappears the moment streaming starts OR a canonical assistant turn
+  // catches up (which would shift latestAssistantTs above latestUserTs).
+  if (activity && (!streaming || !streaming.text)) {
+    let latestUserTs = 0;
+    let latestAssistantTs = 0;
+    for (const tn of baseTurns) {
+      if (tn.role === "user" && !tn.tool_result) {
+        const t = tsMs(tn);
+        if (t > latestUserTs) latestUserTs = t;
+      } else if (tn.role === "assistant" && !tn.tool_use) {
+        const t = tsMs(tn);
+        if (t > latestAssistantTs) latestAssistantTs = t;
+      }
+    }
+    // Also consider the optimistic user overlay (may already be in extras).
+    if (userOverlay && userOverlay.text && userOverlay.ts > latestUserTs) {
+      latestUserTs = userOverlay.ts;
+    }
+    if (latestUserTs > latestAssistantTs) {
+      extras.push({
+        ts: new Date(Date.now()).toISOString(),
+        role: "assistant",
+        text: activity,
+        raw_type: "synthetic-thinking",
       });
     }
   }

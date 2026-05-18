@@ -524,10 +524,19 @@ html, body { overflow-x: hidden; max-width: 100vw; }
 .streaming-cursor {
   display: inline-block;
   margin-left: 2px;
-  color: var(--pass);
+  /* Typing cursor — black/foreground = "claude is actively writing here".
+   * Was --pass (green); switched to var(--fg) so the typing state reads as
+   * neutral text-in-progress and pairs cleanly with the blue thinking
+   * variant below (different colour = different state, not just on/off). */
+  color: var(--fg);
   font-weight: 600;
   animation: stream-blink 1s steps(2, start) infinite;
 }
+/* Thinking cursor — blue = "claude received your msg, is ideating / using
+ * tools, but hasn't started writing the reply yet". Shows up in the
+ * synthetic-thinking turn (big card) and in the small-cell preview while
+ * activity != null and no streaming text exists. */
+.streaming-cursor--thinking { color: #3b82f6; }
 @keyframes stream-blink {
   to { visibility: hidden; }
 }
