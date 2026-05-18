@@ -4,7 +4,6 @@
 
 > 巫女 (Miki the Monitor) — one dashboard for every Claude Code session you have open, with end-to-end encrypted remote control from your phone.
 
-<!-- TODO(screenshot): desktop dashboard, post-0.3.0 chat-bubble layout -->
 <p align="center">
   <img src="docs/images/dashboard-desktop.png" width="820" alt="Desktop dashboard — session grid with live transcripts">
 </p>
@@ -101,10 +100,13 @@ Full protocol details in [`docs/protocols/relay-protocol.md`](docs/protocols/rel
 
 - **Multi-session grid** — every Claude Code panel on the machine, regardless of which VSCode window or terminal started it.
 - **Status counters** that filter — click `5 active` to scope the grid; click again to clear.
+- **New CLI popover** — kick off a fresh `miki claude --fresh` in any folder; remembers recent cwds via a native picker so jumping into a new project is one click.
 - **Live transcript** in chat-bubble layout (user right, assistant/system/tool left). Toggle tool calls, limit slider (10 / 50 / 200 / all).
 - **WS status dot** — green when receiving live updates, amber while reconnecting.
 
-<!-- TODO(screenshot): desktop dashboard, session card close-up -->
+<p align="center">
+  <img src="docs/images/new-cli-popover.png" width="320" alt="New CLI popover — folder path + recent cwds dropdown">
+</p>
 
 ### Session control
 
@@ -127,9 +129,8 @@ Full protocol details in [`docs/protocols/relay-protocol.md`](docs/protocols/rel
 - **Collapsible transcript controls** (show-tool / limit / load-all / reload) tucked behind one sliders popover.
 
 <p align="center">
-  <img src="docs/images/dashboard-phone.png" width="220" alt="Phone dashboard">
-  <img src="docs/images/phone-session-modal.png" width="220" alt="Phone session modal">
-  <img src="docs/images/composer-bar.jpg" width="220" alt="Composer bar">
+  <img src="docs/images/dashboard-phone.png" width="240" alt="Phone dashboard">
+  <img src="docs/images/phone-session-modal.png" width="240" alt="Phone session modal">
 </p>
 
 ## Deployment modes

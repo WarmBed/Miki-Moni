@@ -4,7 +4,6 @@
 
 > 巫女 (Miki the Monitor) — 一张 dashboard 收齐你所有 Claude Code session，可端对端加密从手机遥控。
 
-<!-- TODO(screenshot): desktop dashboard, post-0.3.0 chat-bubble layout -->
 <p align="center">
   <img src="docs/images/dashboard-desktop.png" width="820" alt="桌面 dashboard — session 卡片 + 实时 transcript">
 </p>
@@ -101,10 +100,13 @@ miki start
 
 - **多 session 网格** — 本机上每一个 Claude Code panel，不管哪个 VSCode 窗口或 terminal 起的都收进来
 - **状态计数器可筛选** — 点 `5 进行中` 把网格收敛到那个状态，再点取消
+- **New CLI popover** — 在任意文件夹起一个全新的 `miki claude --fresh`；最近用过的 cwd 用原生下拉记着，跳新项目一键搞定
 - **实时 transcript** 用聊天气泡版面（user 右、assistant/system/tool 左）。可切 tool call 显示，滚动门槛 10 / 50 / 200 / 全部
 - **WS 灯号** — 绿 = 实时接收中，黄 = 重连中
 
-<!-- TODO(screenshot): desktop dashboard, session card 特写 -->
+<p align="center">
+  <img src="docs/images/new-cli-popover.png" width="320" alt="New CLI popover — 文件夹路径 + 最近 cwd 下拉">
+</p>
 
 ### Session 控制
 
@@ -127,9 +129,8 @@ miki start
 - **Transcript 控制可折叠**（show-tool / limit / load-all / reload）藏在一个 sliders popover 里
 
 <p align="center">
-  <img src="docs/images/dashboard-phone.png" width="220" alt="手机 dashboard">
-  <img src="docs/images/phone-session-modal.png" width="220" alt="手机 session modal">
-  <img src="docs/images/composer-bar.jpg" width="220" alt="Composer 栏">
+  <img src="docs/images/dashboard-phone.png" width="240" alt="手机 dashboard">
+  <img src="docs/images/phone-session-modal.png" width="240" alt="手机 session modal">
 </p>
 
 ## 部署模式
