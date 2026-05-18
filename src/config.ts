@@ -108,8 +108,45 @@ export async function saveConfig(filePath: string, cfg: Config): Promise<void> {
   await fs.rename(tmp, filePath);
 }
 
+/** Max peers to keep on disk. Beyond this we LRU-evict by last_seen_at
+ *  (null treated as oldest). Each peer is ~250 bytes so the cap is generous;
+ *  the goal is to prevent unbounded growth from PWA reinstalls (each one
+ *  generates a fresh IndexedDB identity → new peer_id row even though it's
+ *  the same physical device).
+ *
+ *  Override via env MIKI_PAIRED_PEERS_CAP for self-hosters with fleets.
+ */
+const PAIRED_PEERS_CAP_DEFAULT = 20;
+function pairedPeersCap(): number {
+  const env = Number.parseInt(process.env.MIKI_PAIRED_PEERS_CAP ?? "", 10);
+  return Number.isFinite(env) && env > 0 ? env : PAIRED_PEERS_CAP_DEFAULT;
+}
+
+/** Days after which a peer with null last_seen_at gets pruned on add. */
+const PEER_STALE_DAYS = 30;
+const PEER_STALE_MS = PEER_STALE_DAYS * 24 * 60 * 60 * 1000;
+
 export function addPairedPeer(cfg: Config, peer: PairedPeer): Config {
-  return { ...cfg, paired_peers: [...cfg.paired_peers, peer] };
+  // Dedupe by encryption pubkey: same physical key = same peer, refresh in place.
+  const withoutDupe = cfg.paired_peers.filter((p) => p.peer_pubkey !== peer.peer_pubkey);
+  const next = [...withoutDupe, peer];
+  // Prune stale-and-never-seen peers (likely orphaned PWA installs).
+  const now = Date.now();
+  const pruned = next.filter((p) => {
+    if (p === peer) return true;  // never drop the one we're adding
+    if (p.last_seen_at !== null) return true;  // active peer, keep
+    return now - p.paired_at < PEER_STALE_MS;
+  });
+  // Cap total: LRU-evict by last_seen_at (null = oldest), then by paired_at.
+  const cap = pairedPeersCap();
+  if (pruned.length <= cap) return { ...cfg, paired_peers: pruned };
+  const sortedNewest = [...pruned].sort((a, b) => {
+    const aLast = a.last_seen_at ?? 0;
+    const bLast = b.last_seen_at ?? 0;
+    if (aLast !== bLast) return bLast - aLast;
+    return b.paired_at - a.paired_at;
+  });
+  return { ...cfg, paired_peers: sortedNewest.slice(0, cap) };
 }
 
 export function removePairedPeer(cfg: Config, peerId: string): Config {
@@ -118,4 +155,17 @@ export function removePairedPeer(cfg: Config, peerId: string): Config {
 
 export function findPeerById(cfg: Config, peerId: string): PairedPeer | null {
   return cfg.paired_peers.find((p) => p.peer_id === peerId) ?? null;
+}
+
+/** Stamp last_seen_at on the matching peer. Returns a new Config (immutable
+ *  pattern, same as the other helpers) or null if the peer isn't found —
+ *  callers can skip the saveConfig in that case. */
+export function touchPeerLastSeen(cfg: Config, peerId: string, ts: number = Date.now()): Config | null {
+  let found = false;
+  const next = cfg.paired_peers.map((p) => {
+    if (p.peer_id !== peerId) return p;
+    found = true;
+    return { ...p, last_seen_at: ts };
+  });
+  return found ? { ...cfg, paired_peers: next } : null;
 }

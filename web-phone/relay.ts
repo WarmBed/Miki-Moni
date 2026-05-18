@@ -91,6 +91,15 @@ export interface PairResult {
   shared_secret_b64: string;   // X25519 ECDH result
 }
 
+export interface PerformPairingOpts {
+  /** Daemon's X25519 pubkey from the QR fragment (`k=`). When provided, we
+   *  verify the relay's `pair_init.daemon_pubkey` matches and abort otherwise.
+   *  Closes the relay-MITM hole. Omitted = legacy trust-on-first-use (with
+   *  console warning), supported only for backward-compat with old QRs that
+   *  pre-date the &k= field. */
+  expectedDaemonPubkey?: string;
+}
+
 /** Run the pairing handshake with the relay using a freshly-typed/scanned pairing code.
  *  Browsers can't set custom headers on WebSocket, so we encode the pairing token in
  *  the URL query string. Worker accepts both header and query-string forms. */
@@ -98,6 +107,7 @@ export async function performPairing(
   relayUrl: string,
   pairingToken: string,
   identity: Identity,
+  opts: PerformPairingOpts = {},
 ): Promise<PairResult> {
   const base = relayUrl.replace(/^https?:/, (m) => (m === "https:" ? "wss:" : "ws:"));
   const wsUrl = `${base}/v1/phone?token=${encodeURIComponent(pairingToken)}`;
@@ -119,6 +129,22 @@ export async function performPairing(
 
       if (msg.type === "pair_init") {
         daemonPubkeyB64 = msg.daemon_pubkey as string;
+        // ANTI-MITM: if the QR carried an expected daemon pubkey (`k=`),
+        // verify the worker didn't substitute its own. Without this, an
+        // honest-but-curious worker could swap in a key it controls and
+        // silently decrypt every envelope (violates the relay threat model).
+        if (opts.expectedDaemonPubkey && daemonPubkeyB64 !== opts.expectedDaemonPubkey) {
+          settled = true;
+          ws.close();
+          reject(new Error("daemon_pubkey_mismatch"));
+          return;
+        }
+        if (!opts.expectedDaemonPubkey) {
+          // Legacy QR — log a warning so self-hosters know to regenerate.
+          // Browsers without console output (rare) just silently downgrade.
+          // eslint-disable-next-line no-console
+          console.warn("[miki] Pair URL has no &k= (daemon pubkey). MITM check skipped — regenerate QR with `miki pair --show` from a 0.3.8+ daemon.");
+        }
         const daemon_pub = naclUtil.decodeBase64(daemonPubkeyB64);
         const phone_priv = naclUtil.decodeBase64(identity.encryption_privkey);
         sharedSecret = nacl.box.before(daemon_pub, phone_priv);

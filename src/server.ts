@@ -61,6 +61,65 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   // 20mb to accommodate pasted images (base64) on /send. Hook payloads are tiny.
   app.use(express.json({ limit: "20mb" }));
 
+  // ── DNS-rebinding guard ──────────────────────────────────────────────
+  // The daemon binds 127.0.0.1 only, but DNS rebinding lets a malicious page
+  // on `evil.com` make that hostname resolve to 127.0.0.1 in the user's
+  // browser, then `fetch("http://evil.com:8765/send", ...)` from a page the
+  // user is visiting. Same-origin doesn't help — the page IS evil.com, so
+  // it's allowed to talk to itself. Result: arbitrary prompt injection into
+  // the user's Claude panel, or worse — `/admin/quit`, `/admin/rotate-pair`.
+  //
+  // We reject any request whose Host header isn't a localhost/loopback form,
+  // and (if present) whose Origin/Referer isn't a localhost form. Loopback
+  // hostnames an attacker can't poison: literal IPs and `localhost`. Any
+  // attacker-controlled domain name pointing at 127.0.0.1 is rejected.
+  //
+  // Bypass via env for testing or unusual setups (e.g. accessing the dashboard
+  // through a deliberately-configured reverse proxy): MIKI_TRUSTED_HOSTS="a,b".
+  const trustedHosts = new Set<string>([
+    "127.0.0.1",
+    "localhost",
+    "[::1]",
+    "::1",
+    ...(process.env.MIKI_TRUSTED_HOSTS ?? "").split(",").map((h) => h.trim()).filter(Boolean),
+  ]);
+  function hostnameOf(hostHeader: string | undefined): string | null {
+    if (!hostHeader) return null;
+    // Strip port. IPv6 is bracketed `[::1]:8765` — keep the brackets in the key.
+    const m = hostHeader.match(/^(\[[^\]]+\]|[^:]+)/);
+    return m ? m[1]!.toLowerCase() : null;
+  }
+  function isTrustedUrl(raw: string | undefined): boolean {
+    if (!raw) return true;  // absent is fine (most fetches don't set Origin)
+    try {
+      const u = new URL(raw);
+      const host = u.hostname.toLowerCase();
+      // URL.hostname strips brackets from [::1] — accept both forms.
+      return trustedHosts.has(host) || trustedHosts.has(`[${host}]`);
+    } catch {
+      return false;
+    }
+  }
+  app.use((req, res, next) => {
+    const host = hostnameOf(req.headers.host);
+    if (!host || !trustedHosts.has(host)) {
+      deps.log?.warn({ route: req.path, host: req.headers.host, origin: req.headers.origin }, "rejected non-loopback Host");
+      res.status(403).json({ error: "host_not_allowed", host: req.headers.host });
+      return;
+    }
+    if (!isTrustedUrl(req.headers.origin as string | undefined)) {
+      deps.log?.warn({ route: req.path, origin: req.headers.origin }, "rejected cross-origin");
+      res.status(403).json({ error: "origin_not_allowed", origin: req.headers.origin });
+      return;
+    }
+    if (!isTrustedUrl(req.headers.referer as string | undefined)) {
+      deps.log?.warn({ route: req.path, referer: req.headers.referer }, "rejected cross-referer");
+      res.status(403).json({ error: "referer_not_allowed", referer: req.headers.referer });
+      return;
+    }
+    next();
+  });
+
   // Lifecycle registry for `miki claude` CLIs the daemon launched via
   // /wrap/start. Owns: spawn record, reported PID, tree-kill on disconnect.
   // External sessions (VSCode panels, user-started `miki claude`) are NOT in

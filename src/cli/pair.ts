@@ -297,9 +297,11 @@ async function cmdNew(cfg: Config, workerUrlArg?: string): Promise<void> {
         // Acknowledge to phone (worker DO will route this back).
         ws.send(JSON.stringify({ type: "pair_ack", daemon_id: daemonId }));
 
-        // Persist.
+        // Persist. MERGE into existing remote — don't replace, or we'll wipe
+        // any persistent pair_token / phone_pwa_url the user set up earlier
+        // (silent data loss).
         const updated = addPairedPeer(
-          { ...cfg, remote: { worker_url: workerUrl } },
+          { ...cfg, remote: { ...(cfg.remote ?? {}), worker_url: workerUrl } },
           peer,
         );
         await saveConfig(CONFIG_PATH, updated);
@@ -449,12 +451,49 @@ async function spawnDetachedDaemon(): Promise<void> {
   if (out) out.close().catch(() => { /* ignore */ });
 }
 
+/**
+ * Best-effort revoke a stale persistent token on the OLD worker before we
+ * switch to a new worker URL. Without this, switching relays orphans the
+ * old token on the previous coordinator (persistent tokens never auto-
+ * expire), and anyone who recovers the old QR can still pair against that
+ * old relay forever. Fire-and-forget; failure is non-fatal because the
+ * primary security perimeter is the daemon side.
+ */
+async function revokeOldRelayToken(oldWorkerUrl: string, oldToken: string): Promise<void> {
+  const httpsUrl = oldWorkerUrl
+    .replace(/^wss:\/\//, "https://")
+    .replace(/^ws:\/\//, "http://")
+    .replace(/\/$/, "");
+  try {
+    const r = await fetch(`${httpsUrl}/v1/pairing/revoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: oldToken }),
+    });
+    if (r.ok) console.log(`[ok] revoked stale token on previous relay (${httpsUrl})`);
+    else console.log(`[info] previous relay returned HTTP ${r.status} for revoke (non-fatal)`);
+  } catch (e) {
+    console.log(`[info] could not reach previous relay to revoke (${(e as Error).message}). Non-fatal.`);
+  }
+}
+
 async function cmdRotate(cfg: Config, workerUrlArg?: string): Promise<void> {
   const workerUrl = workerUrlArg ?? cfg.remote?.worker_url;
   if (!workerUrl) {
     console.error("Missing worker URL — pass `--worker-url=` or set in config first.");
     process.exit(1);
   }
+
+  // If user is moving to a NEW relay, try to invalidate the old token over
+  // there first. Persistent tokens on a different coordinator never expire
+  // on their own — leaving the old QR usable against the old relay is a
+  // security-adjacent footgun.
+  const previousWorkerUrl = cfg.remote?.worker_url;
+  const previousToken = cfg.remote?.pair_token;
+  if (previousWorkerUrl && previousToken && previousWorkerUrl !== workerUrl) {
+    await revokeOldRelayToken(previousWorkerUrl, previousToken);
+  }
+
   const token = generateNewPairingToken();
   const next: Config = {
     ...cfg,
@@ -468,37 +507,36 @@ async function cmdRotate(cfg: Config, workerUrlArg?: string): Promise<void> {
   // without the user having to manually Ctrl+C + restart. Previously this
   // was a footgun: the new QR would 404 at /v1/phone because the relay's
   // PairingCoordinator DO still held the stale token.
+  //
+  // IMPORTANT: /admin/restart already re-execs the daemon itself (with
+  // MIKI_NO_TRAY_SPAWN=1). We previously ALSO called spawnDetachedDaemon()
+  // unconditionally, creating two daemons racing to bind 8765 / overwrite
+  // PORT_FILE — exactly the singleton-guard race the daemon's bootstrap
+  // tries to avoid. Now: only spawn a fresh daemon if /admin/restart was
+  // NOT acked (i.e. the old daemon couldn't restart itself, so we need a
+  // cold start from outside).
   const port = await readPortFile();
   if (port && await pingDaemonHttp(port)) {
     process.stdout.write("[…] restarting daemon to register the new token… ");
     const acked = await postAdmin(port, "/admin/restart");
     if (!acked) {
-      console.log("FAILED");
-      console.error("[warn] /admin/restart did not ack. Manually restart: Ctrl+C in the daemon window then `pnpm start`.");
-    } else {
-      // Wait for the old daemon's port to free (up to 5s).
-      for (let i = 0; i < 25; i++) {
-        await new Promise((r) => setTimeout(r, 200));
-        if (!(await pingDaemonHttp(port, 300))) break;
-      }
-      // Spawn a fresh detached daemon — singleton guard in index.ts will no-op
-      // if somehow a daemon is already there, so this is safe to fire.
+      console.log("FAILED — falling back to cold-start spawn");
+      console.error("[warn] /admin/restart did not ack. Attempting fresh spawn.");
       try { await spawnDetachedDaemon(); } catch (e) {
-        console.log("FAILED");
         console.error(`[warn] could not respawn daemon: ${(e as Error).message}`);
         console.error("[warn] start manually: pnpm start (from D:\\code\\cc-hub or wherever miki-moni lives)");
         printQrAndCode(next);
         return;
       }
-      // Wait for the new daemon to register the token + come up (up to 10s).
-      let ready = false;
-      for (let i = 0; i < 50; i++) {
-        await new Promise((r) => setTimeout(r, 200));
-        const p = await readPortFile();
-        if (p && await pingDaemonHttp(p)) { ready = true; break; }
-      }
-      console.log(ready ? "OK" : "TIMED OUT — daemon may still be coming up, give it a moment");
     }
+    // Wait for the new daemon to register the token + come up (up to 10s).
+    let ready = false;
+    for (let i = 0; i < 50; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      const p = await readPortFile();
+      if (p && await pingDaemonHttp(p)) { ready = true; break; }
+    }
+    console.log(ready ? "OK" : "TIMED OUT — daemon may still be coming up, give it a moment");
   } else {
     console.log("[info] No running daemon detected. The new token will be active when you next `pnpm start`.");
   }

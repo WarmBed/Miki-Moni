@@ -25,6 +25,10 @@ interface PhoneAttachment {
   peer_id?: string;                  // computePeerId(encryption_pubkey) — addresses daemon→phone envelopes
   pairing_token?: string;
   authed: boolean;
+  /** Wall-clock deadline (ms since epoch) by which an UNAUTHENTICATED phone
+   *  socket must send pair_offer or be force-closed. Stops attackers from
+   *  pinning sockets to the unauth bucket and DoSing real pair attempts. */
+  unauth_deadline_ms?: number;
 }
 
 type Attachment = DaemonAttachment | PhoneAttachment;
@@ -90,10 +94,33 @@ export class DaemonRelay implements DurableObject {
       return new Response(null, { status: 101, webSocket: client });
     }
 
+    // Cap concurrent UNAUTHENTICATED phone sockets per DO. A malicious actor
+    // could otherwise hold open many `pair`-tagged sockets without ever
+    // sending pair_offer, exhausting the DO's WebSocket cap and DoSing pair
+    // attempts. Authenticated sockets (reconnect-mode after sig verify) are
+    // not counted; the limit is solely on the unauthenticated bootstrap window.
+    const MAX_UNAUTH_PHONE_SOCKETS = 16;
+    const existing = this.state.getWebSockets("phone").filter((ws) => {
+      const a = ws.deserializeAttachment() as Attachment | undefined;
+      return a && a.role === "phone" && !a.authed;
+    });
+    if (existing.length >= MAX_UNAUTH_PHONE_SOCKETS) {
+      server.close(4029, "too_many_unauth_phone_sockets");
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
     if (pairing_token) {
       const phone_id = pairing_token;
       const att: PhoneAttachment = { role: "phone", phone_id, pairing_token, authed: false };
       this.state.acceptWebSocket(server, ["phone", phone_id]);
+      server.serializeAttachment(att);
+      // Arm a server-side disconnect for sockets that don't send pair_offer
+      // within 10s. Without this an attacker (or buggy client) can keep
+      // hibernating sockets pinned to the unauthenticated bucket indefinitely.
+      // We use storage.setAlarm indirectly through a one-shot setTimeout via
+      // alarm doesn't work for per-socket; instead we encode a deadline in
+      // the attachment and check on every message + during alarm sweeps.
+      att.unauth_deadline_ms = Date.now() + 10_000;
       server.serializeAttachment(att);
 
       // Prefer the X25519 encryption pubkey (post-fix daemons). Older daemons
@@ -140,14 +167,16 @@ export class DaemonRelay implements DurableObject {
       const sig = fromBase64(sig_b64);
       const daemon_id = this.state.id.name!;
       const daemonIdBytes = new TextEncoder().encode(daemon_id);
+      // Tightened from 2-minute (now+prev) to 1-minute window. The previous
+      // window made captured sigs (from URL history / TLS-inspection
+      // middleboxes / extensions reading query strings) replayable for ~2
+      // minutes from any source IP. Phones with mildly-skewed clocks may
+      // briefly fail to reconnect — they'll retry next minute, harmless.
       const nowMinute = Math.floor(Date.now() / 60_000);
-      for (const m of [nowMinute, nowMinute - 1]) {
-        const msg = new Uint8Array(daemonIdBytes.length + 8);
-        msg.set(daemonIdBytes, 0);
-        new DataView(msg.buffer, daemonIdBytes.length, 8).setBigUint64(0, BigInt(m), false);
-        if (nacl.sign.detached.verify(msg, sig, pubkey)) return true;
-      }
-      return false;
+      const msg = new Uint8Array(daemonIdBytes.length + 8);
+      msg.set(daemonIdBytes, 0);
+      new DataView(msg.buffer, daemonIdBytes.length, 8).setBigUint64(0, BigInt(nowMinute), false);
+      return nacl.sign.detached.verify(msg, sig, pubkey);
     } catch {
       return false;
     }
@@ -158,6 +187,15 @@ export class DaemonRelay implements DurableObject {
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const att = ws.deserializeAttachment() as Attachment | undefined;
     if (!att) { ws.close(1011, "no_attachment"); return; }
+
+    // Enforce unauth-phone deadline: if this socket is still unauthenticated
+    // past its arrival-by deadline, it's been squatting — close it. Cheap
+    // check on every message; pair_offer typically arrives in <100ms.
+    if (att.role === "phone" && !att.authed && att.unauth_deadline_ms && Date.now() > att.unauth_deadline_ms) {
+      ws.close(4029, "unauth_socket_timeout");
+      return;
+    }
+
     const text = typeof message === "string" ? message : new TextDecoder().decode(message);
     let msg: any;
     try { msg = JSON.parse(text); } catch { ws.close(1008, "bad_json"); return; }

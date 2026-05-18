@@ -60,8 +60,11 @@ export async function runSetupWizard(cfg: Config, opts: SetupWizardOpts = {}): P
     case "self-host":
       return await runSelfHostWizard(cfgWithLocale);
     case "local-only":
-      await markLocalOnly();
-      return applyLocalOnly(cfgWithLocale);
+      // markLocalOnly is invoked INSIDE applyLocalOnly so the sentinel is
+      // inseparable from the state mutation — any future caller that
+      // bypasses this switch and goes straight to applyLocalOnly still
+      // gets the marker, preventing the wizard from re-firing on next boot.
+      return await applyLocalOnly(cfgWithLocale);
   }
 }
 
@@ -114,15 +117,16 @@ function applyHosted(cfg: Config): Config {
   };
 }
 
-function applyLocalOnly(cfg: Config): Config {
+async function applyLocalOnly(cfg: Config): Promise<Config> {
   // We can't actually set `remote: null` in the typed Config — remote is
-  // optional. Instead unset it and leave a sentinel field elsewhere if
-  // needed. For now: just delete remote entirely; subsequent starts will
-  // re-trigger the wizard. Mark with an internal flag stored separately.
+  // optional. Instead unset it and persist the local-only sentinel as part
+  // of the SAME operation so future starts won't re-trigger the wizard.
+  // Previously markLocalOnly() lived in the caller's switch arm, which was
+  // a footgun: any other code path that called applyLocalOnly directly
+  // would mutate state without setting the sentinel.
+  await markLocalOnly();
   const next: Config = { ...cfg };
   delete (next as any).remote;
-  // Suppress wizard re-trigger by writing a sentinel into device.created_at-ish
-  // metadata. Simpler: write a marker file beside config.
   return next;
 }
 

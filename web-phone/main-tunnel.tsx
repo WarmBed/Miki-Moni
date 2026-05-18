@@ -14,7 +14,7 @@
 // longer loaded by the production bundle.
 
 import { render } from "preact";
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 // Both stylesheets: tailwind utilities for our pair UI, dashboard CSS for web/app.
 import "./style.css";
 import "../web/style.css";
@@ -40,21 +40,22 @@ import { t } from "@shared/i18n";
 
 // ── URL-hash auto-pair ───────────────────────────────────────────────────────
 
-function parsePairFragment(fragment: string): { token: string; relay: string } | null {
+function parsePairFragment(fragment: string): { token: string; relay: string; expectedDaemonPubkey?: string } | null {
   try {
     const hash = fragment.replace(/^#/, "");
     if (!hash) return null;
     const params = new URLSearchParams(hash);
     const token = params.get("t");
     const relay = params.get("r");
+    const k = params.get("k");  // daemon X25519 pubkey, base64 — anti-MITM
     if (!token || !relay || !isValidPairingCode(token)) return null;
-    return { token, relay };
+    return { token, relay, expectedDaemonPubkey: k ?? undefined };
   } catch {
     return null;
   }
 }
 
-function parsePairFromScannedText(text: string): { token: string; relay: string } | null {
+function parsePairFromScannedText(text: string): { token: string; relay: string; expectedDaemonPubkey?: string } | null {
   const hashIdx = text.indexOf("#");
   if (hashIdx >= 0) return parsePairFragment(text.slice(hashIdx + 1));
   if (/^[\w-]+=/.test(text)) return parsePairFragment(text);
@@ -133,11 +134,11 @@ function PairScreen({ relayUrl, onPaired }: PairProps) {
   const normalized = normalizePairingCode(input);
   const valid = isValidPairingCode(normalized);
 
-  async function pair(token: string, useRelay: string) {
+  async function pair(token: string, useRelay: string, expectedDaemonPubkey?: string) {
     setBusy(true); setError(null);
     try {
       const identity = await loadOrCreateIdentity();
-      const peer = await performPairing(useRelay, token, identity);
+      const peer = await performPairing(useRelay, token, identity, { expectedDaemonPubkey });
       const next: PhoneState = {
         relay_url: useRelay,
         daemon_id: peer.daemon_id,
@@ -165,7 +166,7 @@ function PairScreen({ relayUrl, onPaired }: PairProps) {
       setError(t("phone.pair.errorScannedQr", { text: preview }));
       return;
     }
-    void pair(parsed.token, parsed.relay);
+    void pair(parsed.token, parsed.relay, parsed.expectedDaemonPubkey);
   }
 
   if (scanning) {
@@ -249,6 +250,13 @@ function Bootstrap() {
   const [state, setState] = useState<PhoneState | null>(() => loadState());
   const [phase, setPhase] = useState<"checking" | "pairing-from-hash" | "connecting" | "error">("checking");
   const [error, setError] = useState<string | null>(null);
+  // useState init runs once; if the bootstrap effect needs to know about a
+  // cached state to decide whether to clear it, reading from React state
+  // would be a stale-closure trap (deps:[] never re-runs even if state
+  // changes mid-effect). Snapshot the initial value here and use that
+  // directly inside the effect.
+  const initialStateRef = useRef<PhoneState | null>(null);
+  initialStateRef.current ??= state;  // capture on first render only
 
   // First effect: handle URL-hash auto-pair OR resolve into "connecting"/"pair-needed"
   //
@@ -264,14 +272,18 @@ function Bootstrap() {
     const fromHash = parsePairFragment(window.location.hash);
     if (fromHash) {
       // Explicit pair URL — wipe any previously cached peer so we don't
-      // accidentally fall back to it if the new pair fails.
-      if (state) { clearState(); setState(null); }
+      // accidentally fall back to it if the new pair fails. Read the
+      // initial snapshot from the ref (not the closure-captured `state`,
+      // which is stale once we setState below).
+      if (initialStateRef.current) { clearState(); setState(null); }
       clearHash();
       setPhase("pairing-from-hash");
       void (async () => {
         try {
           const identity = await loadOrCreateIdentity();
-          const peer = await performPairing(fromHash.relay, fromHash.token, identity);
+          const peer = await performPairing(fromHash.relay, fromHash.token, identity, {
+            expectedDaemonPubkey: fromHash.expectedDaemonPubkey,
+          });
           const next: PhoneState = {
             relay_url: fromHash.relay,
             daemon_id: peer.daemon_id,
@@ -296,7 +308,7 @@ function Bootstrap() {
       })();
       return;
     }
-    if (state) { setPhase("connecting"); return; }
+    if (initialStateRef.current) { setPhase("connecting"); return; }
     setPhase("checking");  // show PairScreen
   }, []);
 

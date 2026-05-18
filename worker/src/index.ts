@@ -13,6 +13,28 @@ export default {
       return new Response("ok", { status: 200 });
     }
 
+    // Best-effort token revoke (no auth — the token IS the credential, so
+    // possessing it is enough to invalidate it). Used by `miki pair --rotate`
+    // when the user switches relays so the old persistent token doesn't
+    // linger on the previous coordinator forever.
+    if (url.pathname === "/v1/pairing/revoke" && req.method === "POST") {
+      try {
+        const body = await req.json() as { token?: unknown };
+        const token = typeof body.token === "string" ? body.token : "";
+        if (!token) return new Response("bad_input", { status: 400 });
+        const coordId = env.PAIRING.idFromName("coordinator");
+        const coordStub = env.PAIRING.get(coordId);
+        await coordStub.fetch(new Request("https://x/revoke", {
+          method: "POST",
+          body: JSON.stringify({ token }),
+          headers: { "content-type": "application/json" },
+        }));
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+      } catch {
+        return new Response("bad_request", { status: 400 });
+      }
+    }
+
     // Per-IP rate limit (skip in tests where RATE_LIMITER returns success synthetically)
     if (env.RATE_LIMITER && (url.pathname === "/v1/daemon" || url.pathname === "/v1/phone")) {
       const ip = req.headers.get("CF-Connecting-IP") ?? "test-ip";

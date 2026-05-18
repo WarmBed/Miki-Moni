@@ -19,9 +19,24 @@ interface RateEntry {
   window_started_at_ms: number;
 }
 
+/** Anti-brute-force for `claim`: track failed-claim counts by token prefix.
+ *  Distributed attackers can dodge the per-IP RATE_LIMITER by spreading
+ *  attempts across IPs, so we also limit failures keyed on the token they're
+ *  attempting. Same prefix space (first 4 chars of normalized alphabet)
+ *  means ~31^4 = ~924k buckets — collisions are rare but harmless.
+ */
+const CLAIM_FAIL_WINDOW_MS = 10 * 60 * 1000;  // 10 minutes
+const CLAIM_FAIL_MAX = 20;                    // attempts per prefix per window
+const CLAIM_FAIL_PREFIX_LEN = 4;
+interface ClaimFailEntry {
+  fails: number;
+  window_started_at_ms: number;
+}
+
 export class PairingCoordinator implements DurableObject {
   private pending = new Map<string, PendingEntry>();
   private rateLimits = new Map<string, RateEntry>();
+  private claimFails = new Map<string, ClaimFailEntry>();
 
   constructor(private state: DurableObjectState, private env: Env) {
     this.state.blockConcurrencyWhile(async () => {
@@ -29,6 +44,8 @@ export class PairingCoordinator implements DurableObject {
       if (stored) this.pending = stored;
       const rates = await this.state.storage.get<Map<string, RateEntry>>("rates");
       if (rates) this.rateLimits = rates;
+      const fails = await this.state.storage.get<Map<string, ClaimFailEntry>>("claimFails");
+      if (fails) this.claimFails = fails;
       const next = await this.state.storage.getAlarm();
       if (!next) await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS);
     });
@@ -89,11 +106,25 @@ export class PairingCoordinator implements DurableObject {
   }
 
   async claim(token: string): Promise<{ ok: true; daemon_id: string } | { ok: false; reason: string }> {
+    // Anti-brute-force gate (per-token-prefix backoff). Distributed attackers
+    // bypass the per-IP RATE_LIMITER on /v1/phone by spreading attempts; this
+    // catches them at the coordinator level.
+    const prefix = token.slice(0, CLAIM_FAIL_PREFIX_LEN);
+    const now = Date.now();
+    const fail = this.claimFails.get(prefix);
+    if (fail && now - fail.window_started_at_ms < CLAIM_FAIL_WINDOW_MS && fail.fails >= CLAIM_FAIL_MAX) {
+      return { ok: false, reason: "rate_limited" };
+    }
+
     const entry = this.pending.get(token);
-    if (!entry) return { ok: false, reason: "unknown" };
+    if (!entry) {
+      await this.recordClaimFail(prefix, now);
+      return { ok: false, reason: "unknown" };
+    }
     if (Date.now() > entry.expires_at_ms) {
       this.pending.delete(token);
       await this.state.storage.put("pending", this.pending);
+      await this.recordClaimFail(prefix, now);
       return { ok: false, reason: "expired" };
     }
     // Persistent tokens stay in the map — same QR keeps working for the next
@@ -103,6 +134,26 @@ export class PairingCoordinator implements DurableObject {
       await this.state.storage.put("pending", this.pending);
     }
     return { ok: true, daemon_id: entry.daemon_id };
+  }
+
+  private async recordClaimFail(prefix: string, now: number): Promise<void> {
+    const cur = this.claimFails.get(prefix);
+    if (cur && now - cur.window_started_at_ms < CLAIM_FAIL_WINDOW_MS) {
+      cur.fails++;
+    } else {
+      this.claimFails.set(prefix, { fails: 1, window_started_at_ms: now });
+    }
+    // Cap map size so an attacker can't blow up storage by sampling many prefixes.
+    if (this.claimFails.size > 5000) {
+      // Drop oldest by window start. O(n) but n is bounded.
+      let oldestKey: string | null = null;
+      let oldestTs = Infinity;
+      for (const [k, v] of this.claimFails) {
+        if (v.window_started_at_ms < oldestTs) { oldestTs = v.window_started_at_ms; oldestKey = k; }
+      }
+      if (oldestKey) this.claimFails.delete(oldestKey);
+    }
+    await this.state.storage.put("claimFails", this.claimFails);
   }
 
   async revoke(token: string): Promise<void> {
@@ -139,6 +190,17 @@ export class PairingCoordinator implements DurableObject {
       }
     }
     if (rateChanged) await this.state.storage.put("rates", this.rateLimits);
+
+    // Sweep stale claim-fail buckets too so memory doesn't grow unbounded
+    // when no claims happen on those prefixes for a while.
+    let failsChanged = false;
+    for (const [prefix, f] of this.claimFails) {
+      if (now - f.window_started_at_ms > CLAIM_FAIL_WINDOW_MS) {
+        this.claimFails.delete(prefix);
+        failsChanged = true;
+      }
+    }
+    if (failsChanged) await this.state.storage.put("claimFails", this.claimFails);
 
     await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS);
   }

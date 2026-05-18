@@ -6,15 +6,24 @@ import type { Plaintext } from "./relay-protocol.js";
 
 export const PAIRING_TOKEN_TTL_MS = 10 * 60 * 1000;
 
-const PAIRING_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+const PAIRING_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";  // 31 chars
 const PAIRING_TOKEN_LENGTH = 16;
 const PAIRING_TOKEN_BYTES = 16;
+// Largest multiple of 31 that fits in a byte (256). Reject anything ≥ this
+// to remove modulo bias when sampling a 31-char alphabet from a uniform
+// byte source. See pairing-code.ts for the same trick on the worker side.
+const PAIRING_BYTE_MAX = Math.floor(256 / PAIRING_ALPHABET.length) * PAIRING_ALPHABET.length;  // 248
 
 export function generateNewPairingToken(): string {
-  const bytes = nacl.randomBytes(PAIRING_TOKEN_LENGTH);
   let out = "";
-  for (let i = 0; i < PAIRING_TOKEN_LENGTH; i++) {
-    out += PAIRING_ALPHABET[bytes[i]! % PAIRING_ALPHABET.length];
+  while (out.length < PAIRING_TOKEN_LENGTH) {
+    // Oversize: typical loop completes in 1-2 iterations.
+    const bytes = nacl.randomBytes(32);
+    for (let i = 0; i < bytes.length && out.length < PAIRING_TOKEN_LENGTH; i++) {
+      const b = bytes[i]!;
+      if (b >= PAIRING_BYTE_MAX) continue;  // reject biased range
+      out += PAIRING_ALPHABET[b % PAIRING_ALPHABET.length];
+    }
   }
   return out;
 }
@@ -33,10 +42,26 @@ export interface PairingQrInput {
  *  Config.remote.phone_pwa_url + pass through the input. */
 export const PHONE_PWA_URL = "https://miki-moni.pages.dev/";
 
-/** HTTPS URL with token + relay in the URL fragment. Fragment is never sent to
- *  the server, so the token doesn't leak into CF/Pages access logs. */
+/** HTTPS URL with token + relay + daemon pubkey in the URL fragment.
+ *
+ *  Including `&k=<daemon_x25519_pubkey_b64>` closes the relay-MITM hole:
+ *  during pair_init the worker sends a pubkey to the phone; without an
+ *  out-of-band reference, an honest-but-curious worker could substitute
+ *  its own pubkey, derive shared secrets with both sides, and silently
+ *  decrypt every envelope. With `k=` the phone compares the worker-
+ *  supplied pubkey against the one in the QR and aborts on mismatch.
+ *
+ *  Fragment is never sent to the server, so the token + key don't leak
+ *  into CF/Pages access logs.
+ *
+ *  Older QRs without `k=` still work — phones fall back to trust-on-first-
+ *  use with a console warning. The fix is forward-only.
+ */
 export function pairingQrPayload(input: PairingQrInput): string {
-  const fragment = `t=${input.pairing_token}&r=${encodeURIComponent(input.worker_url)}`;
+  const fragment =
+    `t=${input.pairing_token}` +
+    `&r=${encodeURIComponent(input.worker_url)}` +
+    `&k=${encodeURIComponent(input.daemon_pubkey)}`;
   const base = input.phone_pwa_url ?? PHONE_PWA_URL;
   return `${base}#${fragment}`;
 }

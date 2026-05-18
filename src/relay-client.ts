@@ -1,7 +1,7 @@
 import WebSocket from "ws";
 import { fromBase64, toBase64, sign as signMsg, deriveSharedSecret } from "./crypto.js";
 import { encodeEnvelope, decodeEnvelope, type Envelope, type Plaintext } from "./relay-protocol.js";
-import { addPairedPeer, saveConfig, type Config, type PairedPeer } from "./config.js";
+import { addPairedPeer, saveConfig, touchPeerLastSeen, type Config, type PairedPeer } from "./config.js";
 import type { SessionStore } from "./session-store.js";
 import type { VscodeBridge } from "./vscode-bridge.js";
 import type { Session } from "./types.js";
@@ -206,6 +206,29 @@ export class RelayClient {
       return;
     }
 
+    // ── Optional approval gate ────────────────────────────────────────────
+    // Persistent pair tokens are bearer credentials — anyone with the QR can
+    // pair forever (the token never invalidates on use). For security-conscious
+    // operators, MIKI_PAIR_REQUIRE_APPROVAL=1 makes every NEW pair require
+    // explicit approval before persistence. Approval channel today: a TTY
+    // y/N prompt in the daemon's console; if stdin isn't a TTY we deny (the
+    // daemon was probably launched detached, no human to ask).
+    //
+    // Default off keeps the current zero-friction UX. Pair via QR remains the
+    // happy path; this is opt-in for shared workstations / kiosks.
+    if (process.env.MIKI_PAIR_REQUIRE_APPROVAL === "1") {
+      const peerName = typeof msg.phone_name === "string" ? msg.phone_name : "phone";
+      const approved = await this.promptForPairApproval(peerName, peer_id);
+      if (!approved) {
+        if (this.ws) {
+          this.ws.send(JSON.stringify({ type: "pair_nack", error: "denied_by_operator" }));
+        }
+        // eslint-disable-next-line no-console
+        console.warn(`[relay] denied pair from ${peerName} (id=${peer_id.slice(0, 8)}…)`);
+        return;
+      }
+    }
+
     const phonePub = fromBase64(phonePubB64);
     const encPriv = fromBase64(this.deps.config.device.privkey);
     const sharedSecret = deriveSharedSecret(encPriv, phonePub);
@@ -220,13 +243,33 @@ export class RelayClient {
       last_seen_at: null,
     };
 
-    // Mutate in-memory config + persist to disk.
-    this.deps.config = addPairedPeer(this.deps.config, peer);
+    // PERSIST FIRST, then ACK. The previous order swallowed save errors and
+    // ACKed anyway — leaving in-memory peers + a happy phone, but next daemon
+    // restart had no record of this peer (paired_peers IS the source of
+    // truth; there's no rebuild path) → phone reconnects, daemon can't
+    // decrypt anything, phone sees a silent stale-tunnel error.
+    const prevConfig = this.deps.config;
+    const nextConfig = addPairedPeer(this.deps.config, peer);
+    this.deps.config = nextConfig;
     try {
-      await saveConfig(this.deps.configPath ?? CONFIG_FILE, this.deps.config);
-    } catch { /* swallow — pair_ack still goes out, next restart will rebuild */ }
+      await saveConfig(this.deps.configPath ?? CONFIG_FILE, nextConfig);
+    } catch (err) {
+      // Rollback in-memory mutation so the daemon's state stays consistent
+      // with disk. Tell the phone we couldn't pair so it doesn't think it's
+      // bound, and notify the user (disk full / perms are operator-level
+      // failures that deserve a notification, not a silent log line).
+      this.deps.config = prevConfig;
+      if (this.ws) {
+        this.ws.send(JSON.stringify({ type: "pair_nack", error: "persist_failed", detail: String(err).slice(0, 200) }));
+      }
+      void this.deps.notifier?.notify({
+        project: "miki-moni",
+        message: `Pair failed: couldn't save peer to config.json (${String(err).slice(0, 80)}).`,
+      });
+      return;
+    }
 
-    // Hot-add to peers so envelopes from this phone start decrypting immediately.
+    // Persisted — now we can safely hot-add and ACK.
     this.peers.push({ peer, sharedSecret, recentNonces: new Map() });
 
     if (this.ws) {
@@ -306,10 +349,73 @@ export class RelayClient {
       // Accept
       p.recentNonces.set(env.nonce, Date.now());
       this.pruneNonces(p);
+      // Record liveness so the LRU prune in addPairedPeer can tell active
+      // devices from orphaned PWA installs. Fire-and-forget — we only need
+      // approximate timestamps, not every envelope.
+      this.touchPeerSeen(p.peer.peer_id);
       void this.dispatchPlaintext(pt, p);
       return;
     }
     // No peer could decrypt — drop silently
+  }
+
+  // Throttle: only persist last_seen_at to disk once per peer per minute.
+  // Decryption is hot (every keystroke from phone) but disk cadence is fine.
+  private lastSeenStampedAt = new Map<string, number>();
+  private static readonly LAST_SEEN_PERSIST_INTERVAL_MS = 60_000;
+
+  private touchPeerSeen(peerId: string): void {
+    const now = Date.now();
+    const last = this.lastSeenStampedAt.get(peerId) ?? 0;
+    if (now - last < RelayClient.LAST_SEEN_PERSIST_INTERVAL_MS) return;
+    this.lastSeenStampedAt.set(peerId, now);
+    // Mutate in-memory config + persist async. Failures here are non-fatal.
+    const next = touchPeerLastSeen(this.deps.config, peerId, now);
+    if (!next) return;
+    (this.deps as { config: Config }).config = next;
+    void saveConfig(this.deps.configPath ?? CONFIG_FILE, next).catch((err) => {
+      // Stale stamp on disk is harmless; just log so we know if disk is sad.
+      // eslint-disable-next-line no-console
+      console.warn(`[relay] touchPeerLastSeen save failed: ${String(err)}`);
+    });
+  }
+
+  /**
+   * Block until the operator approves or denies a new pair, or timeout (60s)
+   * elapses (auto-deny). Used only when MIKI_PAIR_REQUIRE_APPROVAL=1. Returns
+   * true iff the user explicitly typed "y" or "yes" at the daemon's TTY.
+   *
+   * Non-TTY launch (detached daemon, systemd) → auto-deny: there's no human
+   * to ask, and silently auto-accepting would defeat the whole point of the
+   * opt-in. Users running this mode should keep the daemon foregrounded.
+   */
+  private async promptForPairApproval(peerName: string, peerId: string): Promise<boolean> {
+    if (!process.stdin.isTTY) {
+      // eslint-disable-next-line no-console
+      console.warn(`[relay] MIKI_PAIR_REQUIRE_APPROVAL=1 but stdin is not a TTY — auto-denying pair from ${peerName} (${peerId.slice(0, 8)}…)`);
+      return false;
+    }
+    // eslint-disable-next-line no-console
+    console.log(`\n[approval] Pair request from "${peerName}" (peer id=${peerId.slice(0, 8)}…). Approve? [y/N]`);
+    void this.deps.notifier?.notify({
+      project: "miki-moni",
+      message: `Pair request from ${peerName} — approve in the daemon terminal.`,
+    });
+    return await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        process.stdin.off("data", onData);
+        // eslint-disable-next-line no-console
+        console.log("[approval] timed out (60s) — denying.");
+        resolve(false);
+      }, 60_000);
+      const onData = (buf: Buffer) => {
+        const ans = buf.toString().trim().toLowerCase();
+        clearTimeout(timer);
+        process.stdin.off("data", onData);
+        resolve(ans === "y" || ans === "yes");
+      };
+      process.stdin.on("data", onData);
+    });
   }
 
   private pruneNonces(p: PeerSecrets): void {
