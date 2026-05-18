@@ -5,6 +5,7 @@ import { marked } from "marked";
 import { t, useLocale, setLocale as setLocaleGlobal, LOCALES, LOCALE_LABELS, type Locale } from "@shared/i18n";
 import { apiFetch, apiWebSocket } from "./api";
 import { assembleRenderTurns } from "./lib/transcript-assembly";
+import { loadHiddenSet, addHidden, removeHidden, HIDDEN_KEY } from "./lib/hidden-sessions.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -184,6 +185,108 @@ function IconStop({ size = 13 }: { size?: number }) {
     </svg>
   );
 }
+function IconX({ size = 13 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+function IconUndo({ size = 13 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 7v6h6" />
+      <path d="M21 17a9 9 0 0 0-15-6.7L3 13" />
+    </svg>
+  );
+}
+
+// ── Close card button ──────────────────────────────────────────────────
+//
+// State-aware top-right button for each grid cell:
+//   - wrapped   → IconStop  → POST /wrap/stop  (cell flips non-wrapped)
+//   - non-wrap  → IconX     → hide locally     (cell disappears)
+//   - hidden    → IconUndo  → un-hide locally  (cell returns)
+//
+// Failure of /wrap/stop is surfaced inline (red border + tooltip for 3s)
+// matching ModelChip's pattern so we don't need a global toast system.
+// localStorage failures are silent (in-memory state still works) — see
+// web/lib/hidden-sessions.ts.
+
+function CloseCardButton({
+  sessionUuid, wrapped, isHiddenView, onHide, onUnhide,
+}: {
+  sessionUuid: string;
+  wrapped: boolean;
+  isHiddenView: boolean;
+  onHide: (uuid: string) => void;
+  onUnhide: (uuid: string) => void;
+}) {
+  const [pending, setPending] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function handle(e: MouseEvent) {
+    e.stopPropagation();
+    if (!sessionUuid || pending) return;
+
+    if (isHiddenView) {
+      onUnhide(sessionUuid);
+      return;
+    }
+    if (!wrapped) {
+      onHide(sessionUuid);
+      return;
+    }
+
+    // wrapped: kill via daemon
+    setPending(true); setErr(null);
+    try {
+      const r = await apiFetch("/wrap/stop", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ session_uuid: sessionUuid }),
+      });
+      if (!r.ok && r.status !== 404) {
+        // 404 = already stopped (race with WS close). Treat as success.
+        throw new Error(`HTTP ${r.status}`);
+      }
+      // No optimistic UI: daemon's WS session_changed event will flip wrapped=false.
+    } catch (e: unknown) {
+      setErr(String(e));
+      window.setTimeout(() => setErr(null), 3000);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const title = isHiddenView
+    ? t("session.unhide")
+    : wrapped
+      ? t("session.closeWrapped")
+      : t("session.closeHidden");
+
+  const icon = isHiddenView
+    ? <IconUndo size={11} />
+    : wrapped
+      ? <IconStop size={11} />
+      : <IconX size={11} />;
+
+  return (
+    <button
+      class="btn-ghost icon-btn"
+      style={{
+        padding: "3px 6px",
+        opacity: pending ? 0.5 : 1,
+        borderColor: err ? "var(--err, #d33)" : undefined,
+      }}
+      onClick={(e) => { void handle(e); }}
+      title={err ?? title}
+      disabled={!sessionUuid || pending}
+    >{icon}</button>
+  );
+}
+
 function IconList({ size = 13 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1385,10 +1488,13 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
 // they're both "session is alive right now" to the user.
 type StatusFilter = "all" | "live" | "idle" | "stale";
 
-function HeaderStats({ sessions, filter, onFilter }: {
+function HeaderStats({ sessions, filter, onFilter, hiddenCount, showHidden, onToggleHidden }: {
   sessions: Session[];
   filter: StatusFilter;
   onFilter: (next: StatusFilter) => void;
+  hiddenCount: number;
+  showHidden: boolean;
+  onToggleHidden: () => void;
 }) {
   const counts = sessions.reduce(
     (acc, s) => { acc[s.status] = (acc[s.status] ?? 0) + 1; return acc; },
@@ -1403,6 +1509,19 @@ function HeaderStats({ sessions, filter, onFilter }: {
       <HeaderStatChip n={liveCount}         label={t("header.live")}  icon={<IconActivity />} dot="dot-active" active={filter === "live"}  onClick={() => toggle("live")} />
       <HeaderStatChip n={counts.idle ?? 0}  label={t("header.idle")}  icon={<IconPause />}    dot="dot-idle"   active={filter === "idle"}  onClick={() => toggle("idle")} />
       <HeaderStatChip n={counts.stale ?? 0} label={t("header.stale")} icon={<IconPlugOff />}  dot="dot-stale"  active={filter === "stale"} onClick={() => toggle("stale")} />
+      {hiddenCount > 0 && (
+        <button
+          class="btn-ghost"
+          style={{
+            marginLeft: 6, fontSize: 11, padding: "2px 6px",
+            borderColor: showHidden ? "var(--fg)" : "var(--border)",
+            background: showHidden ? "var(--sl3)" : "transparent",
+            borderWidth: 1, borderStyle: "solid", borderRadius: 4,
+          }}
+          title={t("filter.hiddenTooltip", { n: hiddenCount })}
+          onClick={onToggleHidden}
+        >{t("filter.hiddenLabel")} {hiddenCount}</button>
+      )}
     </div>
   );
 }
@@ -1500,33 +1619,6 @@ function colorForCwd(cwd: string) {
   let h = 0;
   for (let i = 0; i < cwd.length; i++) h = ((h * 31) + cwd.charCodeAt(i)) >>> 0;
   return CWD_PALETTE[h % CWD_PALETTE.length]!;
-}
-
-// ── Copy resume command ─────────────────────────────────────────────────────
-
-// Copies `pnpm --dir D:\code\cc-hub miki claude -r <uuid>` so user can quickly
-// re-arm a wrap session after killing it.
-function CopyResumeButton({ sessionUuid, compact }: { sessionUuid: string; compact?: boolean }) {
-  const [copied, setCopied] = useState(false);
-  function handle(e: MouseEvent) {
-    e.stopPropagation();
-    if (!sessionUuid) return;
-    const cmd = `pnpm --dir D:\\code\\cc-hub miki claude -r ${sessionUuid}`;
-    void navigator.clipboard.writeText(cmd).then(
-      () => { setCopied(true); window.setTimeout(() => setCopied(false), 1500); },
-      () => { /* clipboard perm denied — silent */ },
-    );
-  }
-  const iconSize = compact ? 11 : 13;
-  return (
-    <button
-      class="btn-ghost icon-btn"
-      style={{ padding: compact ? "3px 6px" : "4px 8px" }}
-      onClick={handle}
-      title={t("session.copyRestart", { uuid: sessionUuid })}
-      disabled={!sessionUuid}
-    >{copied ? <IconCheck size={iconSize} /> : <IconCopy size={iconSize} />}</button>
-  );
 }
 
 // ── Client type toggle badge ───────────────────────────────────────────────
@@ -2691,7 +2783,7 @@ function NewCliButton({ recentCwds }: { recentCwds: string[] }) {
 
 // ── Grid overview cell ────────────────────────────────────────────────────
 
-function Cell({ s, preview, activity, streamingText, userOverlayText, userOverlayTs, pendingAsk, askDismissed, onReopenAsk, bannerHidden, onHideBanner, clientType, onSetClientType, onQuickSend, onOpenModal }: {
+function Cell({ s, preview, activity, streamingText, userOverlayText, userOverlayTs, pendingAsk, askDismissed, onReopenAsk, bannerHidden, onHideBanner, clientType, onSetClientType, onQuickSend, onOpenModal, showHidden, onHide, onUnhide }: {
   s: Session;
   preview?: SessionPreview;
   activity?: string;
@@ -2707,6 +2799,9 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, userOverla
   onSetClientType: (uuid: string, type: ClientType) => void;
   onQuickSend: (s: Session, x: number, y: number) => void;
   onOpenModal: (s: Session) => void;
+  showHidden: boolean;
+  onHide: (uuid: string) => void;
+  onUnhide: (uuid: string) => void;
 }) {
   const title = preview?.ai_title ?? s.project_name;
   // Optimistic overlay wins over JSONL-derived text while we wait for the
@@ -2884,7 +2979,13 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, userOverla
          * the top row reads: title … [🔌 CLI] [📋 copy]. Hidden for wrapped
          * sessions (already wrapped — nothing to start). */}
         {!s.wrapped && s.session_uuid && <WrapStartButton sessionUuid={s.session_uuid} />}
-        <CopyResumeButton sessionUuid={s.session_uuid ?? ""} compact />
+        <CloseCardButton
+          sessionUuid={s.session_uuid ?? ""}
+          wrapped={s.wrapped ?? false}
+          isHiddenView={showHidden}
+          onHide={onHide}
+          onUnhide={onUnhide}
+        />
       </div>
       <div class="cell-cwd" style={{ color: c.label, display: "flex", alignItems: "center", gap: 6 }} title={s.cwd}>
         <strong style={{ fontWeight: 600 }}>{s.project_name}</strong>
@@ -2997,7 +3098,7 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, userOverla
 
 // ── Grid overview (sessions grouped by cwd) ──────────────────────────
 
-function GridOverview({ sessions, sortMode, pinWaiting, previews, activities, streaming, userOverlay, pendingAsks, dismissedAsks, onReopenAsk, hiddenBanners, onHideBanner, getClientType, onSetClientType, onQuickSend, onOpenModal }: {
+function GridOverview({ sessions, sortMode, pinWaiting, previews, activities, streaming, userOverlay, pendingAsks, dismissedAsks, onReopenAsk, hiddenBanners, onHideBanner, getClientType, onSetClientType, onQuickSend, onOpenModal, showHidden, onHide, onUnhide }: {
   sessions: Session[];
   sortMode: SortMode;
   pinWaiting: boolean;
@@ -3014,6 +3115,9 @@ function GridOverview({ sessions, sortMode, pinWaiting, previews, activities, st
   onSetClientType: (uuid: string, type: ClientType) => void;
   onQuickSend: (s: Session, x: number, y: number) => void;
   onOpenModal: (s: Session) => void;
+  showHidden: boolean;
+  onHide: (uuid: string) => void;
+  onUnhide: (uuid: string) => void;
 }) {
   // Deterministic ordering. The previous implementation used a useRef Map to
   // assign first-seen slot indexes, which was stable within a session but reset
@@ -3058,6 +3162,9 @@ function GridOverview({ sessions, sortMode, pinWaiting, previews, activities, st
           onSetClientType={onSetClientType}
           onQuickSend={onQuickSend}
           onOpenModal={onOpenModal}
+          showHidden={showHidden}
+          onHide={onHide}
+          onUnhide={onUnhide}
         />
       ))}
     </div>
@@ -3833,6 +3940,31 @@ function App() {
     setStatusFilterState(v);
     saveStatusFilterToLS(v);
   }
+  // Hidden-cards state. Per-browser via localStorage. Cross-tab sync is
+  // wired via the `storage` event in a useEffect below.
+  const [hiddenSet, setHiddenSet] = useState<Set<string>>(() => loadHiddenSet());
+  const [showHidden, setShowHidden] = useState(false);
+
+  function hideSession(uuid: string) {
+    setHiddenSet(prev => addHidden(prev, uuid));
+  }
+  function unhideSession(uuid: string) {
+    setHiddenSet(prev => removeHidden(prev, uuid));
+  }
+
+  useEffect(() => {
+    function onStorage(e: StorageEvent) {
+      if (e.key !== HIDDEN_KEY) return;
+      setHiddenSet(loadHiddenSet());
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+  // Auto-flip out of "show hidden" view when the user un-hides the last card,
+  // so they aren't stranded looking at an empty grid.
+  useEffect(() => {
+    if (hiddenSet.size === 0 && showHidden) setShowHidden(false);
+  }, [hiddenSet.size, showHidden]);
   const [sortMode, setSortModeState] = useState<SortMode>(() => loadSortModeFromLS());
   const [pinWaiting, setPinWaitingState] = useState<boolean>(() => loadPinWaitingFromLS());
 
@@ -4405,7 +4537,14 @@ function App() {
         >
           <IconSleepingCat size={24} />
         </h1>
-        <HeaderStats sessions={sessions} filter={statusFilter} onFilter={setStatusFilter} />
+        <HeaderStats
+          sessions={sessions}
+          filter={statusFilter}
+          onFilter={setStatusFilter}
+          hiddenCount={hiddenSet.size}
+          showHidden={showHidden}
+          onToggleHidden={() => setShowHidden(v => !v)}
+        />
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--fg-subtle)" }}>
           <NewCliButton recentCwds={recentCwds} />
           <button
@@ -4575,6 +4714,11 @@ function App() {
             if (statusFilter === "all") return true;
             if (statusFilter === "live") return s.status === "active" || s.status === "waiting";
             return s.status === statusFilter;
+          }).filter((s) => {
+            // Hidden filter is orthogonal to status filter. Default view excludes
+            // hidden cards; the 🙈 chip flips showHidden true to inspect them.
+            const uuid = s.session_uuid ?? "";
+            return showHidden ? hiddenSet.has(uuid) : !hiddenSet.has(uuid);
           })}
           sortMode={sortMode}
           pinWaiting={pinWaiting}
@@ -4591,6 +4735,9 @@ function App() {
           onSetClientType={setClientType}
           onQuickSend={openQuickSend}
           onOpenModal={openCellModal}
+          showHidden={showHidden}
+          onHide={hideSession}
+          onUnhide={unhideSession}
         />
       )}
 
