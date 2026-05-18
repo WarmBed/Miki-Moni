@@ -533,15 +533,20 @@ function AskQuestionModal({ sessionUuid, ask, onSubmitted, onDismiss }: {
           {ask.questions.length > 1 && currentQ > 0 && (
             <button class="btn-outline" onClick={() => setCurrentQ((i) => i - 1)}>{t("ask.prev")}</button>
           )}
-          {ask.questions.length > 1 && currentQ < ask.questions.length - 1 && (
-            <button class="btn-outline" onClick={() => setCurrentQ((i) => i + 1)}>{t("ask.next")}</button>
+          {ask.questions.length > 1 && currentQ < ask.questions.length - 1 ? (
+            <button
+              class="btn-primary"
+              style={{ marginLeft: "auto" }}
+              onClick={() => setCurrentQ((i) => i + 1)}
+            >{t("ask.next")}</button>
+          ) : (
+            <button
+              class="btn-primary"
+              style={{ marginLeft: "auto" }}
+              onClick={submit}
+              disabled={submitting}
+            >{submitting ? t("ask.submitting") : t("ask.submit")}</button>
           )}
-          <button
-            class="btn-primary"
-            style={{ marginLeft: "auto" }}
-            onClick={submit}
-            disabled={submitting}
-          >{submitting ? t("ask.submitting") : t("ask.submit")}</button>
         </div>
       </div>
     </>
