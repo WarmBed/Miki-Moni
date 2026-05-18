@@ -678,15 +678,29 @@ function TurnView({ turn }: { turn: TranscriptTurn }) {
         </div>
         {turn.text && <MD text={turn.text} />}
         {turn.images && turn.images.length > 0 && (
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: turn.text ? 8 : 0 }}>
-            {turn.images.map((img, i) => (
-              <img
-                key={i}
-                src={`data:${img.media_type};base64,${img.data}`}
-                alt=""
-                style={{ display: "block", maxHeight: 200, maxWidth: "100%", borderRadius: 4, border: "1px solid var(--border)" }}
-              />
-            ))}
+          <div style={{ marginTop: turn.text ? 8 : 0 }}>
+            {/* Text label first — guaranteed visible even if img tag fails
+                (broken data URL, CSP, oversized payload, etc.). Lets the
+                user know "yes, this message had an image" instead of the
+                bubble silently looking text-only. */}
+            <div style={{ fontSize: 11, color: "var(--fg-subtle)", marginBottom: 4 }}>
+              📎 [image × {turn.images.length}]
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {turn.images.map((img, i) => (
+                <img
+                  key={i}
+                  src={`data:${img.media_type};base64,${img.data}`}
+                  alt={`image ${i + 1}`}
+                  style={{ display: "block", maxHeight: 200, maxWidth: "100%", borderRadius: 4, border: "1px solid var(--border)" }}
+                  onError={(e) => {
+                    // If the inline render fails, leave the [image] label as
+                    // the visible signal and hide the broken-img placeholder.
+                    (e.currentTarget as HTMLImageElement).style.display = "none";
+                  }}
+                />
+              ))}
+            </div>
           </div>
         )}
         {turn.tool_use && <ToolUseBox turn={turn} />}
