@@ -51,6 +51,8 @@ const LOCALES: Record<Locale, Bundle> = {
     "banner.local": "Local: ",
     "banner.local.hint": "← Open on the same machine, no relay",
     "banner.permanent": "(QR / URL / Code are permanent — rotate with `miki pair --rotate`)",
+    "banner.updateAvailable": "Update available: {current} → {latest}",
+    "banner.updateInstall": "run",
   },
   "zh-TW": {
     "wizard.welcome": "✨ 歡迎使用 miki-moni！首次設定。",
@@ -88,6 +90,8 @@ const LOCALES: Record<Locale, Bundle> = {
     "banner.local": "Local: ",
     "banner.local.hint": "← 同台電腦在這看 dashboard，不走 relay",
     "banner.permanent": "(QR / URL / Code 是永久 — `miki pair --rotate` 可換)",
+    "banner.updateAvailable": "新版本可用：{current} → {latest}",
+    "banner.updateInstall": "在終端機跑",
   },
   "zh-CN": {
     "wizard.welcome": "✨ 欢迎使用 miki-moni！首次设置。",
@@ -125,6 +129,8 @@ const LOCALES: Record<Locale, Bundle> = {
     "banner.local": "Local: ",
     "banner.local.hint": "← 同台电脑在这看 dashboard，不走 relay",
     "banner.permanent": "(QR / URL / Code 永久 — `miki pair --rotate` 可换)",
+    "banner.updateAvailable": "新版本可用：{current} → {latest}",
+    "banner.updateInstall": "在终端跑",
   },
 };
 

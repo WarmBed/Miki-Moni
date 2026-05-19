@@ -289,6 +289,9 @@ export const zhTW: Dict = {
   "settings.pinWaitingHelp":      "獨立於卡片排序：開啟後 status=waiting 的小卡會強制置頂，不會被 UUID 序或最近活動排序蓋掉。",
   "settings.pinWaitingTitleAttr": "等待你回應的 session 永遠浮到最上方，不論卡片排序怎麼選",
   "settings.close":              "關閉",
+  "settings.updateAvailable":    "新版本可用",
+  "settings.updateInstall":      "在終端機執行：",
+  "settings.updateCopy":         "複製",
   "settings.language":           "語言",
 
   // startup logs
@@ -571,6 +574,9 @@ export const zhCN: Dict = {
   "settings.pinWaitingHelp":      "独立于卡片排序：开启后 status=waiting 的小卡会强制置顶，不会被 UUID 序或最近活动排序盖掉。",
   "settings.pinWaitingTitleAttr": "等待你回应的 session 永远浮到最上方，不论卡片排序怎么选",
   "settings.close":             "关闭",
+  "settings.updateAvailable":   "新版本可用",
+  "settings.updateInstall":     "在终端执行：",
+  "settings.updateCopy":        "复制",
   "settings.language":          "语言",
 
   "startup.starting":          "启动 — 抓 /sessions + previews",
@@ -852,6 +858,9 @@ export const en: Dict = {
   "settings.pinWaitingHelp":      "Independent of card sort: when on, status=waiting cards are forced to the top regardless of whether you picked UUID order or Recent activity.",
   "settings.pinWaitingTitleAttr": "Sessions awaiting your reply always float to the very top, regardless of card sort",
   "settings.close":             "Close",
+  "settings.updateAvailable":   "Update available",
+  "settings.updateInstall":     "Run in terminal:",
+  "settings.updateCopy":        "Copy",
   "settings.language":          "Language",
 
   "startup.starting":          "Starting — fetching /sessions + previews",
