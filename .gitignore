@@ -11,3 +11,23 @@ build/
 .wrangler/
 .dev.vars
 .env.local
+
+# Dev smoke artifacts — screenshots + ad-hoc probes used during feature
+# development; not part of the test suite. The committed counterparts
+# (tools/smoke-x-close.py, tools/dev/e2e-*.mts, etc.) are the canonical
+# tests that ARE checked in. Add new patterns here when you create more
+# one-off debug scripts you don't want to commit.
+tools/smoke-*.png
+tools/smoke-effort-slider.py
+tools/smoke-pmode-click.mjs
+tools/smoke-sc-probe.mjs
+tools/smoke-settings-popover.py
+tools/staged-*.diff
+tools/dev/pair-test*.py
+tools/dev/pair-test-out/
+tools/dev/smoke-pair-*.py
+tools/dev/who-owns-token.mts
+
+# Harness-managed git worktrees (the agent worktree feature creates these).
+# .claude/skills/ IS committed; only the worktree mount point is transient.
+.claude/worktrees/
