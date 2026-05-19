@@ -40,6 +40,17 @@ interface AskOption { label: string; description: string }
 interface AskQuestion { question: string; header: string; multiSelect?: boolean; options: AskOption[] }
 interface PendingAsk { question_id: string; questions: AskQuestion[] }
 
+// Mirrors VersionInfo from src/version-check.ts. Settings popover shows
+// the badge whenever `hasUpdate` is true; we never act on the `error`
+// field beyond hiding the badge (failure = silent).
+interface UpdateInfo {
+  current:   string;
+  latest:    string | null;
+  hasUpdate: boolean;
+  fetchedAt: number;
+  error:     "npm_unreachable" | "timeout" | null;
+}
+
 interface ToolUseInfo { id: string; name: string; description?: string; input: unknown; input_summary: string }
 interface ToolResultInfo { tool_use_id?: string; content: string; truncated: boolean; is_error?: boolean }
 interface TranscriptTurn { ts: string; role: "user" | "assistant" | "system"; text: string; tool_use?: ToolUseInfo; tool_result?: ToolResultInfo; images?: Array<{ media_type: string; data: string }>; raw_type?: string }
@@ -205,6 +216,74 @@ function IconUndo({ size = 13 }: { size?: number }) {
       <path d="M3 7v6h6" />
       <path d="M21 17a9 9 0 0 0-15-6.7L3 13" />
     </svg>
+  );
+}
+
+// ── Update badge ──────────────────────────────────────────────────────
+
+function UpdateBadge({ latest }: { latest: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied]     = useState(false);
+  const cmd = "npm i -g miki-moni@latest";
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(cmd);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API blocked (insecure context, permission denied) —
+      // silent fallback; the command is still visible inline.
+    }
+  }
+
+  return (
+    <>
+      <button
+        class="btn-ghost"
+        style={{
+          fontSize: 10,
+          padding: "0 4px",
+          marginLeft: 4,
+          color: "var(--accent, #4f6dff)",
+          fontVariantNumeric: "tabular-nums",
+        }}
+        onClick={() => setExpanded((v) => !v)}
+        title={t("settings.updateAvailable")}
+      >→ v{latest}</button>
+      {expanded && (
+        <div
+          style={{
+            marginTop: 6,
+            padding: "6px 8px",
+            borderRadius: 4,
+            background: "var(--sl3)",
+            fontSize: 10,
+            color: "var(--fg)",
+            lineHeight: 1.4,
+          }}
+        >
+          <div style={{ marginBottom: 4 }}>{t("settings.updateAvailable")}: <strong>{latest}</strong></div>
+          <div style={{ marginBottom: 4 }}>{t("settings.updateInstall")}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <code style={{
+              flex: 1,
+              padding: "2px 4px",
+              background: "var(--bg)",
+              border: "1px solid var(--border)",
+              borderRadius: 3,
+              fontFamily: "monospace",
+              fontSize: 10,
+            }}>{cmd}</code>
+            <button
+              class="btn-ghost"
+              style={{ fontSize: 10, padding: "1px 6px" }}
+              onClick={() => { void copy(); }}
+            >{copied ? "✓" : t("settings.updateCopy")}</button>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -3973,6 +4052,14 @@ function App() {
   }, [hiddenSet.size, showHidden]);
   const [sortMode, setSortModeState] = useState<SortMode>(() => loadSortModeFromLS());
   const [pinWaiting, setPinWaitingState] = useState<boolean>(() => loadPinWaitingFromLS());
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+
+  useEffect(() => {
+    void apiFetch("/admin/version-check")
+      .then((r) => r.ok ? r.json() : null)
+      .then((info) => { if (info) setUpdateInfo(info as UpdateInfo); })
+      .catch(() => { /* silent — badge just won't render */ });
+  }, []);
 
   function setSendKey(v: SendKey) {
     setSendKeyState(v);
@@ -4712,15 +4799,20 @@ function App() {
                 gap: 8,
               }}
             >
-              <span
-                style={{
-                  fontSize: 10,
-                  color: "var(--fg-subtle)",
-                  fontVariantNumeric: "tabular-nums",
-                  userSelect: "text",
-                }}
-                title={`miki-moni v${__APP_VERSION__}`}
-              >v{__APP_VERSION__}</span>
+              <span style={{ display: "inline-flex", alignItems: "center" }}>
+                <span
+                  style={{
+                    fontSize: 10,
+                    color: "var(--fg-subtle)",
+                    fontVariantNumeric: "tabular-nums",
+                    userSelect: "text",
+                  }}
+                  title={`miki-moni v${__APP_VERSION__}`}
+                >v{__APP_VERSION__}</span>
+                {updateInfo?.hasUpdate && updateInfo.latest && (
+                  <UpdateBadge latest={updateInfo.latest} />
+                )}
+              </span>
               <button class="btn-ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => setShowSettings(false)}>{t("settings.close")}</button>
             </div>
           </div>
