@@ -42,4 +42,17 @@ describe("compareSemver", () => {
     expect(() => compareSemver("0.3", "0.3.0")).toThrow();
     expect(() => compareSemver("", "0.3.0")).toThrow();
   });
+
+  it("handles very large major/minor/patch numbers", () => {
+    expect(compareSemver("999.999.999", "1000.0.0")).toBe(-1);
+    expect(compareSemver("999.999.999", "999.999.999")).toBe(0);
+  });
+
+  it("two equal prerelease suffixes → returns 0", () => {
+    expect(compareSemver("0.3.0-alpha", "0.3.0-alpha")).toBe(0);
+  });
+
+  it("returns 1 when a major > b major (ternary true branch on major comparison)", () => {
+    expect(compareSemver("2.0.0", "1.0.0")).toBe(1);
+  });
 });

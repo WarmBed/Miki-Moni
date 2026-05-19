@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { VersionChecker } from "../src/version-check.js";
+import { VersionChecker, compareSemver } from "../src/version-check.js";
 
 function makeFetchOk(latestVersion: string): typeof fetch {
   return vi.fn(async () => new Response(
@@ -102,5 +102,57 @@ describe("VersionChecker", () => {
     await vc.get();
     const url = (fetchFn as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
     expect(url).toBe("https://registry.npmjs.org/miki-moni/latest");
+  });
+
+  // ── Edge tests for uncovered branches ─────────────────────────────────
+
+  it("200 OK with no version field → error=npm_unreachable", async () => {
+    const fetchFn = vi.fn(async () => new Response(
+      JSON.stringify({ name: "miki-moni" }),  // missing version
+      { status: 200 },
+    )) as unknown as typeof fetch;
+    const vc = new VersionChecker({ current: "0.3.13", fetchFn, nowFn: () => 1000 });
+    const info = await vc.get();
+    expect(info.latest).toBeNull();
+    expect(info.error).toBe("npm_unreachable");
+  });
+
+  it("200 OK with invalid JSON → error=npm_unreachable", async () => {
+    const fetchFn = vi.fn(async () => new Response("not json", { status: 200 })) as unknown as typeof fetch;
+    const vc = new VersionChecker({ current: "0.3.13", fetchFn, nowFn: () => 1000 });
+    const info = await vc.get();
+    expect(info.error).toBe("npm_unreachable");
+  });
+
+  it("malformed latest version from npm → hasUpdate=false, no throw", async () => {
+    const fetchFn = vi.fn(async () => new Response(
+      JSON.stringify({ version: "not-a-version" }),
+      { status: 200 },
+    )) as unknown as typeof fetch;
+    const vc = new VersionChecker({ current: "0.3.13", fetchFn, nowFn: () => 1000 });
+    const info = await vc.get();
+    expect(info.hasUpdate).toBe(false);
+    expect(info.latest).toBe("not-a-version");
+    // No throw — the inner try/catch around compareSemver caught it.
+  });
+
+  it("after error, cache holds within TTL — does NOT hammer npm", async () => {
+    const fetchFn = vi.fn(async () => new Response("", { status: 503 })) as unknown as typeof fetch;
+    let t = 1000;
+    const vc = new VersionChecker({
+      current: "0.3.13", fetchFn, nowFn: () => t,
+      ttlMs: 24 * 60 * 60 * 1000,
+    });
+    await vc.get();  // 1st call: 503 → cached error
+    t = 1000 + 60_000;  // 1 minute later
+    await vc.get();  // 2nd call: returns cached error
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("constructor uses global fetch and Date.now when options are omitted", () => {
+    // Exercises the `?? fetch` and `?? Date.now` branches in the constructor.
+    // We don't call .get() (no network) — just verify construction doesn't throw.
+    const vc = new VersionChecker({ current: "0.3.13" });
+    expect(vc).toBeInstanceOf(VersionChecker);
   });
 });
