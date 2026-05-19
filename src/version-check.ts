@@ -147,8 +147,14 @@ export class VersionChecker {
         error: isAbort ? "timeout" : "npm_unreachable",
       };
       return this.cache;
+    /* c8 ignore start
+     * V8 instruments a "finally-on-rethrow" branch on the `finally`
+     * keyword that is structurally unreachable: the catch block above
+     * is exhaustive (catches `e: unknown`) and always returns, so no
+     * exception ever propagates through the finally. */
     } finally {
       clearTimeout(timer);
     }
+    /* c8 ignore stop */
   }
 }
