@@ -7,6 +7,12 @@ import { apiFetch, apiWebSocket } from "./api";
 import { assembleRenderTurns } from "./lib/transcript-assembly";
 import { loadHiddenSet, addHidden, removeHidden, HIDDEN_KEY } from "./lib/hidden-sessions.js";
 
+// Build-time constant injected by vite.config.ts `define`. Holds the
+// `version` field of package.json so the settings popover can show users
+// which build they're running without us shipping a runtime /version
+// endpoint.
+declare const __APP_VERSION__: string;
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface Session {
@@ -4692,7 +4698,29 @@ function App() {
               })}
             </div>
 
-            <div style={{ marginTop: 10, textAlign: "right" }}>
+            {/* Footer row: version on the left (low-emphasis, monospace-ish)
+                + close on the right. Version is informational only — clicking
+                does nothing. Sourced from vite-injected __APP_VERSION__ so it
+                always matches the built bundle, not whatever is running on
+                disk in dev mode. */}
+            <div
+              style={{
+                marginTop: 10,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 8,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 10,
+                  color: "var(--fg-subtle)",
+                  fontVariantNumeric: "tabular-nums",
+                  userSelect: "text",
+                }}
+                title={`miki-moni v${__APP_VERSION__}`}
+              >v{__APP_VERSION__}</span>
               <button class="btn-ghost" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => setShowSettings(false)}>{t("settings.close")}</button>
             </div>
           </div>
