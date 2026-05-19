@@ -17,6 +17,7 @@ import { ExtRegistry } from "./ext-registry.js";
 import type { ExtMessage } from "./protocol-ext.js";
 import { randomUUID } from "node:crypto";
 import { WrapProcessRegistry, killProcessTree, killOrphans } from "./wrap-process.js";
+import type { VersionChecker } from "./version-check.js";
 
 // Miki repo root — derived from this file's location (src/server.ts → repo root).
 // `bin/miki.mjs` is the canonical CLI entry: it self-resolves tsx and avoids
@@ -37,6 +38,7 @@ export interface ServerDeps {
   webDir: string;
   log?: Log;
   heartbeat?: { pingMs: number; pongTimeoutMs: number };  // default: { 30_000, 10_000 }
+  versionChecker?: VersionChecker;
 }
 
 function parseHookEvent(body: unknown): HookEvent | null {
@@ -196,6 +198,20 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   // the user with no tray icon even though a new daemon is now alive.
   app.get("/admin/pid", (_req, res) => {
     res.json({ pid: process.pid });
+  });
+
+  // Read-only — surfaces the cached npm-latest version of miki-moni so
+  // the CLI banner and dashboard settings popover can show an update
+  // hint. Daemon's VersionChecker owns the 24h cache + fetch; consumers
+  // never talk to npm directly. Always 200; failure modes encoded in
+  // `error`. No auth (matches /admin/pid).
+  app.get("/admin/version-check", async (_req, res) => {
+    if (!deps.versionChecker) {
+      res.json({ current: null, latest: null, hasUpdate: false, fetchedAt: 0, error: "npm_unreachable" });
+      return;
+    }
+    const info = await deps.versionChecker.get();
+    res.json(info);
   });
 
   app.post("/admin/restart", async (_req, res) => {

@@ -1,7 +1,7 @@
 import path from "node:path";
 import os from "node:os";
 import http from "node:http";
-import { promises as fs, appendFileSync } from "node:fs";
+import { promises as fs, appendFileSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import pino from "pino";
@@ -15,6 +15,7 @@ import { loadOrInitConfig } from "./config.js";
 import { RelayClient } from "./relay-client.js";
 import { HUB_HOME, PORT_FILE, DB_FILE, CONFIG_FILE, LOG_FILE, migrateLegacyHubHome } from "./data-dir.js";
 import { killOrphans } from "./wrap-process.js";
+import { VersionChecker } from "./version-check.js";
 
 const PROJECTS_ROOT = path.join(os.homedir(), ".claude", "projects");
 const DEFAULT_PORT = 8765;
@@ -145,7 +146,19 @@ async function main(): Promise<void> {
   const _moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const webDir = path.resolve(_moduleDir, "..", "dist", "web");
 
-  const { app, server } = createApp({ store, handler, bridge, notifier, webDir, log });
+  // __APP_VERSION__ is injected by vite for the web bundle; in the daemon
+  // runtime we read it from the same package.json that vite reads, so the
+  // CLI and dashboard show the exact same `current` string.
+  const pkg = JSON.parse(
+    readFileSync(path.resolve(_moduleDir, "..", "package.json"), "utf8"),
+  ) as { version: string };
+
+  const versionChecker = new VersionChecker({ current: pkg.version });
+  // Fire-and-forget: warm the cache so the first /admin/version-check hit
+  // is already resolved.
+  void versionChecker.refresh();
+
+  const { app, server } = createApp({ store, handler, bridge, notifier, webDir, log, versionChecker });
 
   // Serve web UI if built
   const express = (await import("express")).default;
