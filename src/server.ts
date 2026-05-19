@@ -29,13 +29,13 @@ import { WrapProcessRegistry, killProcessTree, killOrphans } from "./wrap-proces
 import type { VersionChecker } from "./version-check.js";
 
 // Miki repo root — derived from this file's location (src/server.ts → repo root).
-// `bin/miki.mjs` is the canonical CLI entry: it self-resolves tsx and avoids
-// Node 24's `.cmd`/`.bat` spawn ban (see bin/miki.mjs comment). /wrap/start
+// `bin/miki.js` is the canonical CLI entry: it self-resolves tsx and avoids
+// Node 24's `.cmd`/`.bat` spawn ban (see bin/miki.js comment). /wrap/start
 // spawns it as `node <abs path> claude [args...]` — works whether or not the
 // user has run `npm link`, and doesn't depend on pnpm/npm being on the new
 // wt window's PATH.
 const MIKI_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const MIKI_BIN_JS = path.join(MIKI_REPO_ROOT, "bin", "miki.mjs");
+const MIKI_BIN_JS = path.join(MIKI_REPO_ROOT, "bin", "miki.js");
 
 type Log = { info: (obj: Record<string, unknown>, msg?: string) => void; warn: (obj: Record<string, unknown>, msg?: string) => void; error: (obj: Record<string, unknown>, msg?: string) => void };
 type TerminalChild = { on: (event: "error", cb: (err: Error) => void) => unknown; unref: () => void };
@@ -184,11 +184,11 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       // rotate ends up with two cat icons (old tray that survived + new
       // tray spawned by replacement daemon).
       const childEnv = { ...process.env, MIKI_FORCE_RESTART: "1", MIKI_NO_TRAY_SPAWN: "1" };
-      // Respawn via `node bin/miki.mjs start` — we CANNOT just re-exec
+      // Respawn via `node bin/miki.js start` — we CANNOT just re-exec
       // process.argv because tsx loads itself via `--import tsx/esm` (a
       // node CLI flag that doesn't survive in argv), so the new node
       // would try to parse src/cli/miki.ts as plain JS and instantly
-      // crash on the first `import` statement. bin/miki.mjs is the
+      // crash on the first `import` statement. bin/miki.js is the
       // canonical CLI entry — it knows how to find tsx and spawn it.
       const nodeExe = process.argv[0]!;
       const nodeArgs = [MIKI_BIN_JS, "start"];
@@ -597,7 +597,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       return;
     }
 
-    // `wt -w new new-tab -d <cwd> -- node <bin/miki.mjs> claude [-r <uuid> | --fresh]`
+    // `wt -w new new-tab -d <cwd> -- node <bin/miki.js> claude [-r <uuid> | --fresh]`
     // `wt -w new new-tab -d <cwd> -- cmd.exe /d /k codex`
     // -w new   = always a fresh wt window (avoids "where did my tab go" if user
     //            already has wt open in a different virtual desktop)

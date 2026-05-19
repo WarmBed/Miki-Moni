@@ -22,7 +22,7 @@ PS hooks ──POST /event──▶  daemon (src/, 127.0.0.1:8765)  ──WS /ws
 | Dashboard SPA | `web/app.tsx` | single big file, mounted by `web/main.tsx` |
 | Phone PWA | `web-phone/main-tunnel.tsx` | bootstraps tunnel + dynamic-imports `web/app.tsx` |
 | Cloudflare Worker | `worker/src/` | `index.ts` routes, DOs in `daemon-relay.ts` + `pairing-coordinator.ts` |
-| CLI | `bin/miki.mjs` → `src/cli/miki.ts` | subcommands: `start setup pair claude install-hooks` |
+| CLI | `bin/miki.js` → `src/cli/miki.ts` | subcommands: `start setup pair claude install-hooks` |
 
 ## Where things live
 

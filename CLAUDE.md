@@ -19,7 +19,7 @@
 | `worker/` | Cloudflare Worker (relay)，protocol 見 `docs/protocols/relay-protocol.md` |
 | `tools/mock-worker/` | 本地 mock relay，給 `pnpm verify` 用 |
 | `hooks/miki-emit.ps1` | Claude Code hooks（SessionStart / Stop / UserPromptSubmit / PreToolUse / PostToolUse）POST 到 `/event` |
-| `bin/miki.mjs` | `miki` CLI entry |
+| `bin/miki.js` | `miki` CLI entry |
 
 ## 常用指令
 

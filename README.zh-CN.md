@@ -230,7 +230,7 @@ pnpm test         # daemon + worker tests
 pnpm typecheck
 ```
 
-Source tree：`src/` daemon · `web/` dashboard SPA · `web-phone/` 手机 bootstrap · `worker/` Cloudflare Worker · `extension/` VSCode helper · `hooks/` PS hook scripts · `bin/miki.mjs` CLI 入口。
+Source tree：`src/` daemon · `web/` dashboard SPA · `web-phone/` 手机 bootstrap · `worker/` Cloudflare Worker · `extension/` VSCode helper · `hooks/` PS hook scripts · `bin/miki.js` CLI 入口。
 
 Branch：`main` 出 release（当前 **v0.3.3**），`dev` 跑开发、每个改动 bump `package.json`。
 

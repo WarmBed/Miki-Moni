@@ -33,7 +33,7 @@ function suggestName(prefix: string): string {
 }
 
 /** Resolve wrangler's bin entry from worker/'s package.json — same trick that
- *  bin/miki.mjs uses for tsx. Avoids npx entirely (no PATH issues, no shell,
+ *  bin/miki.js uses for tsx. Avoids npx entirely (no PATH issues, no shell,
  *  no Node 24 DEP0190 deprecation noise), and works regardless of which
  *  directory the user ran `miki setup` from. */
 let _wranglerBinCache: string | null | undefined;

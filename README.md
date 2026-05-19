@@ -230,7 +230,7 @@ pnpm test         # daemon + worker test suites
 pnpm typecheck
 ```
 
-Source tree: `src/` daemon · `web/` dashboard SPA · `web-phone/` phone bootstrap · `worker/` Cloudflare Worker · `extension/` VSCode helper · `hooks/` PS hook scripts · `bin/miki.mjs` CLI entry.
+Source tree: `src/` daemon · `web/` dashboard SPA · `web-phone/` phone bootstrap · `worker/` Cloudflare Worker · `extension/` VSCode helper · `hooks/` PS hook scripts · `bin/miki.js` CLI entry.
 
 Branch model: `main` ships releases (current **v0.3.3**), `dev` carries active work with a `package.json` version bump on every change.
 
