@@ -2,13 +2,15 @@ import Database from "better-sqlite3";
 import { EventEmitter } from "node:events";
 import type { Session, StoreEvents } from "./types.js";
 
-// v2 schema: PK is session_uuid (one row per Claude session, not per workspace).
-// Multiple sessions per cwd are supported (e.g. 3 Claude tabs in the same VSCode workspace).
-const SCHEMA_VERSION = 2;
+// v3 schema: PK is session_uuid (one row per agent session, not per workspace)
+// and stores which agent produced the session so the dashboard can label/render
+// Claude and Codex transcripts independently.
+const SCHEMA_VERSION = 3;
 
 const CREATE_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
   session_uuid TEXT PRIMARY KEY,
+  agent TEXT NOT NULL DEFAULT 'claude',
   cwd TEXT NOT NULL,
   project_name TEXT NOT NULL,
   status TEXT NOT NULL,
@@ -19,15 +21,17 @@ CREATE TABLE IF NOT EXISTS sessions (
   vscode_pid INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_cwd ON sessions(cwd);
+CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent);
 CREATE INDEX IF NOT EXISTS idx_sessions_last_event ON sessions(last_event_at);
 `;
 
 const UPSERT_SQL = `
-INSERT INTO sessions (session_uuid, cwd, project_name, status, last_event_at,
+INSERT INTO sessions (session_uuid, agent, cwd, project_name, status, last_event_at,
                      last_message_preview, tokens_in, tokens_out, vscode_pid)
-VALUES (@session_uuid, @cwd, @project_name, @status, @last_event_at,
+VALUES (@session_uuid, @agent, @cwd, @project_name, @status, @last_event_at,
         @last_message_preview, @tokens_in, @tokens_out, @vscode_pid)
 ON CONFLICT(session_uuid) DO UPDATE SET
+  agent = excluded.agent,
   cwd = excluded.cwd,
   project_name = excluded.project_name,
   status = excluded.status,
@@ -62,6 +66,18 @@ export class SessionStore extends EventEmitter {
     this.db.exec(`CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL);`);
     const row = this.db.prepare("SELECT version FROM schema_meta LIMIT 1").get() as { version?: number } | undefined;
     const currentVersion = row?.version ?? 1;
+    if (currentVersion === 2 && SCHEMA_VERSION === 3) {
+      const columns = this.db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
+      if (columns.length > 0 && !columns.some((c) => c.name === "agent")) {
+        this.db.exec(`
+          ALTER TABLE sessions ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude';
+          CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent);
+        `);
+      }
+      this.db.exec(`DELETE FROM schema_meta;`);
+      this.db.prepare("INSERT INTO schema_meta (version) VALUES (?)").run(SCHEMA_VERSION);
+      return;
+    }
     if (currentVersion !== SCHEMA_VERSION) {
       this.db.exec(`DROP TABLE IF EXISTS sessions;`);
       this.db.exec(`DELETE FROM schema_meta;`);

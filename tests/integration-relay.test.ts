@@ -80,6 +80,7 @@ describe("daemon <-> mock-Worker <-> phone integration", () => {
     store.upsert({
       cwd: "d:\\code\\target",
       session_uuid: "uuid-target",
+      agent: "claude",
       project_name: "target",
       status: "waiting",
       last_event_at: 1,
@@ -116,6 +117,7 @@ describe("daemon <-> mock-Worker <-> phone integration", () => {
     store.upsert({
       cwd: "d:\\code\\new",
       session_uuid: "u-new",
+      agent: "claude",
       project_name: "new",
       status: "active",
       last_event_at: Date.now(),

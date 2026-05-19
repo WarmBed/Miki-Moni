@@ -15,9 +15,12 @@ declare const __APP_VERSION__: string;
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
+type AgentId = "claude" | "codex";
+
 interface Session {
   cwd: string;
   session_uuid: string | null;
+  agent?: AgentId;
   project_name: string;
   status: "active" | "waiting" | "idle" | "stale";
   last_event_at: number;
@@ -89,6 +92,47 @@ const STATUS_BORDER_COLOR: Record<Session["status"], string> = {
 
 function statusLabel(s: Session["status"]): string {
   return t(`status.${s}`);
+}
+
+function agentOf(s: Pick<Session, "agent">): AgentId {
+  return s.agent === "codex" ? "codex" : "claude";
+}
+
+const CODEX_PREVIEW_ACTIVE_MS = 15 * 60 * 1000;
+
+function displaySession(s: Session, preview?: SessionPreview): Session {
+  if (agentOf(s) !== "codex" || s.status !== "stale" || !preview?.last_modified_ms) return s;
+  const previewIsNewer = preview.last_modified_ms > s.last_event_at;
+  const previewIsRecent = Date.now() - preview.last_modified_ms <= CODEX_PREVIEW_ACTIVE_MS;
+  return previewIsNewer && previewIsRecent ? { ...s, status: "active", last_event_at: preview.last_modified_ms } : s;
+}
+
+function agentLabel(agent: AgentId): string {
+  return agent === "codex" ? "codex" : "claude";
+}
+
+const OPENAI_LOGO_PATH = "M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a5.985 5.985 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.051 6.051 0 0 0 6.515 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.997-2.9 6.056 6.056 0 0 0-.747-7.073zM13.26 22.43a4.476 4.476 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.795.795 0 0 0 .392-.681v-6.737l2.02 1.168a.071.071 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494zM3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.771.771 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646zM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.766.766 0 0 0 .388.676l5.815 3.355-2.02 1.168a.076.076 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855-5.833-3.387L15.119 7.2a.076.076 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667zm2.01-3.023-.141-.085-4.774-2.782a.776.776 0 0 0-.785 0L9.409 9.23V6.897a.066.066 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.795.795 0 0 0-.393.681zm1.097-2.365 2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5z";
+const CLAUDE_LOGO_PATH = "M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.158-.134-.097-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.146-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.728.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z";
+
+function AgentLogo({ agent }: { agent: AgentId }) {
+  return (
+    <span class={`agent-logo agent-logo-${agent}`} aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="currentColor">
+        <path d={agent === "codex" ? OPENAI_LOGO_PATH : CLAUDE_LOGO_PATH} />
+      </svg>
+    </span>
+  );
+}
+
+function AgentBadge({ agent }: { agent: AgentId }) {
+  return (
+    <span
+      class={`agent-badge agent-badge-${agent}`}
+      title={agent === "codex" ? "Codex session" : "Claude session"}
+    >
+      <AgentLogo agent={agent} />
+    </span>
+  );
 }
 
 const ACT_LOG_MAX = 50;
@@ -834,7 +878,7 @@ function ToolResultBox({ turn }: { turn: TranscriptTurn }) {
   );
 }
 
-function TurnView({ turn }: { turn: TranscriptTurn }) {
+function TurnView({ turn, agent = "claude" }: { turn: TranscriptTurn; agent?: AgentId }) {
   const isUser = turn.role === "user" && !turn.tool_result;
   const isSystem = turn.role === "system";
   const isTool = !!(turn.tool_use || turn.tool_result);
@@ -848,7 +892,7 @@ function TurnView({ turn }: { turn: TranscriptTurn }) {
   // has arrived yet. turn.text holds the activity label so users can tell
   // at a glance whether claude is ideating vs. running a tool.
   const isThinking = turn.raw_type === "synthetic-thinking";
-  const roleLabel = isSystem ? "system" : isUser ? "user" : "claude";
+  const roleLabel = isSystem ? "system" : isUser ? "user" : agentLabel(agent);
   // Tool turns: dim role color (de-emphasized) since the tool box is the main signal.
   const roleColor = isTool
     ? "var(--fg-subtle)"
@@ -938,7 +982,7 @@ function TurnView({ turn }: { turn: TranscriptTurn }) {
 // A turn that has BOTH text and tool_use shows the text on the left and the tool box on the right.
 // Auto follow-tail: each column auto-scrolls to bottom on new content unless the user has
 // manually scrolled up. Scrolling back to bottom re-engages follow.
-function SingleColumnTranscript({ turns }: { turns: TranscriptTurn[] }) {
+function SingleColumnTranscript({ turns, agent = "claude" }: { turns: TranscriptTurn[]; agent?: AgentId }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // ref (not state) so toggling doesn't re-render; only the scroll effect reads it.
   const sticky = useRef(true);
@@ -976,7 +1020,7 @@ function SingleColumnTranscript({ turns }: { turns: TranscriptTurn[] }) {
       <div style={{ position: "sticky", top: 0, zIndex: 1, padding: "6px 14px", fontSize: 10, fontWeight: 600, color: "var(--fg-subtle)", textTransform: "uppercase", letterSpacing: "0.08em", background: "var(--sl2)", borderBottom: "1px solid var(--border)" }}>
         {t("transcript.conversation")} · {turns.length}
       </div>
-      {turns.map((turn, i) => <TurnView key={i} turn={turn} />)}
+      {turns.map((turn, i) => <TurnView key={i} turn={turn} agent={agent} />)}
     </div>
   );
 }
@@ -1017,6 +1061,7 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
   userOverlayText?: string;
   userOverlayTs?: number;
 }) {
+  const agent = agentOf(s);
   const isCli = clientType === "cli";
   const isWrapped = !!s.wrapped;
   // Only wrapped CLI sessions allow send. VSCode-panel mode is disabled because
@@ -1361,7 +1406,7 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
               return (
                 <div style={fixedHeight ? { flex: 1, minHeight: 0, display: "flex" } : { maxHeight: 480, overflow: "hidden", display: "flex" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <SingleColumnTranscript turns={renderTurns} />
+                    <SingleColumnTranscript turns={renderTurns} agent={agent} />
                   </div>
                 </div>
               );
@@ -1572,11 +1617,14 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
 // Status filter for the overview grid. "live" merges active + waiting because
 // they're both "session is alive right now" to the user.
 type StatusFilter = "all" | "live" | "idle" | "stale";
+type AgentFilter = "all" | AgentId;
 
-function HeaderStats({ sessions, filter, onFilter, hiddenCount, showHidden, onToggleHidden }: {
+function HeaderStats({ sessions, filter, onFilter, agentFilter, onAgentFilter, hiddenCount, showHidden, onToggleHidden }: {
   sessions: Session[];
   filter: StatusFilter;
   onFilter: (next: StatusFilter) => void;
+  agentFilter: AgentFilter;
+  onAgentFilter: (next: AgentFilter) => void;
   hiddenCount: number;
   showHidden: boolean;
   onToggleHidden: () => void;
@@ -1586,14 +1634,22 @@ function HeaderStats({ sessions, filter, onFilter, hiddenCount, showHidden, onTo
     {} as Record<Session["status"], number>,
   );
   const liveCount = (counts.active ?? 0) + (counts.waiting ?? 0);
+  const agentCounts = sessions.reduce(
+    (acc, s) => { const a = agentOf(s); acc[a] = (acc[a] ?? 0) + 1; return acc; },
+    {} as Record<AgentId, number>,
+  );
   // Click an already-active chip → back to "all". Removes the need for a
   // dedicated total/all chip and keeps the bar to 3 buttons on mobile.
   const toggle = (next: StatusFilter) => onFilter(filter === next ? "all" : next);
+  const toggleAgent = (next: AgentFilter) => onAgentFilter(agentFilter === next ? "all" : next);
   return (
     <div style={{ display: "inline-flex", alignItems: "center", gap: 2, marginLeft: 4 }}>
       <HeaderStatChip n={liveCount}         label={t("header.live")}  icon={<IconActivity />} dot="dot-active" active={filter === "live"}  onClick={() => toggle("live")} />
       <HeaderStatChip n={counts.idle ?? 0}  label={t("header.idle")}  icon={<IconPause />}    dot="dot-idle"   active={filter === "idle"}  onClick={() => toggle("idle")} />
       <HeaderStatChip n={counts.stale ?? 0} label={t("header.stale")} icon={<IconPlugOff />}  dot="dot-stale"  active={filter === "stale"} onClick={() => toggle("stale")} />
+      <span class="header-stat-sep" />
+      <HeaderStatChip n={agentCounts.claude ?? 0} label="Claude" icon={<AgentLogo agent="claude" />} active={agentFilter === "claude"} onClick={() => toggleAgent("claude")} />
+      <HeaderStatChip n={agentCounts.codex ?? 0} label="Codex" icon={<AgentLogo agent="codex" />} active={agentFilter === "codex"} onClick={() => toggleAgent("codex")} />
       {hiddenCount > 0 && (
         <button
           class="btn-ghost"
@@ -2576,19 +2632,20 @@ function WrapConfirmDialog({ sessionByUuid }: { sessionByUuid: Map<string, Sessi
 // the `sessions` prop). 30s safety timer also dismisses + shows an error
 // hint in case the wt window crashed silently and no wrap ever connects.
 function SpawnPendingBanner({ sessions }: { sessions: Session[] }) {
-  interface Pending { cwd: string; startedAt: number; timedOut: boolean }
+  interface Pending { cwd: string; agent: AgentId; startedAt: number; timedOut: boolean }
   const [pendings, setPendings] = useState<Pending[]>([]);
 
   // Listen for spawn-pending events fired by <NewCliButton> on /wrap/start success.
   useEffect(() => {
     function onSpawn(e: Event) {
-      const ce = e as CustomEvent<{ cwd: string }>;
+      const ce = e as CustomEvent<{ cwd: string; agent?: AgentId }>;
       const cwd = ce.detail?.cwd;
+      const agent = ce.detail?.agent === "codex" ? "codex" : "claude";
       if (!cwd) return;
       setPendings((prev) => {
         // De-dupe: replace existing entry for same cwd (re-clicks reset timer).
         const without = prev.filter((p) => p.cwd.toLowerCase() !== cwd.toLowerCase());
-        return [...without, { cwd, startedAt: Date.now(), timedOut: false }];
+        return [...without, { cwd, agent, startedAt: Date.now(), timedOut: false }];
       });
     }
     window.addEventListener("miki-moni:spawn-pending", onSpawn);
@@ -2660,7 +2717,7 @@ function SpawnPendingBanner({ sessions }: { sessions: Session[] }) {
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontWeight: 600, marginBottom: 2 }}>{t("spawnPending.title")}</div>
             <div style={{ color: "var(--fg-muted)", overflowWrap: "anywhere" }}>
-              {p.timedOut ? t("spawnPending.timeout") : t("spawnPending.body", { cwd: p.cwd })}
+              {p.timedOut ? t("spawnPending.timeout") : t(p.agent === "codex" ? "spawnPending.bodyCodex" : "spawnPending.bodyClaude", { cwd: p.cwd })}
             </div>
           </div>
           <button
@@ -2681,6 +2738,7 @@ function SpawnPendingBanner({ sessions }: { sessions: Session[] }) {
 function NewCliButton({ recentCwds }: { recentCwds: string[] }) {
   const [open, setOpen] = useState(false);
   const [cwd, setCwd] = useState("");
+  const [agent, setAgent] = useState<AgentId>("claude");
   const [pending, setPending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
@@ -2740,7 +2798,7 @@ function NewCliButton({ recentCwds }: { recentCwds: string[] }) {
       const r = await apiFetch("/wrap/start", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ cwd: trimmed }),
+        body: JSON.stringify({ cwd: trimmed, agent }),
       });
       if (!r.ok) {
         const body = await r.json().catch(() => ({}));
@@ -2753,7 +2811,7 @@ function NewCliButton({ recentCwds }: { recentCwds: string[] }) {
         // the grid. Without this the user has zero visual feedback for the
         // 3–5s between click and card-appearing.
         window.dispatchEvent(new CustomEvent("miki-moni:spawn-pending", {
-          detail: { cwd: trimmed },
+          detail: { cwd: trimmed, agent },
         }));
         // Auto-close after a beat so user sees the success indicator briefly.
         window.setTimeout(() => { setOpen(false); setCwd(""); }, 800);
@@ -2803,6 +2861,24 @@ function NewCliButton({ recentCwds }: { recentCwds: string[] }) {
           }}
         >
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>{t("newCli.heading")}</div>
+          <div style={{ fontSize: 11, color: "var(--fg-muted)", display: "block", marginBottom: 4 }}>
+            {t("newCli.agentLabel")}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 }}>
+            {(["claude", "codex"] as AgentId[]).map((a) => (
+              <button
+                key={a}
+                type="button"
+                class={"header-stat" + (agent === a ? " is-active" : "")}
+                style={{ justifyContent: "center", height: 30 }}
+                onClick={() => setAgent(a)}
+                aria-pressed={agent === a}
+              >
+                <AgentLogo agent={a} />
+                <span>{agentLabel(a)}</span>
+              </button>
+            ))}
+          </div>
           <label style={{ fontSize: 11, color: "var(--fg-muted)", display: "block", marginBottom: 4 }}>
             {t("newCli.cwdLabel")}
           </label>
@@ -2848,7 +2924,7 @@ function NewCliButton({ recentCwds }: { recentCwds: string[] }) {
             </select>
           )}
           <div style={{ fontSize: 10, color: "var(--fg-subtle)", marginTop: 6, lineHeight: 1.45 }}>
-            {t("newCli.hint")}
+            {agent === "codex" ? t("newCli.hintCodex") : t("newCli.hintClaude")}
           </div>
           <div style={{ display: "flex", gap: 6, marginTop: 10, alignItems: "center" }}>
             <button
@@ -2858,7 +2934,7 @@ function NewCliButton({ recentCwds }: { recentCwds: string[] }) {
               onClick={() => void submit()}
             >{pending ? t("newCli.submitting") : t("newCli.submit")}</button>
             {err && <span style={{ fontSize: 10, color: "var(--accent)" }}>{t("newCli.error", { err })}</span>}
-            {ok && <span style={{ fontSize: 10, color: "var(--pass)" }}>✓ {t("newCli.success")}</span>}
+            {ok && <span style={{ fontSize: 10, color: "var(--pass)" }}>✓ {agent === "codex" ? t("newCli.successCodex") : t("newCli.successClaude")}</span>}
           </div>
         </div>
       )}
@@ -2888,6 +2964,7 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, userOverla
   onHide: (uuid: string) => void;
   onUnhide: (uuid: string) => void;
 }) {
+  const agent = agentOf(s);
   const title = preview?.ai_title ?? s.project_name;
   // Optimistic overlay wins over JSONL-derived text while we wait for the
   // /sessions/previews poll to catch up to the latest user turn.
@@ -3074,6 +3151,7 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, userOverla
       </div>
       <div class="cell-cwd" style={{ color: c.label, display: "flex", alignItems: "center", gap: 6 }} title={s.cwd}>
         <strong style={{ fontWeight: 600 }}>{s.project_name}</strong>
+        <AgentBadge agent={agent} />
         {s.wrapped ? (
           // Wrapped session: it's inherently CLI + we own it. One badge says it all.
           <span class="client-badge client-badge-wrap" title={t("session.wrappedDetailed")}>{t("focus.wrappedBadge")}</span>
@@ -3116,7 +3194,7 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, userOverla
             {(lastAssistant || isThinking) && (
               <div class="cell-turn cell-turn-assistant">
                 <div class="cell-turn-role">
-                  <span>claude</span>
+                  <span>{agentLabel(agent)}</span>
                   {/* During isThinking we deliberately fall through to the
                    * prev reply's timestamp instead of showing "{activity}…"
                    * here — the cell already has a global activity badge at
@@ -3874,6 +3952,17 @@ function loadStatusFilterFromLS(): StatusFilter {
 function saveStatusFilterToLS(v: StatusFilter): void {
   try { localStorage.setItem(STATUS_FILTER_LS_KEY, v); } catch { /* quota / disabled */ }
 }
+const AGENT_FILTER_LS_KEY = "miki-moni:agent-filter";
+function loadAgentFilterFromLS(): AgentFilter {
+  try {
+    const raw = localStorage.getItem(AGENT_FILTER_LS_KEY);
+    if (raw === "all" || raw === "claude" || raw === "codex") return raw;
+  } catch { /* SSR / disabled */ }
+  return "all";
+}
+function saveAgentFilterToLS(v: AgentFilter): void {
+  try { localStorage.setItem(AGENT_FILTER_LS_KEY, v); } catch { /* quota / disabled */ }
+}
 
 // Lower number = higher in list. "waiting" = Claude is blocked on user input —
 // Miki the Monitor exists to surface those. Stale at the bottom because the
@@ -4024,6 +4113,11 @@ function App() {
   function setStatusFilter(v: StatusFilter) {
     setStatusFilterState(v);
     saveStatusFilterToLS(v);
+  }
+  const [agentFilter, setAgentFilterState] = useState<AgentFilter>(() => loadAgentFilterFromLS());
+  function setAgentFilter(v: AgentFilter) {
+    setAgentFilterState(v);
+    saveAgentFilterToLS(v);
   }
   // Hidden-cards state. Per-browser via localStorage. Cross-tab sync is
   // wired via the `storage` event in a useEffect below.
@@ -4602,6 +4696,10 @@ function App() {
     for (const s of sessions) if (s.session_uuid) m.set(s.session_uuid, s);
     return m;
   }, [sessions]);
+  const displaySessions = useMemo(
+    () => sessions.map((s) => displaySession(s, s.session_uuid ? previews[s.session_uuid] : undefined)),
+    [sessions, previews],
+  );
 
   // De-duped, recency-sorted list of session cwds. Used to populate the
   // NewCliButton's <datalist> so users get autocomplete on common folders
@@ -4631,9 +4729,11 @@ function App() {
           <IconSleepingCat size={24} />
         </h1>
         <HeaderStats
-          sessions={sessions}
+          sessions={displaySessions}
           filter={statusFilter}
           onFilter={setStatusFilter}
+          agentFilter={agentFilter}
+          onAgentFilter={setAgentFilter}
           hiddenCount={hiddenSet.size}
           showHidden={showHidden}
           onToggleHidden={() => setShowHidden(v => !v)}
@@ -4822,7 +4922,7 @@ function App() {
       {/* Dashboard — single view. Tabs removed; click a cell to open the
           modal big-card. Modal owns its own expanded transcript view. */}
       <div style={{ marginTop: 12, marginBottom: 20 }} />
-      {sessions.length === 0 ? (
+      {displaySessions.length === 0 ? (
         <div class="card" style={{ padding: "24px 14px", textAlign: "center", color: "var(--fg-subtle)", fontSize: 13 }}>
           <div>{t("overview.noSessions")}</div>
           <div style={{ fontSize: 11, marginTop: 6 }}>{t("overview.openPanelHint")}</div>
@@ -4830,10 +4930,13 @@ function App() {
         </div>
       ) : (
         <GridOverview
-          sessions={sessions.filter((s) => {
+          sessions={displaySessions.filter((s) => {
             if (statusFilter === "all") return true;
             if (statusFilter === "live") return s.status === "active" || s.status === "waiting";
             return s.status === statusFilter;
+          }).filter((s) => {
+            if (agentFilter === "all") return true;
+            return agentOf(s) === agentFilter;
           }).filter((s) => {
             // Hidden filter is orthogonal to status filter. Default view excludes
             // hidden cards; the 🙈 chip flips showHidden true to inspect them.

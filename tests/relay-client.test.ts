@@ -37,6 +37,14 @@ function attachHandshake(ws: import("ws").WebSocket): void {
   });
 }
 
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) throw new Error("timed out waiting for condition");
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
 describe("RelayClient", () => {
   let wss: WebSocketServer;
   let port: number;
@@ -84,14 +92,14 @@ describe("RelayClient", () => {
     const client = new RelayClient({ config: cfg, store, bridge });
 
     await client.start();
-    await new Promise((r) => setTimeout(r, 50));  // let WS open
+    await waitFor(() => serverConn !== null);
 
     store.upsert({
-      cwd: "d:\\code\\x", session_uuid: "u", project_name: "x",
+      cwd: "d:\\code\\x", session_uuid: "u", agent: "claude", project_name: "x",
       status: "active", last_event_at: Date.now(),
       last_message_preview: "", tokens_in: 0, tokens_out: 0, vscode_pid: null,
     });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitFor(() => serverReceived.length >= 1);
 
     expect(serverReceived.length).toBeGreaterThanOrEqual(1);
     const env = serverReceived[serverReceived.length - 1]!;
@@ -119,7 +127,7 @@ describe("RelayClient", () => {
 
     const store = new SessionStore(":memory:");
     store.upsert({
-      cwd: "d:\\code\\target", session_uuid: "uuid-target", project_name: "target",
+      cwd: "d:\\code\\target", session_uuid: "uuid-target", agent: "claude", project_name: "target",
       status: "waiting", last_event_at: 1, last_message_preview: "",
       tokens_in: 0, tokens_out: 0, vscode_pid: null,
     });

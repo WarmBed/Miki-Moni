@@ -21,6 +21,7 @@
     "src",
     "shared",
     "hooks/miki-emit.ps1",
+    "hooks/miki-emit-codex.mjs",
     "tools/tray.ps1",
     "dist/web",
     "dist/web-phone",

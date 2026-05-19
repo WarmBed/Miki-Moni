@@ -34,6 +34,50 @@ describe("HookHandler", () => {
     expect(s?.cwd).toBe("d:\\code\\dragonfly");
   });
 
+  it("stores the hook agent and keeps it immutable for the session", async () => {
+    await handler.handle({
+      event_type: "session_start",
+      agent: "codex",
+      cwd: "d:\\code\\cc-hub",
+      session_uuid: "u-codex",
+      timestamp: 1,
+    });
+    await handler.handle({
+      event_type: "stop",
+      agent: "claude",
+      cwd: "d:\\code\\cc-hub",
+      session_uuid: "u-codex",
+      timestamp: 2,
+    });
+    expect(store.get("u-codex")?.agent).toBe("codex");
+  });
+
+  it("removes a provisional Codex launch row when the real Codex uuid arrives", async () => {
+    store.upsert({
+      session_uuid: "codex-pending:d:\\code\\cc-hub",
+      agent: "codex",
+      cwd: "d:\\code\\cc-hub",
+      project_name: "cc-hub",
+      status: "active",
+      last_event_at: 1,
+      last_message_preview: "",
+      tokens_in: 0,
+      tokens_out: 0,
+      vscode_pid: null,
+    });
+
+    await handler.handle({
+      event_type: "session_start",
+      agent: "codex",
+      cwd: "D:/code/cc-hub",
+      session_uuid: "real-codex-uuid",
+      timestamp: 2,
+    });
+
+    expect(store.get("codex-pending:d:\\code\\cc-hub")).toBeUndefined();
+    expect(store.get("real-codex-uuid")?.agent).toBe("codex");
+  });
+
   it("stop → status=waiting", async () => {
     await handler.handle({
       event_type: "session_start", cwd: "d:\\code\\dragonfly",

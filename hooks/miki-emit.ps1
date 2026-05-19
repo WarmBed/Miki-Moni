@@ -41,6 +41,7 @@ try {
 
   $body = @{
     event_type = $ourType
+    agent = "claude"
     cwd = $cwd
     session_uuid = $sessionId
     timestamp = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()

@@ -8,6 +8,8 @@ import { SessionResolver } from "../src/session-resolver.js";
 import { VscodeBridge } from "../src/vscode-bridge.js";
 import { ExtRegistry } from "../src/ext-registry.js";
 import path from "node:path";
+import os from "node:os";
+import { promises as fs } from "node:fs";
 
 const fixturesRoot = path.join(__dirname, "fixtures", "projects");
 
@@ -31,7 +33,20 @@ describe("server POST /event", () => {
     });
     expect(res.status).toBe(204);
     expect(store.get("u-1")?.status).toBe("active");
+    expect(store.get("u-1")?.agent).toBe("claude");
     expect(store.get("u-1")?.cwd).toBe("d:\\code\\dragonfly");
+  });
+
+  it("ingests a Codex event with agent metadata", async () => {
+    const res = await request(app).post("/event").send({
+      event_type: "user_prompt",
+      agent: "codex",
+      cwd: "d:\\code\\cc-hub",
+      session_uuid: "u-codex",
+      timestamp: Date.now(),
+    });
+    expect(res.status).toBe(204);
+    expect(store.get("u-codex")?.agent).toBe("codex");
   });
 
   it("rejects malformed payload with 400", async () => {
@@ -70,6 +85,71 @@ describe("server GET /sessions", () => {
   });
 });
 
+describe("server POST /wrap/start agent selection", () => {
+  let store: SessionStore;
+  let app: ReturnType<typeof createApp>["app"];
+  let tmpDir: string;
+  let spawned: string[][];
+
+  beforeEach(async () => {
+    store = new SessionStore(":memory:");
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "miki-wrap-start-"));
+    spawned = [];
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    ({ app } = createApp({
+      store,
+      handler,
+      bridge: null as any,
+      notifier: null as any,
+      webDir: "/tmp/none",
+      terminalSpawner: (args) => {
+        spawned.push(args);
+        return { on: () => undefined, unref: () => undefined };
+      },
+    }));
+  });
+
+  afterEach(async () => {
+    store.close();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("fresh Claude defaults to managed miki claude --fresh", async () => {
+    const res = await request(app).post("/wrap/start").send({ cwd: tmpDir });
+
+    expect(res.status).toBe(200);
+    expect(res.body.agent).toBe("claude");
+    expect(res.body.managed_wrap).toBe(true);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]).toContain("new-tab");
+    expect(spawned[0]).toContain(tmpDir);
+    expect(spawned[0]).toContain("claude");
+    expect(spawned[0]).toContain("--fresh");
+  });
+
+  it("fresh Codex opens unmanaged codex terminal", async () => {
+    const res = await request(app).post("/wrap/start").send({ cwd: tmpDir, agent: "codex" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.agent).toBe("codex");
+    expect(res.body.managed_wrap).toBe(false);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]).toEqual(["-w", "new", "new-tab", "-d", tmpDir, "--", "cmd.exe", "/d", "/k", "codex"]);
+    const pending = store.list().find((s) => s.agent === "codex");
+    expect(pending?.session_uuid).toMatch(/^codex-pending:/);
+    expect(pending?.status).toBe("active");
+    expect(pending?.cwd.toLowerCase()).toBe(tmpDir.toLowerCase());
+  });
+
+  it("rejects invalid agent", async () => {
+    const res = await request(app).post("/wrap/start").send({ cwd: tmpDir, agent: "gpt" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("invalid_agent");
+    expect(spawned).toHaveLength(0);
+  });
+});
+
 describe("server WS /ws", () => {
   it("broadcasts session_changed to connected clients", async () => {
     const store = new SessionStore(":memory:");
@@ -102,7 +182,7 @@ describe("server POST /focus + /send", () => {
   it("focus calls bridge.focus with session_uuid from store", async () => {
     const store = new SessionStore(":memory:");
     store.upsert({
-      cwd: "d:\\code\\x", session_uuid: "uuid-xyz", project_name: "x",
+      cwd: "d:\\code\\x", session_uuid: "uuid-xyz", agent: "claude", project_name: "x",
       status: "waiting", last_event_at: 1, last_message_preview: "",
       tokens_in: 0, tokens_out: 0, vscode_pid: null,
     });
@@ -122,7 +202,7 @@ describe("server POST /focus + /send", () => {
   it("send calls bridge.send with encoded prompt", async () => {
     const store = new SessionStore(":memory:");
     store.upsert({
-      cwd: "d:\\code\\x", session_uuid: "uuid-xyz", project_name: "x",
+      cwd: "d:\\code\\x", session_uuid: "uuid-xyz", agent: "claude", project_name: "x",
       status: "waiting", last_event_at: 1, last_message_preview: "",
       tokens_in: 0, tokens_out: 0, vscode_pid: null,
     });
@@ -204,6 +284,46 @@ describe("daemon /ws_ext extension registry", () => {
 
     ws.close();
     await new Promise<void>((r) => server.close(() => r()));
+    store.close();
+  });
+
+  it("does not route Codex focus/send through Claude bridge paths", async () => {
+    const store = new SessionStore(":memory:");
+    store.upsert({
+      cwd: "d:\\code\\cc-hub", session_uuid: "uuid-codex", agent: "codex", project_name: "cc-hub",
+      status: "waiting", last_event_at: 1, last_message_preview: "",
+      tokens_in: 0, tokens_out: 0, vscode_pid: null,
+    });
+    const launches: string[] = [];
+    const bridge = new VscodeBridge(async (url) => { launches.push(url); });
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    const { app } = createApp({ store, handler, bridge, notifier: null as any, webDir: "/tmp/none" });
+
+    const focus = await request(app).post("/focus").send({ session_uuid: "uuid-codex" });
+    expect(focus.status).toBe(501);
+    expect(focus.body.error).toBe("codex_focus_unsupported");
+
+    const send = await request(app).post("/send").send({ session_uuid: "uuid-codex", prompt: "hello", auto_enter: false });
+    expect(send.status).toBe(501);
+    expect(send.body.error).toBe("codex_send_unsupported");
+    expect(launches).toEqual([]);
+    store.close();
+  });
+
+  it("does not start a Claude wrapper for a Codex session", async () => {
+    const store = new SessionStore(":memory:");
+    store.upsert({
+      cwd: "d:\\code\\cc-hub", session_uuid: "uuid-codex", agent: "codex", project_name: "cc-hub",
+      status: "waiting", last_event_at: 1, last_message_preview: "",
+      tokens_in: 0, tokens_out: 0, vscode_pid: null,
+    });
+    const bridge = new VscodeBridge(async () => {});
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    const { app } = createApp({ store, handler, bridge, notifier: null as any, webDir: "/tmp/none" });
+
+    const res = await request(app).post("/wrap/start").send({ session_uuid: "uuid-codex" });
+    expect(res.status).toBe(501);
+    expect(res.body.error).toBe("codex_wrap_unsupported");
     store.close();
   });
 });
@@ -347,7 +467,7 @@ describe("server POST /send routing (helper path)", () => {
   it("returns 503 with helpful message when no helper registered for cwd", async () => {
     const store = new SessionStore(":memory:");
     store.upsert({
-      cwd: "d:\\code\\xianyu-assistant", session_uuid: "uuid-y", project_name: "xianyu",
+      cwd: "d:\\code\\xianyu-assistant", session_uuid: "uuid-y", agent: "claude", project_name: "xianyu",
       status: "waiting", last_event_at: 1, last_message_preview: "",
       tokens_in: 0, tokens_out: 0, vscode_pid: null,
     });
@@ -367,7 +487,7 @@ describe("server POST /send routing (helper path)", () => {
   it("returns 200 with ok=true when helper acks success", async () => {
     const store = new SessionStore(":memory:");
     store.upsert({
-      cwd: "d:\\code", session_uuid: "uuid-z", project_name: "code",
+      cwd: "d:\\code", session_uuid: "uuid-z", agent: "claude", project_name: "code",
       status: "waiting", last_event_at: 1, last_message_preview: "",
       tokens_in: 0, tokens_out: 0, vscode_pid: null,
     });
@@ -406,7 +526,7 @@ describe("server POST /send routing (helper path)", () => {
   it("returns 200 with ok=false when helper acks error (propagates message)", async () => {
     const store = new SessionStore(":memory:");
     store.upsert({
-      cwd: "d:\\code", session_uuid: "uuid-w", project_name: "code",
+      cwd: "d:\\code", session_uuid: "uuid-w", agent: "claude", project_name: "code",
       status: "waiting", last_event_at: 1, last_message_preview: "",
       tokens_in: 0, tokens_out: 0, vscode_pid: null,
     });

@@ -2,7 +2,15 @@ import { describe, it, expect } from "vitest";
 import path from "node:path";
 import fs from "node:fs/promises";
 import os from "node:os";
-import { SessionResolver, encodeCwd, readSessionPreview, readTranscriptTail } from "../src/session-resolver.js";
+import {
+  SessionResolver,
+  encodeCwd,
+  findCodexRolloutPath,
+  readCodexSessionPreview,
+  readCodexTranscriptTail,
+  readSessionPreview,
+  readTranscriptTail,
+} from "../src/session-resolver.js";
 
 const FIXTURES_ROOT = path.join(__dirname, "fixtures", "projects");
 
@@ -123,5 +131,53 @@ describe("readTranscriptTail role labelling", () => {
     expect(turns).toHaveLength(1);
     expect(turns[0]!.role).toBe("user");
     expect(turns[0]!.tool_result?.content).toBe("result");
+  });
+});
+
+describe("Codex rollout transcript parsing", () => {
+  async function writeCodexRollout(): Promise<{ dir: string; path: string; uuid: string }> {
+    const uuid = "019e40b9-b1a5-7be1-bab7-52f4a14e67a4";
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-rollout-"));
+    const nested = path.join(dir, "2026", "05", "19");
+    await fs.mkdir(nested, { recursive: true });
+    const tpath = path.join(nested, `rollout-2026-05-19T22-52-52-${uuid}.jsonl`);
+    const entries = [
+      { timestamp: "2026-05-19T14:53:04.325Z", type: "session_meta", payload: { id: uuid, cwd: "D:\\code\\cc-hub" } },
+      { timestamp: "2026-05-19T14:53:04.331Z", type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions for D:\\code\\cc-hub\n\n<environment_context>...</environment_context>" }] } },
+      { timestamp: "2026-05-19T14:53:04.332Z", type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "open the dashboard" }] } },
+      { timestamp: "2026-05-19T14:53:05.000Z", type: "response_item", payload: { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "I will inspect it." }] } },
+      { timestamp: "2026-05-19T14:53:06.000Z", type: "response_item", payload: { type: "function_call", name: "shell_command", call_id: "call_1", arguments: JSON.stringify({ command: "pnpm test", workdir: "D:\\code\\cc-hub" }) } },
+      { timestamp: "2026-05-19T14:53:07.000Z", type: "response_item", payload: { type: "function_call_output", call_id: "call_1", output: "Exit code: 0\nPASS" } },
+      { timestamp: "2026-05-19T14:53:08.000Z", type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Done." }] } },
+    ];
+    await fs.writeFile(tpath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+    return { dir, path: tpath, uuid };
+  }
+
+  it("finds Codex rollout files recursively by session id", async () => {
+    const { dir, path: tpath, uuid } = await writeCodexRollout();
+    await expect(findCodexRolloutPath(dir, uuid)).resolves.toBe(tpath);
+  });
+
+  it("builds preview from real user, latest assistant, and latest tool", async () => {
+    const { path: tpath, uuid } = await writeCodexRollout();
+    const p = await readCodexSessionPreview(uuid, tpath);
+    expect(p.last_user_text).toBe("open the dashboard");
+    expect(p.last_assistant_text).toBe("Done.");
+    expect(p.last_tool_use).toEqual({ name: "shell_command", description: "pnpm test" });
+  });
+
+  it("maps Codex response items into transcript turns", async () => {
+    const { path: tpath } = await writeCodexRollout();
+    const turns = await readCodexTranscriptTail(tpath, 20);
+    const summary = turns.map((t) => `${t.role}:${t.text || t.tool_use?.name || t.tool_result?.content}`);
+    expect(summary).toEqual([
+      "system:# AGENTS.md instructions for D:\\code\\cc-hub\n\n<environment_context>...</environment_context>",
+      "user:open the dashboard",
+      "assistant:I will inspect it.",
+      "assistant:shell_command",
+      "user:Exit code: 0\nPASS",
+      "assistant:Done.",
+    ]);
   });
 });

@@ -213,7 +213,41 @@ textarea { resize: vertical; }
   color: var(--fg);
 }
 .header-stat .dot { width: 6px; height: 6px; }
-
+.header-stat-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--border);
+}
+.agent-logo {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.agent-logo svg {
+  width: 11px;
+  height: 11px;
+  display: block;
+}
+.agent-logo-claude {
+  background: transparent;
+  color: #d97757;
+}
+.agent-logo-codex {
+  background: transparent;
+  color: #050505;
+}
+.header-stat .agent-logo {
+  width: 15px;
+  height: 15px;
+}
+.header-stat .agent-logo svg {
+  width: 10px;
+  height: 10px;
+}
 /* ── Section label ─────────────────────────────────────────────────── */
 
 .section-label {
@@ -731,6 +765,21 @@ html, body { overflow-x: hidden; max-width: 100vw; }
   background: rgba(180, 130, 40, 0.16);
   color: #8a5d0a;
   border-color: rgba(180, 130, 40, 0.35);
+}
+
+.agent-badge {
+  cursor: default;
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.agent-badge-claude {
+  color: #d97757;
+}
+.agent-badge-codex {
+  color: #050505;
 }
 .client-badge-wrap {
   background: rgba(110, 60, 200, 0.14);

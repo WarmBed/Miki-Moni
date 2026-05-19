@@ -28,6 +28,10 @@ export function normalizeCwd(cwd: string): string {
   return n;
 }
 
+export function pendingCodexSessionUuid(cwd: string): string {
+  return `codex-pending:${normalizeCwd(cwd).toLowerCase()}`;
+}
+
 export class HookHandler {
   constructor(
     private store: SessionStore,
@@ -49,6 +53,10 @@ export class HookHandler {
 
     const existing = this.store.get(sessionUuid);
     if (existing && existing.last_event_at > ev.timestamp) return;  // last-write-wins
+    if (ev.agent === "codex" && !sessionUuid.startsWith("codex-pending:")) {
+      const pendingUuid = pendingCodexSessionUuid(cwd);
+      if (pendingUuid !== sessionUuid) this.store.remove(pendingUuid);
+    }
 
     // cwd is IMMUTABLE once the row exists. Claude Code's projects-dir
     // encoding is derived from the cwd-at-session-start; the SDK's
@@ -64,6 +72,7 @@ export class HookHandler {
     const next: Session = {
       cwd: cwdToStore,
       session_uuid: sessionUuid,
+      agent: existing?.agent ?? ev.agent ?? "claude",
       project_name: existing?.project_name ?? basename(cwdToStore),
       status: STATUS_BY_EVENT[ev.event_type],
       last_event_at: ev.timestamp,
@@ -79,7 +88,7 @@ export class HookHandler {
     if (this.notifier && isWaiting && !wasWaiting) {
       void this.notifier.notify({
         project: next.project_name,
-        message: "Claude is waiting for you",
+        message: `${next.agent === "codex" ? "Codex" : "Claude"} is waiting for you`,
       });
     }
   }

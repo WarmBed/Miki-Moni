@@ -5,9 +5,18 @@ import type { SessionStore } from "./session-store.js";
 import type { HookHandler } from "./hook-handler.js";
 import type { VscodeBridge } from "./vscode-bridge.js";
 import type { Notifier } from "./notifier.js";
-import type { HookEvent, Session } from "./types.js";
-import { normalizeCwd } from "./hook-handler.js";
-import { readTranscriptTail, readSessionPreview, sessionHasAnyTurns, readOriginalCwd, type SessionPreview } from "./session-resolver.js";
+import type { AgentId, HookEvent, Session } from "./types.js";
+import { normalizeCwd, pendingCodexSessionUuid } from "./hook-handler.js";
+import {
+  SessionResolver,
+  readTranscriptTail,
+  readSessionPreview,
+  readTranscriptPreview,
+  readTranscriptTailForSource,
+  sessionHasAnyTurns,
+  readOriginalCwd,
+  type SessionPreview,
+} from "./session-resolver.js";
 import path from "node:path";
 import os from "node:os";
 import { promises as fs } from "node:fs";
@@ -29,6 +38,8 @@ const MIKI_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url))
 const MIKI_BIN_JS = path.join(MIKI_REPO_ROOT, "bin", "miki.mjs");
 
 type Log = { info: (obj: Record<string, unknown>, msg?: string) => void; warn: (obj: Record<string, unknown>, msg?: string) => void; error: (obj: Record<string, unknown>, msg?: string) => void };
+type TerminalChild = { on: (event: "error", cb: (err: Error) => void) => unknown; unref: () => void };
+type TerminalSpawner = (args: string[]) => TerminalChild;
 
 export interface ServerDeps {
   store: SessionStore;
@@ -39,6 +50,8 @@ export interface ServerDeps {
   log?: Log;
   heartbeat?: { pingMs: number; pongTimeoutMs: number };  // default: { 30_000, 10_000 }
   versionChecker?: VersionChecker;
+  transcriptRoots?: { claudeProjectsRoot?: string; codexSessionsRoot?: string };
+  terminalSpawner?: TerminalSpawner;
 }
 
 function parseHookEvent(body: unknown): HookEvent | null {
@@ -49,8 +62,10 @@ function parseHookEvent(body: unknown): HookEvent | null {
   if (typeof b.timestamp !== "number") return null;
   const validTypes = ["session_start", "stop", "user_prompt", "pre_tool_use", "post_tool_use"];
   if (!validTypes.includes(b.event_type)) return null;
+  const agent: AgentId = b.agent === "codex" ? "codex" : "claude";
   return {
     event_type: b.event_type as HookEvent["event_type"],
+    agent,
     cwd: b.cwd,
     session_uuid: typeof b.session_uuid === "string" ? b.session_uuid : null,
     timestamp: b.timestamp,
@@ -60,6 +75,11 @@ function parseHookEvent(body: unknown): HookEvent | null {
 
 export function createApp(deps: ServerDeps): { app: Express; server: http.Server; registry: ExtRegistry } {
   const app = express();
+  const spawnTerminal: TerminalSpawner = deps.terminalSpawner ?? ((args) => spawn("wt.exe", args, {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false,
+  }));
   // 20mb to accommodate pasted images (base64) on /send. Hook payloads are tiny.
   app.use(express.json({ limit: "20mb" }));
 
@@ -320,27 +340,17 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   // /sessions/previews MUST come before /sessions/:session_uuid (Express order)
   app.get("/sessions/previews", async (_req, res) => {
     const sessions = deps.store.list();
-    const projectsRoot = path.join(os.homedir(), ".claude", "projects");
-
-    // Cache transcript lookup per request
-    let dirs: string[] = [];
-    try { dirs = await fs.readdir(projectsRoot); } catch { /* no dir */ }
-
-    async function findPath(uuid: string): Promise<string | null> {
-      for (const d of dirs) {
-        const candidate = path.join(projectsRoot, d, `${uuid}.jsonl`);
-        try { await fs.access(candidate); return candidate; } catch { /* keep looking */ }
-      }
-      return null;
-    }
+    const projectsRoot = deps.transcriptRoots?.claudeProjectsRoot ?? path.join(os.homedir(), ".claude", "projects");
+    const codexSessionsRoot = deps.transcriptRoots?.codexSessionsRoot ?? path.join(os.homedir(), ".codex", "sessions");
+    const transcriptResolver = new SessionResolver(projectsRoot, codexSessionsRoot);
 
     const previews: SessionPreview[] = [];
     await Promise.all(sessions.map(async (s) => {
       if (!s.session_uuid) return;
-      const tpath = await findPath(s.session_uuid);
-      if (!tpath) return;
+      const resolved = await transcriptResolver.findTranscript(s.session_uuid);
+      if (!resolved) return;
       try {
-        const p = await readSessionPreview(s.session_uuid, tpath);
+        const p = await readTranscriptPreview(resolved.source, s.session_uuid, resolved.path);
         previews.push(p);
       } catch (err) {
         deps.log?.warn({ route: "/sessions/previews", uuid: s.session_uuid, error: String(err) }, "preview failed");
@@ -361,16 +371,15 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   // re-fetch the full transcript. Cheap = fs.stat only.
   app.get("/sessions/:session_uuid/transcript-meta", async (req, res) => {
     const sessionUuid = decodeURIComponent(req.params.session_uuid!);
-    const projectsRoot = path.join(os.homedir(), ".claude", "projects");
+    const projectsRoot = deps.transcriptRoots?.claudeProjectsRoot ?? path.join(os.homedir(), ".claude", "projects");
+    const codexSessionsRoot = deps.transcriptRoots?.codexSessionsRoot ?? path.join(os.homedir(), ".codex", "sessions");
+    const transcriptResolver = new SessionResolver(projectsRoot, codexSessionsRoot);
     try {
-      const dirs = await fs.readdir(projectsRoot);
-      for (const d of dirs) {
-        const candidate = path.join(projectsRoot, d, `${sessionUuid}.jsonl`);
-        try {
-          const stat = await fs.stat(candidate);
-          res.json({ session_uuid: sessionUuid, file_size: stat.size, last_modified: stat.mtime.toISOString() });
-          return;
-        } catch { /* keep looking */ }
+      const resolved = await transcriptResolver.findTranscript(sessionUuid);
+      if (resolved) {
+        const stat = await fs.stat(resolved.path);
+        res.json({ session_uuid: sessionUuid, file_size: stat.size, last_modified: stat.mtime.toISOString() });
+        return;
       }
       // Same pending-session courtesy as the full /transcript endpoint:
       // freshly-spawned wrap CLI may not have a .jsonl yet.
@@ -387,18 +396,11 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   app.get("/sessions/:session_uuid/transcript", async (req, res) => {
     const sessionUuid = decodeURIComponent(req.params.session_uuid!);
     const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "20"), 10) || 20, 1), 10000);
-    const projectsRoot = path.join(os.homedir(), ".claude", "projects");
-    // Find which projects dir contains <uuid>.jsonl
-    let transcriptPath: string | null = null;
-    try {
-      const dirs = await fs.readdir(projectsRoot);
-      for (const d of dirs) {
-        const candidate = path.join(projectsRoot, d, `${sessionUuid}.jsonl`);
-        try { await fs.access(candidate); transcriptPath = candidate; break; }
-        catch { /* keep looking */ }
-      }
-    } catch { /* no projects dir */ }
-    if (!transcriptPath) {
+    const projectsRoot = deps.transcriptRoots?.claudeProjectsRoot ?? path.join(os.homedir(), ".claude", "projects");
+    const codexSessionsRoot = deps.transcriptRoots?.codexSessionsRoot ?? path.join(os.homedir(), ".codex", "sessions");
+    const transcriptResolver = new SessionResolver(projectsRoot, codexSessionsRoot);
+    const resolved = await transcriptResolver.findTranscript(sessionUuid);
+    if (!resolved) {
       // Session may have been just spawned — wrap CLI registered with daemon
       // but Claude SDK hasn't written the .jsonl yet. If it's a known session
       // in our store, return an empty pending transcript instead of 404 so
@@ -420,12 +422,12 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       return;
     }
     try {
-      const turns = await readTranscriptTail(transcriptPath, limit);
-      const stat = await fs.stat(transcriptPath);
+      const turns = await readTranscriptTailForSource(resolved.source, resolved.path, limit);
+      const stat = await fs.stat(resolved.path);
       deps.log?.info({ route: "/sessions/:id/transcript", sessionUuid, returned: turns.length, fileSize: stat.size }, "transcript served");
       res.json({
         session_uuid: sessionUuid,
-        transcript_path: transcriptPath,
+        transcript_path: resolved.path,
         file_size: stat.size,
         last_modified: stat.mtime.toISOString(),
         turn_count: turns.length,
@@ -468,6 +470,10 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     const { session, key, via } = resolveSession(req.body);
     if (!via) { deps.log?.warn({ route: "/focus" }, "missing session_uuid or cwd"); res.status(400).json({ error: "missing session_uuid or cwd" }); return; }
     if (!session) { deps.log?.warn({ route: "/focus", via, key }, "session not found"); res.status(404).json({ error: "session not found", lookup: { via, key } }); return; }
+    if (session.agent === "codex") {
+      res.status(501).json({ error: "codex_focus_unsupported", message: "Codex VSCode focus is not supported yet", session_uuid: session.session_uuid });
+      return;
+    }
     const url = buildFocusUrl(session.session_uuid);
     try {
       await deps.bridge.focus(session.session_uuid);
@@ -479,13 +485,15 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     }
   });
 
-  // Dashboard click → spawn a Windows Terminal tab running `miki claude` so an
-  // unwrapped session becomes wrapped (or a brand-new session is started in a
-  // chosen folder) without the user needing to open a terminal manually.
+  // Dashboard click → spawn a Windows Terminal tab running either `miki claude`
+  // (managed wrap) or `codex` (unmanaged terminal). Claude can wrap/resume an
+  // existing session; Codex fresh sessions surface later via notify/transcript
+  // ingestion and do not have wrap controls yet.
   //
   // Body:
-  //   { session_uuid }            → attach to existing session: `miki claude -r <uuid>`
-  //   { cwd }                     → fresh session in that folder:  `miki claude --fresh`
+  //   { session_uuid }            → attach to existing Claude session: `miki claude -r <uuid>`
+  //   { cwd, agent?: "claude" }   → fresh Claude session: `miki claude --fresh`
+  //   { cwd, agent: "codex" }     → fresh Codex terminal: `cmd.exe /d /k codex`
   //
   // `--fresh` is critical for the no-uuid path: it tells wrap.ts to push a
   // synthetic "hi" so the SDK init fires immediately and a session_uuid lands
@@ -496,14 +504,30 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       ? req.body.session_uuid : null;
     const cwdHint = typeof req.body?.cwd === "string" && req.body.cwd
       ? req.body.cwd : null;
+    const requestedAgent = req.body?.agent === "codex" ? "codex"
+      : req.body?.agent === undefined || req.body?.agent === "claude" ? "claude"
+      : null;
+    if (!requestedAgent) {
+      res.status(400).json({ error: "invalid_agent", allowed: ["claude", "codex"] });
+      return;
+    }
 
     let cwd = cwdHint;
-    const mikiArgs: string[] = ["claude"];
+    let agent: AgentId = requestedAgent;
+    let commandArgs: string[] = agent === "claude" ? ["node", MIKI_BIN_JS, "claude"] : ["cmd.exe", "/d", "/k", "codex"];
+    let managedWrap = agent === "claude";
 
     if (sessionUuid) {
       const s = deps.store.get(sessionUuid);
       if (!s) {
         res.status(404).json({ error: "session not found", session_uuid: sessionUuid });
+        return;
+      }
+      agent = s.agent;
+      commandArgs = agent === "claude" ? ["node", MIKI_BIN_JS, "claude"] : ["cmd.exe", "/d", "/k", "codex"];
+      managedWrap = agent === "claude";
+      if (s.agent === "codex") {
+        res.status(501).json({ error: "codex_wrap_unsupported", message: "Codex wrap/start is not supported yet", session_uuid: sessionUuid });
         return;
       }
       const wrapConns: Map<string, import("ws").WebSocket> | undefined = (deps as any).__wrapConnections;
@@ -540,13 +564,19 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
         deps.log?.info({ route: "/wrap/start", session_uuid: sessionUuid, db_cwd: s.cwd, original_cwd: originalCwd }, "DB.cwd diverged from JSONL cwd — using JSONL");
       }
       cwd = originalCwd ?? s.cwd;
-      mikiArgs.push("-r", sessionUuid);
+      commandArgs.push("-r", sessionUuid);
     } else {
+      if (agent === "codex") {
+        // Fresh Codex sessions are intentionally unmanaged for now. Codex will
+        // appear in the dashboard once its notify hook or transcript poll sees
+        // the newly-created rollout.
+      } else {
       // Fresh-session path: ensure the wrap binds a uuid immediately so the
       // lifecycle registry can track / kill it later. Without --fresh the
       // SDK only inits after the user types something, leaving us blind to
       // the wrap's true session_uuid if they close the window first.
-      mikiArgs.push("--fresh");
+        commandArgs.push("--fresh");
+      }
     }
 
     if (!cwd) {
@@ -568,6 +598,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     }
 
     // `wt -w new new-tab -d <cwd> -- node <bin/miki.mjs> claude [-r <uuid> | --fresh]`
+    // `wt -w new new-tab -d <cwd> -- cmd.exe /d /k codex`
     // -w new   = always a fresh wt window (avoids "where did my tab go" if user
     //            already has wt open in a different virtual desktop)
     // -d <cwd> = sets the tab's starting directory (W11 Terminal v1.7+)
@@ -576,21 +607,20 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     //   - across Node versions (24+ blocks .cmd spawn from Node, but here wt
     //     opens a real shell so .cmd would work — node-direct just removes one
     //     more failure mode)
+    // For Codex we deliberately go through cmd.exe so the npm shim
+    // `codex.cmd` is resolved by PATH; Windows Terminal does not resolve
+    // extensionless shell commands when it CreateProcess-es the command after
+    // `--` directly.
     const wtArgs = [
       "-w", "new",
       "new-tab",
       "-d", cwd,
       "--",
-      "node", MIKI_BIN_JS,
-      ...mikiArgs,
+      ...commandArgs,
     ];
 
     try {
-      const child = spawn("wt.exe", wtArgs, {
-        detached: true,
-        stdio: "ignore",
-        windowsHide: false,
-      });
+      const child = spawnTerminal(wtArgs);
       child.on("error", (err) => {
         deps.log?.error({ route: "/wrap/start", error: String(err) }, "wt.exe spawn error event");
       });
@@ -599,9 +629,25 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       // its real node PID when it sends `register` over the WS. wt.exe itself
       // is a launcher that exits after handing off, so its PID is useless to
       // us — we wait for the in-process wrap to phone home with its own PID.
-      wrapProc.recordSpawn({ sessionUuid, cwd });
-      deps.log?.info({ route: "/wrap/start", session_uuid: sessionUuid, cwd, mikiArgs }, "wt new-tab spawned");
-      res.status(200).json({ ok: true, session_uuid: sessionUuid, cwd, mode: sessionUuid ? "resume" : "new" });
+      if (managedWrap) wrapProc.recordSpawn({ sessionUuid, cwd });
+      if (!managedWrap && agent === "codex" && !sessionUuid) {
+        const cwdNorm = normalizeCwd(cwd);
+        const pendingUuid = pendingCodexSessionUuid(cwdNorm);
+        deps.store.upsert({
+          session_uuid: pendingUuid,
+          agent: "codex",
+          cwd: cwdNorm,
+          project_name: path.basename(cwdNorm.replace(/\\/g, "/")),
+          status: "active",
+          last_event_at: Date.now(),
+          last_message_preview: "Codex CLI launched - waiting for first turn",
+          tokens_in: 0,
+          tokens_out: 0,
+          vscode_pid: null,
+        });
+      }
+      deps.log?.info({ route: "/wrap/start", session_uuid: sessionUuid, cwd, agent, commandArgs, managedWrap }, "wt new-tab spawned");
+      res.status(200).json({ ok: true, session_uuid: sessionUuid, cwd, agent, managed_wrap: managedWrap, mode: sessionUuid ? "resume" : "new" });
     } catch (err) {
       const msg = String(err);
       deps.log?.error({ route: "/wrap/start", error: msg }, "wt.exe spawn threw");
@@ -735,6 +781,10 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     const { session, key, via } = resolveSession(req.body);
     if (!via || !prompt) { deps.log?.warn({ route: "/send", hasKey: !!via, hasPrompt: !!prompt, submit: submitFlag }, "missing session_uuid/cwd or prompt"); res.status(400).json({ error: "missing session_uuid or cwd, or missing prompt" }); return; }
     if (!session) { deps.log?.warn({ route: "/send", via, key, submit: submitFlag }, "session not found"); res.status(404).json({ error: "session not found", lookup: { via, key } }); return; }
+    if (session.agent === "codex") {
+      res.status(501).json({ ok: false, error: "codex_send_unsupported", message: "Codex send is not supported yet", session_uuid: session.session_uuid });
+      return;
+    }
 
     // FAST PATH (highest priority): if a `miki claude` wrapper is alive for this
     // session, push through its long-running query() — no spawn, no -p, no
@@ -968,6 +1018,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
         deps.store.upsert({
           cwd: existing?.cwd ?? cwdNorm,
           session_uuid: uuid,
+          agent: existing?.agent ?? "claude",
           project_name: existing?.project_name ?? path.basename(cwdNorm.replace(/\\/g, "/")),
           status: "active",
           last_event_at: Date.now(),

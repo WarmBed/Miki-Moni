@@ -6,7 +6,10 @@ export function encodeCwd(cwd: string): string {
 }
 
 export class SessionResolver {
-  constructor(private projectsRoot: string) {}
+  constructor(
+    private projectsRoot: string,
+    private codexSessionsRoot?: string,
+  ) {}
 
   async resolveLatest(cwd: string): Promise<string | null> {
     const dir = path.join(this.projectsRoot, encodeCwd(cwd));
@@ -33,24 +36,27 @@ export class SessionResolver {
 
   /** Scan all project dirs to find which one holds <sessionUuid>.jsonl. */
   async findTranscriptPath(sessionUuid: string): Promise<string | null> {
-    let dirs: string[];
-    try {
-      dirs = await fs.readdir(this.projectsRoot);
-    } catch {
-      return null;
-    }
-    for (const d of dirs) {
-      const candidate = path.join(this.projectsRoot, d, `${sessionUuid}.jsonl`);
-      try {
-        await fs.access(candidate);
-        return candidate;
-      } catch { /* keep looking */ }
-    }
+    return findClaudeTranscriptPath(this.projectsRoot, sessionUuid);
+  }
+
+  async findTranscript(sessionUuid: string): Promise<ResolvedTranscript | null> {
+    const claudePath = await findClaudeTranscriptPath(this.projectsRoot, sessionUuid);
+    if (claudePath) return { source: "claude", path: claudePath };
+    if (!this.codexSessionsRoot) return null;
+    const codexPath = await findCodexRolloutPath(this.codexSessionsRoot, sessionUuid);
+    if (codexPath) return { source: "codex", path: codexPath };
     return null;
   }
 }
 
 // ── Transcript reading ────────────────────────────────────────────────────
+
+export type TranscriptSource = "claude" | "codex";
+
+export interface ResolvedTranscript {
+  source: TranscriptSource;
+  path: string;
+}
 
 export interface ToolUseInfo {
   id: string;
@@ -110,6 +116,8 @@ function summarizeToolInput(name: string, input: unknown): string {
   const o = input as Record<string, unknown>;
   // Pick a sensible one-line summary by tool
   if (name === "Bash") return String(o.command ?? "").split("\n")[0]?.slice(0, 200) ?? "";
+  if (name === "shell_command") return String(o.command ?? o.title ?? "").split("\n")[0]?.slice(0, 200) ?? "";
+  if (name === "js") return String(o.title ?? o.code ?? "").split("\n")[0]?.slice(0, 200) ?? "";
   if (name === "Read") return String(o.file_path ?? "");
   if (name === "Write") return `${o.file_path ?? ""} (${(o.content as string)?.length ?? 0} chars)`;
   if (name === "Edit") return `${o.file_path ?? ""}`;
@@ -124,9 +132,57 @@ function summarizeToolInput(name: string, input: unknown): string {
 function stringifyResult(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
-    return content.map((c: any) => (c?.type === "text" ? c.text : JSON.stringify(c))).join("");
+    return content.map((c: any) => {
+      if (c?.type === "text" || c?.type === "input_text" || c?.type === "output_text") return c.text ?? "";
+      return JSON.stringify(c);
+    }).join("");
   }
   return JSON.stringify(content ?? "");
+}
+
+export async function findClaudeTranscriptPath(projectsRoot: string, sessionUuid: string): Promise<string | null> {
+  let dirs: string[];
+  try {
+    dirs = await fs.readdir(projectsRoot);
+  } catch {
+    return null;
+  }
+  for (const d of dirs) {
+    const candidate = path.join(projectsRoot, d, `${sessionUuid}.jsonl`);
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch { /* keep looking */ }
+  }
+  return null;
+}
+
+export async function findCodexRolloutPath(sessionsRoot: string, sessionUuid: string): Promise<string | null> {
+  const stack = [sessionsRoot];
+  let best: { path: string; mtimeMs: number } | null = null;
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (!entry.name.endsWith(".jsonl") || !entry.name.includes(sessionUuid)) continue;
+      try {
+        const stat = await fs.stat(full);
+        if (!best || stat.mtimeMs > best.mtimeMs) best = { path: full, mtimeMs: stat.mtimeMs };
+      } catch { /* ignore raced deletion */ }
+    }
+  }
+  return best?.path ?? null;
 }
 
 export interface SessionPreview {
@@ -253,6 +309,15 @@ export async function readSessionPreview(
     last_modified_ms: stat.mtimeMs,
     transcript_path: transcriptPath,
   };
+}
+
+export async function readTranscriptPreview(
+  source: TranscriptSource,
+  sessionUuid: string,
+  transcriptPath: string,
+): Promise<SessionPreview> {
+  if (source === "codex") return readCodexSessionPreview(sessionUuid, transcriptPath);
+  return readSessionPreview(sessionUuid, transcriptPath);
 }
 
 /**
@@ -473,5 +538,203 @@ export async function readTranscriptTail(
   // entry first — desired behavior: keep latest content visible), then
   // reverse for chronological order. The previous in-loop limit check
   // could chop off MID-entry, causing single-message data loss.
+  return turns.slice(0, limit).reverse();
+}
+
+export async function readTranscriptTailForSource(
+  source: TranscriptSource,
+  filePath: string,
+  limit = 20,
+): Promise<TranscriptTurn[]> {
+  if (source === "codex") return readCodexTranscriptTail(filePath, limit);
+  return readTranscriptTail(filePath, limit);
+}
+
+function codexContentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  let out = "";
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (
+      (b.type === "input_text" || b.type === "output_text" || b.type === "text") &&
+      typeof b.text === "string"
+    ) {
+      out += b.text;
+    }
+  }
+  return out;
+}
+
+function isCodexInjectedUserMessage(payload: any): boolean {
+  if (!payload || payload.role !== "user") return false;
+  const text = codexContentText(payload.content).trim();
+  if (!text) return true;
+  if (text.startsWith("# AGENTS.md instructions")) return true;
+  if (text.includes("<environment_context>")) return true;
+  if (text.includes("<permissions instructions>")) return true;
+  return false;
+}
+
+function parseCodexToolInput(raw: unknown): unknown {
+  if (typeof raw !== "string") return raw ?? {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { arguments: raw };
+  }
+}
+
+function codexToolName(payload: any): string {
+  if (typeof payload?.namespace === "string" && payload.namespace) {
+    return `${payload.namespace}.${payload.name ?? "tool"}`;
+  }
+  return String(payload?.name ?? "tool");
+}
+
+function codexToolDescription(name: string, input: unknown): string | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const o = input as Record<string, unknown>;
+  if (typeof o.description === "string") return o.description;
+  if (typeof o.title === "string") return o.title;
+  if (name === "shell_command" && typeof o.command === "string") return o.command.split("\n")[0]?.slice(0, 120);
+  return undefined;
+}
+
+export async function readCodexSessionPreview(
+  sessionUuid: string,
+  transcriptPath: string,
+): Promise<SessionPreview> {
+  const stat = await fs.stat(transcriptPath);
+  const raw = await fs.readFile(transcriptPath, "utf8");
+  const lines = raw.split(/\r?\n/).slice(-800);
+
+  let ai_title: string | null = null;
+  let last_assistant_text: string | null = null;
+  let last_assistant_ts: string | null = null;
+  let last_user_text: string | null = null;
+  let last_user_ts: string | null = null;
+  let last_tool_use: { name: string; description?: string } | null = null;
+  let last_tool_use_ts: string | null = null;
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line) continue;
+    let e: any;
+    try { e = JSON.parse(line); } catch { continue; }
+    const entryTs = typeof e.timestamp === "string" ? e.timestamp : null;
+
+    if (!ai_title && e.type === "session_meta" && typeof e.payload?.thread_name === "string") {
+      ai_title = e.payload.thread_name;
+    }
+    if (!ai_title && e.type === "event_msg" && e.payload?.type === "task_started" && typeof e.payload?.thread_name === "string") {
+      ai_title = e.payload.thread_name;
+    }
+
+    if (e.type !== "response_item") continue;
+    const p = e.payload;
+    if (!p) continue;
+
+    if (!last_tool_use && p.type === "function_call") {
+      const name = codexToolName(p);
+      const input = parseCodexToolInput(p.arguments);
+      const desc = codexToolDescription(name, input);
+      last_tool_use = desc ? { name, description: desc } : { name };
+      last_tool_use_ts = entryTs;
+      continue;
+    }
+
+    if (p.type !== "message") continue;
+    const text = codexContentText(p.content).trim();
+    if (!text) continue;
+    if (p.role === "assistant" && !last_assistant_text) {
+      last_assistant_text = text;
+      last_assistant_ts = entryTs;
+    } else if (p.role === "user" && !last_user_text && !isCodexInjectedUserMessage(p)) {
+      last_user_text = text;
+      last_user_ts = entryTs;
+    }
+
+    if (ai_title && last_assistant_text && last_user_text && last_tool_use) break;
+  }
+
+  return {
+    session_uuid: sessionUuid,
+    ai_title,
+    last_assistant_text,
+    last_assistant_ts,
+    last_user_text,
+    last_user_ts,
+    last_tool_use,
+    last_tool_use_ts,
+    last_modified_ms: stat.mtimeMs,
+    transcript_path: transcriptPath,
+  };
+}
+
+export async function readCodexTranscriptTail(
+  filePath: string,
+  limit = 20,
+): Promise<TranscriptTurn[]> {
+  const raw = await fs.readFile(filePath, "utf8");
+  const lines = raw.split(/\r?\n/).filter((l) => l.length > 0);
+
+  const turns: TranscriptTurn[] = [];
+  for (let i = lines.length - 1; i >= 0 && turns.length < limit; i--) {
+    const line = lines[i];
+    if (!line) continue;
+    let entry: any;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry.type !== "response_item") continue;
+    const payload = entry.payload;
+    if (!payload) continue;
+    const ts = entry.timestamp ?? "";
+
+    if (payload.type === "message") {
+      if (payload.role !== "user" && payload.role !== "assistant" && payload.role !== "developer" && payload.role !== "system") continue;
+      const text = codexContentText(payload.content);
+      if (!text.trim()) continue;
+      const role: TranscriptTurn["role"] =
+        payload.role === "assistant"
+          ? "assistant"
+          : payload.role === "user" && !isCodexInjectedUserMessage(payload)
+            ? "user"
+            : "system";
+      turns.push({ ts, role, text, raw_type: payload.phase ? `codex:${payload.phase}` : "codex:message" });
+    } else if (payload.type === "function_call") {
+      const name = codexToolName(payload);
+      const input = parseCodexToolInput(payload.arguments);
+      turns.push({
+        ts,
+        role: "assistant",
+        text: "",
+        raw_type: "codex:function_call",
+        tool_use: {
+          id: payload.call_id ?? "",
+          name,
+          description: codexToolDescription(name, input),
+          input,
+          input_summary: summarizeToolInput(name, input),
+        },
+      });
+    } else if (payload.type === "function_call_output") {
+      const full = stringifyResult(payload.output);
+      const truncated = full.length > MAX_TOOL_RESULT_BYTES;
+      turns.push({
+        ts,
+        role: "user",
+        text: "",
+        raw_type: "codex:function_call_output",
+        tool_result: {
+          tool_use_id: payload.call_id,
+          content: truncated ? full.slice(0, MAX_TOOL_RESULT_BYTES) + "\n[truncated]" : full,
+          truncated,
+          is_error: payload.is_error === true,
+        },
+      });
+    }
+  }
+
   return turns.slice(0, limit).reverse();
 }

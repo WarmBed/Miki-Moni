@@ -1,8 +1,10 @@
 export type SessionStatus = "active" | "waiting" | "idle" | "stale";
+export type AgentId = "claude" | "codex";
 
 export interface Session {
   cwd: string;                  // primary key, e.g. "d:\\code\\dragonfly"
   session_uuid: string | null;
+  agent: AgentId;
   project_name: string;
   status: SessionStatus;
   last_event_at: number;        // unix ms
@@ -21,6 +23,7 @@ export type HookEventType =
 
 export interface HookEvent {
   event_type: HookEventType;
+  agent?: AgentId;
   cwd: string;
   session_uuid: string | null;
   timestamp: number;
