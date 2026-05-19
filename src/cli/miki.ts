@@ -14,6 +14,7 @@ import { CONFIG_FILE, PORT_FILE } from "../data-dir.js";
 import { generateNewPairingToken, pairingQrPayload } from "../pairing.js";
 import { runSetupWizard, shouldRunWizard } from "./setup-wizard.js";
 import { setLocale, t } from "./i18n-cli.js";
+import { VersionChecker } from "../version-check.js";
 
 /** Load the user's preferred locale from config (set by wizard step 0) so
  *  subsequent CLI output uses it. Best-effort: silent fall back to "en". */
@@ -81,6 +82,40 @@ async function printPairBanner(): Promise<void> {
   }
 }
 
+/** Reads `version` from this package's package.json. Used by `miki start`'s
+ *  update notice so the CLI shows the same identity as the daemon's
+ *  /admin/version-check endpoint (both pull from the same file). */
+async function readCurrentVersion(): Promise<string> {
+  const { readFileSync: readFS } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const path = await import("node:path");
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const pkg = JSON.parse(
+    readFS(path.resolve(here, "..", "..", "package.json"), "utf8"),
+  ) as { version: string };
+  return pkg.version;
+}
+
+/** Best-effort one-liner: if a newer miki-moni exists on npm, tell the
+ *  user how to grab it. Silent on failure / no-update. The daemon also
+ *  surfaces this in the dashboard, but `miki start` users live in the
+ *  terminal — they shouldn't need to open the UI to see the hint. */
+async function printUpdateLine(): Promise<void> {
+  try {
+    const current = await readCurrentVersion();
+    const checker = new VersionChecker({ current });
+    const info = await checker.refresh();
+    if (!info.hasUpdate || !info.latest) return;
+    console.log("");
+    console.log(
+      `✨ ${t("banner.updateAvailable").replace("{current}", info.current).replace("{latest}", info.latest)}`,
+    );
+    console.log("   " + t("banner.updateInstall") + " `npm i -g miki-moni`");
+  } catch {
+    // Network / FS failure — never break daemon startup on the update banner.
+  }
+}
+
 /** First-run setup wizard. Runs once on a fresh install before the daemon
  *  starts; subsequent runs no-op silently. Wizard writes Config.remote — so
  *  the rest of the pipeline (banner, RelayClient) "just works" after. */
@@ -106,6 +141,7 @@ async function main(): Promise<void> {
   if (sub === "start" || sub === "daemon") {
     await maybeRunSetupWizard();
     await printPairBanner();
+    await printUpdateLine();
     await import("../index.js");
     return;
   }
