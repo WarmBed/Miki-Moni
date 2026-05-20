@@ -584,8 +584,8 @@ function MetricChart({
   if (data.length === 0) {
     return (
       <div class="flex flex-col gap-1">
-        <div class="text-xs text-neutral-400 font-medium">{label}</div>
-        <div class="flex items-center justify-center h-[90px] text-xs text-neutral-500">暫無資料</div>
+        <div class="text-xs font-medium" style={{ color: "var(--fg-muted)" }}>{label}</div>
+        <div class="flex items-center justify-center h-[90px] text-xs" style={{ color: "var(--fg-subtle)" }}>暫無資料</div>
       </div>
     );
   }
@@ -635,25 +635,25 @@ function MetricChart({
   return (
     <div class="flex flex-col gap-1">
       <div class="flex items-center justify-between">
-        <span class="text-xs text-neutral-400 font-medium">{label}</span>
-        <span class="text-xs text-neutral-300 tabular-nums">{fmt(lastVal)}</span>
+        <span class="text-xs font-medium" style={{ color: "var(--fg-muted)" }}>{label}</span>
+        <span class="text-xs tabular-nums" style={{ color: "var(--fg)" }}>{fmt(lastVal)}</span>
       </div>
       <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} class="overflow-visible">
         {avgY !== null && (
           <line x1={0} y1={avgY} x2={W} y2={avgY}
-                stroke="#60a5fa" stroke-width="1" stroke-dasharray="4 3" opacity="0.7"/>
+                stroke="var(--accent, #4f6dff)" stroke-width="1" stroke-dasharray="4 3" opacity="0.6"/>
         )}
-        {greenPath && <path d={greenPath} fill="#22c55e" opacity="0.25"/>}
-        {redPath   && <path d={redPath}   fill="#ef4444" opacity="0.25"/>}
-        <polyline points={linePts} fill="none" stroke="#d4d4d4" stroke-width="1.5"
+        {greenPath && <path d={greenPath} fill="#22c55e" opacity="0.2"/>}
+        {redPath   && <path d={redPath}   fill="#ef4444" opacity="0.2"/>}
+        <polyline points={linePts} fill="none" stroke="var(--fg-subtle)" stroke-width="1.5"
                   stroke-linejoin="round" stroke-linecap="round"/>
         {pts.length > 0 && (
           <circle cx={pts[pts.length - 1]!.x} cy={pts[pts.length - 1]!.y}
-                  r="2.5" fill="#d4d4d4"/>
+                  r="2.5" fill="var(--fg-subtle)"/>
         )}
       </svg>
       {avgY !== null && fleetAvg !== null && (
-        <div class="flex items-center gap-3 text-[10px] text-neutral-500">
+        <div class="flex items-center gap-3" style={{ fontSize: 10, color: "var(--fg-subtle)" }}>
           <span class="flex items-center gap-1">
             <span class="inline-block w-2 h-2 rounded-sm bg-green-500 opacity-60"/>
             {higherIsBetter ? "超越" : "超越"}
@@ -663,7 +663,7 @@ function MetricChart({
             落後
           </span>
           <span class="flex items-center gap-1">
-            <span class="inline-block w-4 border-t border-dashed border-blue-400 opacity-70"/>
+            <span style={{ display: "inline-block", width: 16, borderTop: "1px dashed var(--accent, #4f6dff)", opacity: 0.7 }}/>
             fleet 平均 ({fmt(fleetAvg)})
           </span>
         </div>
@@ -712,32 +712,31 @@ function MonitPanel({ onClose }: { onClose: () => void }) {
 
   return (
     <div class="fixed inset-0 z-50 flex items-start justify-end pointer-events-none">
-      <div class="pointer-events-auto mt-14 mr-2 w-[400px] bg-neutral-900 border border-neutral-700
-                  rounded-lg shadow-2xl flex flex-col overflow-hidden">
-        <div class="flex items-center justify-between px-4 py-3 border-b border-neutral-700">
-          <span class="text-sm font-medium text-neutral-200">效能監控</span>
+      <div class="pointer-events-auto mt-14 mr-2 w-[400px] rounded-lg flex flex-col overflow-hidden"
+           style={{ background: "var(--bg-elev)", border: "1px solid var(--border-hi)", boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }}>
+        <div class="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
+          <span class="text-sm font-medium" style={{ color: "var(--fg)" }}>效能監控</span>
           <div class="flex items-center gap-3">
             <div class="flex gap-1">
               {WINDOWS.map(w => (
                 <button key={w}
-                  class={`px-2 py-0.5 rounded text-xs transition-colors ${
-                    window_ === w
-                      ? "bg-neutral-600 text-white"
-                      : "text-neutral-400 hover:text-neutral-200"
-                  }`}
+                  class="px-2 py-0.5 rounded text-xs transition-colors"
+                  style={window_ === w
+                    ? { background: "var(--sl4)", color: "var(--fg)", fontWeight: 500 }
+                    : { color: "var(--fg-muted)" }}
                   onClick={() => setWindow(w)}>
                   {w}
                 </button>
               ))}
             </div>
-            <button onClick={onClose} class="text-neutral-400 hover:text-neutral-200 transition-colors">
+            <button onClick={onClose} style={{ color: "var(--fg-muted)", background: "none", border: "none", cursor: "pointer", display: "flex" }}>
               <IconX size={16}/>
             </button>
           </div>
         </div>
         <div class="p-4 flex flex-col gap-6">
           {loading ? (
-            <div class="flex items-center justify-center h-24 text-xs text-neutral-500">載入中…</div>
+            <div class="flex items-center justify-center h-24 text-xs" style={{ color: "var(--fg-subtle)" }}>載入中…</div>
           ) : (
             <>
               <MetricChart
