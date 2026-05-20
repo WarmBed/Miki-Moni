@@ -78,6 +78,35 @@ describe("HookHandler", () => {
     expect(store.get("real-codex-uuid")?.agent).toBe("codex");
   });
 
+  it("removes only one provisional Codex row when multiple launches share a cwd", async () => {
+    for (const suffix of ["one", "two"]) {
+      store.upsert({
+        session_uuid: `codex-pending:d:\\code\\cc-hub:${suffix}`,
+        agent: "codex",
+        cwd: "d:\\code\\cc-hub",
+        project_name: "cc-hub",
+        status: "active",
+        last_event_at: suffix === "one" ? 1 : 2,
+        last_message_preview: "",
+        tokens_in: 0,
+        tokens_out: 0,
+        vscode_pid: null,
+      });
+    }
+
+    await handler.handle({
+      event_type: "session_start",
+      agent: "codex",
+      cwd: "D:/code/cc-hub",
+      session_uuid: "real-codex-uuid",
+      timestamp: 3,
+    });
+
+    const pending = store.list().filter((s) => s.session_uuid?.startsWith("codex-pending:d:\\code\\cc-hub"));
+    expect(pending).toHaveLength(1);
+    expect(store.get("real-codex-uuid")?.agent).toBe("codex");
+  });
+
   it("stop → status=waiting", async () => {
     await handler.handle({
       event_type: "session_start", cwd: "d:\\code\\dragonfly",

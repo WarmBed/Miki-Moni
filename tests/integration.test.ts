@@ -139,6 +139,85 @@ describe("server POST /wrap/start agent selection", () => {
     expect(pending?.session_uuid).toMatch(/^codex-pending:/);
     expect(pending?.status).toBe("active");
     expect(pending?.cwd.toLowerCase()).toBe(tmpDir.toLowerCase());
+    expect(res.body.session_uuid).toBe(pending?.session_uuid);
+  });
+
+  it("fresh Codex creates a new pending card for each launch in the same cwd", async () => {
+    const first = await request(app).post("/wrap/start").send({ cwd: tmpDir, agent: "codex" });
+    const second = await request(app).post("/wrap/start").send({ cwd: tmpDir, agent: "codex" });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(first.body.session_uuid).not.toBe(second.body.session_uuid);
+    const pending = store.list().filter((s) => s.agent === "codex" && s.cwd.toLowerCase() === tmpDir.toLowerCase());
+    expect(pending).toHaveLength(2);
+    expect(pending.map((s) => s.session_uuid)).toEqual(expect.arrayContaining([first.body.session_uuid, second.body.session_uuid]));
+  });
+
+  it("pending Codex row sends via codex exec", async () => {
+    const codexCalls: any[] = [];
+    store.close();
+    store = new SessionStore(":memory:");
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    ({ app } = createApp({
+      store,
+      handler,
+      bridge: null as any,
+      notifier: null as any,
+      webDir: "/tmp/none",
+      terminalSpawner: (args) => {
+        spawned.push(args);
+        return { on: () => undefined, unref: () => undefined };
+      },
+      codexRunner: async (opts) => {
+        codexCalls.push(opts);
+        return { reply: "pending-ok", durationMs: 34 };
+      },
+    }));
+
+    await request(app).post("/wrap/start").send({ cwd: tmpDir, agent: "codex" });
+    const pending = store.list().find((s) => s.agent === "codex");
+    const res = await request(app).post("/send").send({ session_uuid: pending?.session_uuid, prompt: "hello pending" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.mode).toBe("codex-exec");
+    expect(res.body.reply).toBe("pending-ok");
+    expect(codexCalls).toHaveLength(1);
+    expect(codexCalls[0]).toMatchObject({ sessionUuid: pending?.session_uuid, cwd: pending?.cwd, prompt: "hello pending" });
+    expect(store.get(pending!.session_uuid!)?.status).toBe("active");
+    expect(store.get(pending!.session_uuid!)?.last_message_preview).toBe("pending-ok");
+  });
+
+  it("pending Codex row sends images via codex exec", async () => {
+    const codexCalls: any[] = [];
+    store.close();
+    store = new SessionStore(":memory:");
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    ({ app } = createApp({
+      store,
+      handler,
+      bridge: null as any,
+      notifier: null as any,
+      webDir: "/tmp/none",
+      terminalSpawner: (args) => {
+        spawned.push(args);
+        return { on: () => undefined, unref: () => undefined };
+      },
+      codexRunner: async (opts) => {
+        codexCalls.push(opts);
+        return { reply: "image-ok", durationMs: 45 };
+      },
+    }));
+
+    await request(app).post("/wrap/start").send({ cwd: tmpDir, agent: "codex" });
+    const pending = store.list().find((s) => s.agent === "codex");
+    const images = [{ media_type: "image/png", data: Buffer.from("png").toString("base64") }];
+    const res = await request(app).post("/send").send({ session_uuid: pending?.session_uuid, prompt: "describe this", images });
+
+    expect(res.status).toBe(200);
+    expect(res.body.mode).toBe("codex-exec");
+    expect(codexCalls).toHaveLength(1);
+    expect(codexCalls[0]).toMatchObject({ sessionUuid: pending?.session_uuid, cwd: pending?.cwd, prompt: "describe this", images });
   });
 
   it("rejects invalid agent", async () => {
@@ -287,7 +366,7 @@ describe("daemon /ws_ext extension registry", () => {
     store.close();
   });
 
-  it("does not route Codex focus/send through Claude bridge paths", async () => {
+  it("does not route Codex focus through Claude bridge paths and sends via codex exec", async () => {
     const store = new SessionStore(":memory:");
     store.upsert({
       cwd: "d:\\code\\cc-hub", session_uuid: "uuid-codex", agent: "codex", project_name: "cc-hub",
@@ -297,16 +376,66 @@ describe("daemon /ws_ext extension registry", () => {
     const launches: string[] = [];
     const bridge = new VscodeBridge(async (url) => { launches.push(url); });
     const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
-    const { app } = createApp({ store, handler, bridge, notifier: null as any, webDir: "/tmp/none" });
+    const codexCalls: any[] = [];
+    const { app } = createApp({
+      store,
+      handler,
+      bridge,
+      notifier: null as any,
+      webDir: "/tmp/none",
+      codexRunner: async (opts) => {
+        codexCalls.push(opts);
+        return { reply: "codex-send-ok", durationMs: 12 };
+      },
+    });
 
     const focus = await request(app).post("/focus").send({ session_uuid: "uuid-codex" });
     expect(focus.status).toBe(501);
     expect(focus.body.error).toBe("codex_focus_unsupported");
 
     const send = await request(app).post("/send").send({ session_uuid: "uuid-codex", prompt: "hello", auto_enter: false });
-    expect(send.status).toBe(501);
-    expect(send.body.error).toBe("codex_send_unsupported");
+    expect(send.status).toBe(200);
+    expect(send.body.mode).toBe("codex-exec");
+    expect(send.body.reply).toBe("codex-send-ok");
+    expect(codexCalls).toHaveLength(1);
+    expect(codexCalls[0]).toMatchObject({ sessionUuid: "uuid-codex", cwd: "d:\\code\\cc-hub", prompt: "hello" });
     expect(launches).toEqual([]);
+    store.close();
+  });
+
+  it("interrupts an in-flight Codex exec", async () => {
+    const store = new SessionStore(":memory:");
+    store.upsert({
+      cwd: "d:\\code\\cc-hub", session_uuid: "uuid-codex", agent: "codex", project_name: "cc-hub",
+      status: "waiting", last_event_at: 1, last_message_preview: "",
+      tokens_in: 0, tokens_out: 0, vscode_pid: null,
+    });
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+    const { app } = createApp({
+      store,
+      handler,
+      bridge: null as any,
+      notifier: null as any,
+      webDir: "/tmp/none",
+      codexRunner: async (opts) => {
+        started();
+        return await new Promise((_resolve, reject) => {
+          opts.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      },
+    });
+
+    const sendPromise = request(app).post("/send").send({ session_uuid: "uuid-codex", prompt: "long task" }).then((r) => r);
+    await startedPromise;
+    const interrupt = await request(app).post("/wrap/interrupt").send({ session_uuid: "uuid-codex" });
+    const send = await sendPromise;
+
+    expect(interrupt.status).toBe(200);
+    expect(interrupt.body.mode).toBe("codex-exec");
+    expect(send.status).toBe(499);
+    expect(send.body.interrupted).toBe(true);
     store.close();
   });
 

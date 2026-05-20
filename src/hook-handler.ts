@@ -29,8 +29,13 @@ export function normalizeCwd(cwd: string): string {
   return n;
 }
 
-export function pendingCodexSessionUuid(cwd: string): string {
+export function pendingCodexSessionPrefix(cwd: string): string {
   return `codex-pending:${normalizeCwd(cwd).toLowerCase()}`;
+}
+
+export function pendingCodexSessionUuid(cwd: string, launchId?: string): string {
+  const prefix = pendingCodexSessionPrefix(cwd);
+  return launchId ? `${prefix}:${launchId}` : prefix;
 }
 
 export class HookHandler {
@@ -56,8 +61,12 @@ export class HookHandler {
     const existing = this.store.get(sessionUuid);
     if (existing && existing.last_event_at > ev.timestamp) return;  // last-write-wins
     if (ev.agent === "codex" && !sessionUuid.startsWith("codex-pending:")) {
-      const pendingUuid = pendingCodexSessionUuid(cwd);
-      if (pendingUuid !== sessionUuid) this.store.remove(pendingUuid);
+      const pendingPrefix = pendingCodexSessionPrefix(cwd);
+      const pending = this.store
+        .list()
+        .filter((s) => s.agent === "codex" && s.cwd === cwd && !!s.session_uuid?.startsWith(pendingPrefix))
+        .sort((a, b) => b.last_event_at - a.last_event_at)[0];
+      if (pending?.session_uuid && pending.session_uuid !== sessionUuid) this.store.remove(pending.session_uuid);
     }
 
     // cwd is IMMUTABLE once the row exists. Claude Code's projects-dir
