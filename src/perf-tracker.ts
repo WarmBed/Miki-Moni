@@ -57,4 +57,21 @@ export class PerfTracker {
     // Rolling cleanup — fire and forget
     this.store.deleteOlderThan(now - RETENTION_MS);
   }
+
+  recordCompletedTurn(sessionUuid: string, promptTs: number, text: string, completedTs = Date.now()): void {
+    const duration_ms = Math.max(0, completedTs - promptTs);
+    const char_count = text.length;
+    const tps = duration_ms > 0 ? (char_count / duration_ms) * 1000 : null;
+
+    this.store.insert({
+      session_uuid: sessionUuid,
+      ts: completedTs,
+      ttft_ms: duration_ms,
+      tps,
+      char_count,
+      duration_ms,
+    });
+    this.turns.set(sessionUuid, { promptTs: null, deltaStartTs: null, charCount: 0 });
+    this.store.deleteOlderThan(completedTs - RETENTION_MS);
+  }
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import request from "supertest";
 import WebSocket from "ws";
 import { createApp } from "../src/server.js";
@@ -156,6 +156,7 @@ describe("server POST /wrap/start agent selection", () => {
 
   it("pending Codex row sends via codex exec", async () => {
     const codexCalls: any[] = [];
+    const recordCompletedTurn = vi.fn();
     store.close();
     store = new SessionStore(":memory:");
     const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
@@ -173,6 +174,7 @@ describe("server POST /wrap/start agent selection", () => {
         codexCalls.push(opts);
         return { reply: "pending-ok", durationMs: 34 };
       },
+      perfTracker: { recordCompletedTurn } as any,
     }));
 
     await request(app).post("/wrap/start").send({ cwd: tmpDir, agent: "codex" });
@@ -184,6 +186,9 @@ describe("server POST /wrap/start agent selection", () => {
     expect(res.body.reply).toBe("pending-ok");
     expect(codexCalls).toHaveLength(1);
     expect(codexCalls[0]).toMatchObject({ sessionUuid: pending?.session_uuid, cwd: pending?.cwd, prompt: "hello pending" });
+    expect(recordCompletedTurn).toHaveBeenCalledOnce();
+    expect(recordCompletedTurn.mock.calls[0]?.[0]).toBe(pending?.session_uuid);
+    expect(recordCompletedTurn.mock.calls[0]?.[2]).toBe("pending-ok");
     expect(store.get(pending!.session_uuid!)?.status).toBe("active");
     expect(store.get(pending!.session_uuid!)?.last_message_preview).toBe("pending-ok");
   });

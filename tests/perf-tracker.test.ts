@@ -86,4 +86,16 @@ describe("PerfTracker", () => {
     // no delta events
     expect(store.insert).not.toHaveBeenCalled();
   });
+
+  it("records non-streaming completed turns for codex exec", () => {
+    tracker.recordCompletedTurn("codex-1", 10_000, "abcdef", 11_500);
+
+    expect(store.insert).toHaveBeenCalledOnce();
+    const row = (store.rows[0] as any);
+    expect(row.session_uuid).toBe("codex-1");
+    expect(row.ttft_ms).toBe(1500);
+    expect(row.duration_ms).toBe(1500);
+    expect(row.char_count).toBe(6);
+    expect(row.tps).toBeCloseTo(4);
+  });
 });

@@ -1,3 +1,20 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ── Streaming cursor ─────────────────────────────────────────────────────── */
+@keyframes phone-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+.phone-cursor {
+  display: inline-block;
+  animation: phone-blink 1s step-start infinite;
+  font-weight: 400;
+  line-height: 1;
+  margin-left: 1px;
+}
+
+.phone-cursor--streaming { color: #10b981; } /* emerald-500 — active/generating */
+.phone-cursor--thinking  { color: #6366f1; } /* indigo-400  — waiting/thinking  */

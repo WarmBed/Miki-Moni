@@ -6,6 +6,8 @@ import {
   SessionResolver,
   encodeCwd,
   findCodexRolloutPath,
+  findLatestCodexRolloutByCwd,
+  parsePendingCodexCwd,
   readCodexSessionPreview,
   readCodexTranscriptTail,
   readSessionPreview,
@@ -157,6 +159,40 @@ describe("Codex rollout transcript parsing", () => {
   it("finds Codex rollout files recursively by session id", async () => {
     const { dir, path: tpath, uuid } = await writeCodexRollout();
     await expect(findCodexRolloutPath(dir, uuid)).resolves.toBe(tpath);
+  });
+
+  it("parses pending Codex cwd while preserving the drive colon", () => {
+    expect(parsePendingCodexCwd("codex-pending:d:\\code\\cc-hub:5a552878-02e5-48df-b41a-3c90ee9c0e5a"))
+      .toBe("d:\\code\\cc-hub");
+    expect(parsePendingCodexCwd("codex-pending:d:\\code\\cc-hub"))
+      .toBe("d:\\code\\cc-hub");
+  });
+
+  it("finds latest Codex rollout by cwd for provisional pending sessions", async () => {
+    const { dir, path: firstPath } = await writeCodexRollout();
+    const nested = path.dirname(firstPath);
+    const latestUuid = "019e45aa-6571-72a2-abfd-232caa24b907";
+    const latestPath = path.join(nested, `rollout-2026-05-20T21-54-15-${latestUuid}.jsonl`);
+    const vscodePath = path.join(nested, "rollout-2026-05-20T22-00-00-019e45ff-6571-72a2-abfd-232caa24b907.jsonl");
+    const entries = [
+      { timestamp: "2026-05-20T13:54:16.125Z", type: "session_meta", payload: { id: latestUuid, cwd: "d:/code/cc-hub", source: "exec" } },
+      { timestamp: "2026-05-20T13:54:21.768Z", type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "say hi" }] } },
+      { timestamp: "2026-05-20T13:54:30.000Z", type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] } },
+    ];
+    await fs.writeFile(latestPath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+    await fs.writeFile(vscodePath, JSON.stringify({
+      timestamp: "2026-05-20T14:00:00.000Z",
+      type: "session_meta",
+      payload: { id: "019e45ff-6571-72a2-abfd-232caa24b907", cwd: "D:\\code\\cc-hub", source: "vscode" },
+    }) + "\n", "utf8");
+    await fs.utimes(firstPath, new Date("2026-05-19T14:53:08.000Z"), new Date("2026-05-19T14:53:08.000Z"));
+    await fs.utimes(latestPath, new Date("2026-05-20T13:54:30.000Z"), new Date("2026-05-20T13:54:30.000Z"));
+    await fs.utimes(vscodePath, new Date("2026-05-20T14:00:00.000Z"), new Date("2026-05-20T14:00:00.000Z"));
+
+    await expect(findLatestCodexRolloutByCwd(dir, "D:\\code\\cc-hub")).resolves.toBe(latestPath);
+    const resolver = new SessionResolver(path.join(dir, "no-claude"), dir);
+    await expect(resolver.findTranscript("codex-pending:d:\\code\\cc-hub:5a552878-02e5-48df-b41a-3c90ee9c0e5a"))
+      .resolves.toEqual({ source: "codex", path: latestPath });
   });
 
   it("builds preview from real user, latest assistant, and latest tool", async () => {

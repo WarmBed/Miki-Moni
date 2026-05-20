@@ -7,6 +7,7 @@ import { SessionResolver } from "../src/session-resolver.js";
 import { Notifier } from "../src/notifier.js";
 import { VscodeBridge } from "../src/vscode-bridge.js";
 import type { VersionChecker } from "../src/version-check.js";
+import type { PerfStore } from "../src/perf-store.js";
 import path from "node:path";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -19,6 +20,7 @@ const log = { info: noop, warn: noop, error: noop };
 function buildApp(overrides?: {
   versionChecker?: VersionChecker;
   transcriptRoots?: { claudeProjectsRoot?: string; codexSessionsRoot?: string };
+  perfStore?: PerfStore;
 }) {
   const store = new SessionStore(":memory:");
   const resolver = new SessionResolver(fixturesRoot);
@@ -50,6 +52,58 @@ describe("GET /admin/version-check", () => {
       fetchedAt: 1779180000000,
       error: null,
     });
+  });
+});
+
+describe("GET /metrics", () => {
+  it("annotates metric rows with agent and filters by agent", async () => {
+    const now = Date.now();
+    const perfStore = {
+      query: () => [
+        { session_uuid: "claude-1", ts: now - 100, ttft_ms: 100, tps: 20, char_count: 20, duration_ms: 1000 },
+        { session_uuid: "codex-1", ts: now - 50, ttft_ms: 300, tps: 10, char_count: 30, duration_ms: 3000 },
+      ],
+      fleetAvg: () => ({ avg_ttft: null, avg_tps: null }),
+    } as unknown as PerfStore;
+    const { app, store } = buildApp({ perfStore });
+    store.upsert({
+      cwd: "d:\\code\\claude",
+      session_uuid: "claude-1",
+      agent: "claude",
+      project_name: "claude-proj",
+      status: "active",
+      last_event_at: now,
+      last_message_preview: "",
+      tokens_in: 0,
+      tokens_out: 0,
+      vscode_pid: null,
+    });
+    store.upsert({
+      cwd: "d:\\code\\codex",
+      session_uuid: "codex-1",
+      agent: "codex",
+      project_name: "codex-proj",
+      status: "active",
+      last_event_at: now,
+      last_message_preview: "",
+      tokens_in: 0,
+      tokens_out: 0,
+      vscode_pid: null,
+    });
+
+    const all = await request(app).get("/metrics?window=1h");
+    expect(all.status).toBe(200);
+    expect(all.body.metrics.map((m: any) => m.agent)).toEqual(["claude", "codex"]);
+    expect(all.body.fleet_avg_ttft).toBe(200);
+    expect(all.body.fleet_avg_tps).toBe(15);
+
+    const codex = await request(app).get("/metrics?window=1h&agent=codex");
+    expect(codex.status).toBe(200);
+    expect(codex.body.agent).toBe("codex");
+    expect(codex.body.metrics).toHaveLength(1);
+    expect(codex.body.metrics[0].session_uuid).toBe("codex-1");
+    expect(codex.body.fleet_avg_ttft).toBe(300);
+    expect(codex.body.fleet_avg_tps).toBe(10);
   });
 });
 

@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { stripCodexBrowserContext } from "../shared/codex-display.js";
 
 export function encodeCwd(cwd: string): string {
   return cwd.replace(/[\/\\:]/g, "-");
@@ -45,6 +46,11 @@ export class SessionResolver {
     if (!this.codexSessionsRoot) return null;
     const codexPath = await findCodexRolloutPath(this.codexSessionsRoot, sessionUuid);
     if (codexPath) return { source: "codex", path: codexPath };
+    const pendingCwd = parsePendingCodexCwd(sessionUuid);
+    if (pendingCwd) {
+      const pendingCodexPath = await findLatestCodexRolloutByCwd(this.codexSessionsRoot, pendingCwd);
+      if (pendingCodexPath) return { source: "codex", path: pendingCodexPath };
+    }
     return null;
   }
 }
@@ -176,6 +182,81 @@ export async function findCodexRolloutPath(sessionsRoot: string, sessionUuid: st
       }
       if (!entry.isFile()) continue;
       if (!entry.name.endsWith(".jsonl") || !entry.name.includes(sessionUuid)) continue;
+      try {
+        const stat = await fs.stat(full);
+        if (!best || stat.mtimeMs > best.mtimeMs) best = { path: full, mtimeMs: stat.mtimeMs };
+      } catch { /* ignore raced deletion */ }
+    }
+  }
+  return best?.path ?? null;
+}
+
+function normalizeCodexCwd(cwd: string): string {
+  let n = cwd.replace(/\//g, "\\");
+  if (/^[A-Za-z]:/.test(n)) n = n[0]!.toLowerCase() + n.slice(1);
+  if (n.length > 3 && n.endsWith("\\")) n = n.replace(/\\+$/, "");
+  return n.toLowerCase();
+}
+
+export function parsePendingCodexCwd(sessionUuid: string): string | null {
+  const prefix = "codex-pending:";
+  if (!sessionUuid.startsWith(prefix)) return null;
+  let rest = sessionUuid.slice(prefix.length);
+  // Current generated IDs append a launch UUID after the cwd. Legacy pending
+  // IDs were only codex-pending:<cwd>, so strip only a real UUID-shaped suffix.
+  rest = rest.replace(/:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, "");
+  return rest ? normalizeCodexCwd(rest) : null;
+}
+
+async function readCodexSessionMeta(filePath: string): Promise<{ id?: string; cwd?: string; source?: string } | null> {
+  let fh: fs.FileHandle | null = null;
+  try {
+    fh = await fs.open(filePath, "r");
+    const buf = Buffer.alloc(64 * 1024);
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+    const text = buf.toString("utf8", 0, bytesRead);
+    for (const line of text.split(/\r?\n/)) {
+      if (!line) continue;
+      let entry: any;
+      try { entry = JSON.parse(line); } catch { continue; }
+      if (entry?.type !== "session_meta") continue;
+      const payload = entry.payload;
+      return {
+        id: typeof payload?.id === "string" ? payload.id : undefined,
+        cwd: typeof payload?.cwd === "string" ? payload.cwd : undefined,
+        source: typeof payload?.source === "string" ? payload.source : undefined,
+      };
+    }
+  } catch {
+    return null;
+  } finally {
+    await fh?.close().catch(() => undefined);
+  }
+  return null;
+}
+
+export async function findLatestCodexRolloutByCwd(sessionsRoot: string, cwd: string): Promise<string | null> {
+  const wanted = normalizeCodexCwd(cwd);
+  const stack = [sessionsRoot];
+  let best: { path: string; mtimeMs: number } | null = null;
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith(".jsonl") || !entry.name.startsWith("rollout-")) continue;
+      const meta = await readCodexSessionMeta(full);
+      if (!meta?.cwd || normalizeCodexCwd(meta.cwd) !== wanted) continue;
+      if (meta.source === "vscode") continue;
       try {
         const stat = await fs.stat(full);
         if (!best || stat.mtimeMs > best.mtimeMs) best = { path: full, mtimeMs: stat.mtimeMs };
@@ -577,6 +658,11 @@ function isCodexInjectedUserMessage(payload: any): boolean {
   return false;
 }
 
+function codexDisplayText(payload: any): string {
+  const text = codexContentText(payload.content);
+  return payload?.role === "user" ? stripCodexBrowserContext(text) : text;
+}
+
 function parseCodexToolInput(raw: unknown): unknown {
   if (typeof raw !== "string") return raw ?? {};
   try {
@@ -646,7 +732,7 @@ export async function readCodexSessionPreview(
     }
 
     if (p.type !== "message") continue;
-    const text = codexContentText(p.content).trim();
+    const text = codexDisplayText(p).trim();
     if (!text) continue;
     if (p.role === "assistant" && !last_assistant_text) {
       last_assistant_text = text;
@@ -693,7 +779,7 @@ export async function readCodexTranscriptTail(
 
     if (payload.type === "message") {
       if (payload.role !== "user" && payload.role !== "assistant" && payload.role !== "developer" && payload.role !== "system") continue;
-      const text = codexContentText(payload.content);
+      const text = codexDisplayText(payload);
       if (!text.trim()) continue;
       const role: TranscriptTurn["role"] =
         payload.role === "assistant"

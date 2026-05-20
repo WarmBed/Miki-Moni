@@ -393,13 +393,28 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     const now = Date.now();
     const fromTs = now - windowMs;
 
-    const metrics = perfStore.query(fromTs, now);
-    const fleet = perfStore.fleetAvg(fromTs, now);
+    const agentFilter = req.query.agent === "claude" || req.query.agent === "codex" ? req.query.agent : null;
+    const allMetrics = perfStore.query(fromTs, now).map((row) => {
+      const session = deps.store.get(row.session_uuid);
+      return {
+        ...row,
+        agent: session?.agent ?? null,
+        project_name: session?.project_name ?? null,
+        cwd: session?.cwd ?? null,
+      };
+    });
+    const metrics = agentFilter ? allMetrics.filter((row) => row.agent === agentFilter) : allMetrics;
+    const avg = (values: number[]): number | null => values.length > 0 ? values.reduce((sum, n) => sum + n, 0) / values.length : null;
+    const fleet = {
+      avg_ttft: avg(metrics.map((row) => row.ttft_ms).filter((n): n is number => n !== null)),
+      avg_tps: avg(metrics.map((row) => row.tps).filter((n): n is number => n !== null)),
+    };
 
     res.json({
       metrics,
       fleet_avg_ttft: fleet.avg_ttft,
       fleet_avg_tps: fleet.avg_tps,
+      agent: agentFilter,
       window_ms: windowMs,
     });
   });
@@ -928,6 +943,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
           images,
           signal: controller.signal,
         });
+        deps.perfTracker?.recordCompletedTurn(session.session_uuid, start, result.reply);
         deps.store.upsert({
           ...session,
           status: "active",
