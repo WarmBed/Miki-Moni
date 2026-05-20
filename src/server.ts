@@ -40,6 +40,9 @@ const MIKI_BIN_JS = path.join(MIKI_REPO_ROOT, "bin", "miki.js");
 type Log = { info: (obj: Record<string, unknown>, msg?: string) => void; warn: (obj: Record<string, unknown>, msg?: string) => void; error: (obj: Record<string, unknown>, msg?: string) => void };
 type TerminalChild = { on: (event: "error", cb: (err: Error) => void) => unknown; unref: () => void };
 type TerminalSpawner = (args: string[]) => TerminalChild;
+type CodexImage = { media_type: string; data: string };
+type CodexRunResult = { reply: string; durationMs: number };
+type CodexRunner = (opts: { sessionUuid: string; cwd: string; prompt: string; images?: CodexImage[]; signal?: AbortSignal; timeoutMs?: number }) => Promise<CodexRunResult>;
 
 export interface ServerDeps {
   store: SessionStore;
@@ -52,6 +55,89 @@ export interface ServerDeps {
   versionChecker?: VersionChecker;
   transcriptRoots?: { claudeProjectsRoot?: string; codexSessionsRoot?: string };
   terminalSpawner?: TerminalSpawner;
+  codexRunner?: CodexRunner;
+  perfTracker?: import("./perf-tracker.js").PerfTracker;
+  perfStore?: import("./perf-store.js").PerfStore;
+}
+
+function codexImageExt(mediaType: string): string {
+  switch (mediaType.toLowerCase()) {
+    case "image/jpeg": return ".jpg";
+    case "image/png": return ".png";
+    case "image/gif": return ".gif";
+    case "image/webp": return ".webp";
+    default: return ".img";
+  }
+}
+
+async function writeCodexImageFiles(images: CodexImage[] | undefined): Promise<{ dir: string; files: string[] } | null> {
+  if (!images?.length) return null;
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "miki-codex-images-"));
+  const files: string[] = [];
+  for (let i = 0; i < images.length; i++) {
+    const img = images[i]!;
+    const file = path.join(dir, `image-${i + 1}${codexImageExt(img.media_type)}`);
+    await fs.writeFile(file, Buffer.from(img.data, "base64"));
+    files.push(file);
+  }
+  return { dir, files };
+}
+
+async function runCodexExec(opts: { sessionUuid: string; cwd: string; prompt: string; images?: CodexImage[]; signal?: AbortSignal; timeoutMs?: number }): Promise<CodexRunResult> {
+  const start = Date.now();
+  const isPending = opts.sessionUuid.startsWith("codex-pending:");
+  const imageFiles = await writeCodexImageFiles(opts.images);
+  const imageArgs = imageFiles?.files.flatMap((file) => ["--image", file]) ?? [];
+  const codexArgs = isPending
+    ? ["exec", "-C", opts.cwd, ...imageArgs, "-"]
+    : ["exec", "resume", ...imageArgs, opts.sessionUuid, "-"];
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const child = spawn("cmd.exe", ["/d", "/s", "/c", "codex", ...codexArgs], {
+      cwd: opts.cwd,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      if (child.pid) void killProcessTree(child.pid);
+      finish(() => reject(new Error(`codex exec timed out after ${opts.timeoutMs ?? 600000}ms`)));
+    }, opts.timeoutMs ?? 600_000);
+    const finish = (cb: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (imageFiles) void fs.rm(imageFiles.dir, { recursive: true, force: true });
+      cb();
+    };
+    const onAbort = () => {
+      if (child.pid) void killProcessTree(child.pid);
+      finish(() => reject(new Error("codex exec interrupted")));
+    };
+    if (opts.signal?.aborted) {
+      onAbort();
+      return;
+    }
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+    child.on("error", (err) => {
+      opts.signal?.removeEventListener("abort", onAbort);
+      finish(() => reject(err));
+    });
+    child.on("close", (code) => {
+      opts.signal?.removeEventListener("abort", onAbort);
+      if (code === 0) {
+        finish(() => resolve({ reply: stdout.trim() || stderr.trim(), durationMs: Date.now() - start }));
+      } else {
+        finish(() => reject(new Error(`codex exec exited ${code}: ${(stderr || stdout).trim()}`)));
+      }
+    });
+    child.stdin.end(opts.prompt);
+  });
 }
 
 function parseHookEvent(body: unknown): HookEvent | null {
@@ -80,6 +166,8 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     stdio: "ignore",
     windowsHide: false,
   }));
+  const codexRunner = deps.codexRunner ?? runCodexExec;
+  const activeCodexExecs = new Map<string, AbortController>();
   // 20mb to accommodate pasted images (base64) on /send. Hook payloads are tiny.
   app.use(express.json({ limit: "20mb" }));
 
@@ -294,6 +382,28 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     res.json(list);
   });
 
+  app.get("/metrics", (req: Request, res: Response) => {
+    const perfStore = deps.perfStore;
+    if (!perfStore) { res.status(501).json({ error: "metrics_unavailable" }); return; }
+
+    const WINDOWS: Record<string, number> = { "1h": 1, "6h": 6, "24h": 24, "48h": 48 };
+    const windowKey = typeof req.query.window === "string" ? req.query.window : "24h";
+    const hours = WINDOWS[windowKey] ?? 24;
+    const windowMs = hours * 60 * 60 * 1000;
+    const now = Date.now();
+    const fromTs = now - windowMs;
+
+    const metrics = perfStore.query(fromTs, now);
+    const fleet = perfStore.fleetAvg(fromTs, now);
+
+    res.json({
+      metrics,
+      fleet_avg_ttft: fleet.avg_ttft,
+      fleet_avg_tps: fleet.avg_tps,
+      window_ms: windowMs,
+    });
+  });
+
   // Dashboard answer to an AskUserQuestion. Routes back to the wrapper's WS,
   // which then turns it into a regular user message into the query stream.
   app.post("/wrap/answer", (req: Request, res: Response) => {
@@ -323,6 +433,18 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   app.post("/wrap/interrupt", (req: Request, res: Response) => {
     const sessionUuid = typeof req.body?.session_uuid === "string" ? req.body.session_uuid : null;
     if (!sessionUuid) { res.status(400).json({ error: "missing session_uuid" }); return; }
+    const session = deps.store.get(sessionUuid);
+    if (session?.agent === "codex") {
+      const active = activeCodexExecs.get(sessionUuid);
+      if (!active) {
+        res.status(404).json({ error: "codex_exec_not_running" });
+        return;
+      }
+      active.abort();
+      deps.log?.info({ route: "/wrap/interrupt", session_uuid: sessionUuid, agent: "codex" }, "codex exec interrupt requested");
+      res.status(200).json({ ok: true, mode: "codex-exec" });
+      return;
+    }
     const wrapConns: Map<string, import("ws").WebSocket> | undefined = (deps as any).__wrapConnections;
     const ws = wrapConns?.get(sessionUuid);
     if (!ws || ws.readyState !== ws.OPEN) {
@@ -619,6 +741,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       ...commandArgs,
     ];
 
+    let spawnedSessionUuid = sessionUuid;
     try {
       const child = spawnTerminal(wtArgs);
       child.on("error", (err) => {
@@ -632,7 +755,8 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       if (managedWrap) wrapProc.recordSpawn({ sessionUuid, cwd });
       if (!managedWrap && agent === "codex" && !sessionUuid) {
         const cwdNorm = normalizeCwd(cwd);
-        const pendingUuid = pendingCodexSessionUuid(cwdNorm);
+        const pendingUuid = pendingCodexSessionUuid(cwdNorm, randomUUID());
+        spawnedSessionUuid = pendingUuid;
         deps.store.upsert({
           session_uuid: pendingUuid,
           agent: "codex",
@@ -647,7 +771,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
         });
       }
       deps.log?.info({ route: "/wrap/start", session_uuid: sessionUuid, cwd, agent, commandArgs, managedWrap }, "wt new-tab spawned");
-      res.status(200).json({ ok: true, session_uuid: sessionUuid, cwd, agent, managed_wrap: managedWrap, mode: sessionUuid ? "resume" : "new" });
+      res.status(200).json({ ok: true, session_uuid: spawnedSessionUuid, cwd, agent, managed_wrap: managedWrap, mode: sessionUuid ? "resume" : "new" });
     } catch (err) {
       const msg = String(err);
       deps.log?.error({ route: "/wrap/start", error: msg }, "wt.exe spawn threw");
@@ -779,10 +903,59 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     const autoEnter = req.body?.auto_enter !== false;
     const maxBudgetUsd = typeof req.body?.max_budget_usd === "number" ? req.body.max_budget_usd : 5;
     const { session, key, via } = resolveSession(req.body);
-    if (!via || !prompt) { deps.log?.warn({ route: "/send", hasKey: !!via, hasPrompt: !!prompt, submit: submitFlag }, "missing session_uuid/cwd or prompt"); res.status(400).json({ error: "missing session_uuid or cwd, or missing prompt" }); return; }
+    const hasPrompt = typeof prompt === "string" && prompt.length > 0;
+    const hasImages = (images?.length ?? 0) > 0;
+    if (!via || (!hasPrompt && !hasImages)) { deps.log?.warn({ route: "/send", hasKey: !!via, hasPrompt, hasImages, submit: submitFlag }, "missing session_uuid/cwd or prompt/images"); res.status(400).json({ error: "missing session_uuid or cwd, or missing prompt/images" }); return; }
+    const promptText = prompt ?? "";
     if (!session) { deps.log?.warn({ route: "/send", via, key, submit: submitFlag }, "session not found"); res.status(404).json({ error: "session not found", lookup: { via, key } }); return; }
     if (session.agent === "codex") {
-      res.status(501).json({ ok: false, error: "codex_send_unsupported", message: "Codex send is not supported yet", session_uuid: session.session_uuid });
+      if (!session.session_uuid) {
+        res.status(400).json({ ok: false, error: "missing_session_uuid", message: "Codex send requires a session_uuid" });
+        return;
+      }
+      if (activeCodexExecs.has(session.session_uuid)) {
+        res.status(409).json({ ok: false, error: "codex_exec_already_running", mode: "codex-exec" });
+        return;
+      }
+      const controller = new AbortController();
+      activeCodexExecs.set(session.session_uuid, controller);
+      const start = Date.now();
+      try {
+        const result = await codexRunner({
+          sessionUuid: session.session_uuid,
+          cwd: session.cwd,
+          prompt: hasPrompt ? promptText : "Please respond to the attached image(s).",
+          images,
+          signal: controller.signal,
+        });
+        deps.store.upsert({
+          ...session,
+          status: "active",
+          last_event_at: Date.now(),
+          last_message_preview: (result.reply || (hasPrompt ? promptText : `[image x ${images?.length ?? 0}]`)).slice(0, 240),
+        });
+        deps.log?.info({ route: "/send", mode: "codex-exec", session_uuid: session.session_uuid, cwd: session.cwd, durationMs: result.durationMs, promptLength: prompt?.length ?? 0, imageCount: images?.length ?? 0 }, "codex exec OK");
+        res.status(200).json({
+          ok: true,
+          mode: "codex-exec",
+          session_uuid: session.session_uuid,
+          cwd: session.cwd,
+          project: session.project_name,
+          reply: result.reply,
+          duration_ms: result.durationMs,
+        });
+      } catch (err) {
+        const durationMs = Date.now() - start;
+        if (controller.signal.aborted) {
+          deps.log?.warn({ route: "/send", mode: "codex-exec", session_uuid: session.session_uuid, durationMs }, "codex exec interrupted");
+          res.status(499).json({ ok: false, interrupted: true, error: "codex_exec_interrupted", mode: "codex-exec", duration_ms: durationMs });
+          return;
+        }
+        deps.log?.error({ route: "/send", mode: "codex-exec", session_uuid: session.session_uuid, durationMs, error: String(err) }, "codex exec failed");
+        res.status(500).json({ ok: false, error: String(err), mode: "codex-exec", duration_ms: durationMs });
+      } finally {
+        if (activeCodexExecs.get(session.session_uuid) === controller) activeCodexExecs.delete(session.session_uuid);
+      }
       return;
     }
 
@@ -796,8 +969,8 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       const wrapWs = wrapConns?.get(session.session_uuid);
       if (wrapWs && wrapWs.readyState === wrapWs.OPEN) {
         try {
-          wrapWs.send(JSON.stringify({ type: "push", prompt, images }));
-          deps.log?.info({ route: "/send", mode: "wrap-push", session_uuid: session.session_uuid, project: session.project_name, promptLength: prompt.length, imageCount: images?.length ?? 0 }, "pushed via wrap WS");
+          wrapWs.send(JSON.stringify({ type: "push", prompt: promptText, images }));
+          deps.log?.info({ route: "/send", mode: "wrap-push", session_uuid: session.session_uuid, project: session.project_name, promptLength: promptText.length, imageCount: images?.length ?? 0 }, "pushed via wrap WS");
           res.status(200).json({
             ok: true,
             mode: "wrap-push",
@@ -820,12 +993,12 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       // path (prefillAndSubmitLegacy) does NOT reliably deliver prompts (verified
       // end-to-end: see 2026-05-16 spec). Opt in to legacy explicitly with ?legacy=1
       // for debugging the Win32 focus mechanism in isolation.
-      const url = buildSendUrl(session.session_uuid, prompt);
+      const url = buildSendUrl(session.session_uuid, promptText);
       const legacyMode = req.query.legacy === "1";
 
       if (legacyMode) {
         try {
-          const r = await deps.bridge.prefillAndSubmitLegacy(session.session_uuid, prompt, { cwd: session.cwd });
+          const r = await deps.bridge.prefillAndSubmitLegacy(session.session_uuid, promptText, { cwd: session.cwd });
           deps.log?.info({ route: "/send", mode: "legacy", session_uuid: session.session_uuid, diag: r.diag }, "legacy path used");
           res.status(200).json({ ok: true, mode: "legacy", url, session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name, diag: r.diag });
         } catch (err) {
@@ -838,7 +1011,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       if (!autoEnter) {
         // prefill-only (no Enter): still use legacy send (just URI open, no keystroke)
         try {
-          await deps.bridge.send(session.session_uuid, prompt);
+          await deps.bridge.send(session.session_uuid, promptText);
           deps.log?.info({ route: "/send", mode: "prefill", session_uuid: session.session_uuid }, "URI prefilled (not submitted)");
           res.status(200).json({ ok: true, mode: "prefill", url, session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name });
         } catch (err) {
@@ -851,7 +1024,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       // Default: helper path (auto_enter=true, no ?legacy=1)
       const result = await deps.bridge.submitViaHelper({
         sessionUuid: session.session_uuid!,
-        prompt,
+        prompt: promptText,
         cwd: session.cwd,
         registry,
         timeoutMs: 10_000,
@@ -877,13 +1050,13 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       return;
     }
 
-    deps.log?.info({ route: "/send", mode: "submit", session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name, promptLength: prompt.length, maxBudgetUsd }, "spawning headless claude...");
+    deps.log?.info({ route: "/send", mode: "submit", session_uuid: session.session_uuid, cwd: session.cwd, project: session.project_name, promptLength: promptText.length, maxBudgetUsd }, "spawning headless claude...");
     const start = Date.now();
     try {
       const result = await deps.bridge.submit({
         sessionUuid: session.session_uuid,
         cwd: session.cwd,
-        prompt,
+        prompt: promptText,
         maxBudgetUsd,
       });
       deps.log?.info({ route: "/send", mode: "submit", session_uuid: session.session_uuid, project: session.project_name, replyLength: result.reply.length, durationMs: result.durationMs }, "headless claude OK");
@@ -1116,6 +1289,12 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
         // streaming buffer keyed by session_uuid. Cheap, no caching needed
         // (late-joining browsers pick up the canonical text via /sessions/previews
         // poll within 2s).
+        const pt = deps.perfTracker;
+        if (pt) {
+          if (m.type === "assistant_delta_start") pt.onDeltaStart(m.session_uuid);
+          else if (m.type === "assistant_delta" && typeof m.text === "string") pt.onDelta(m.session_uuid, m.text);
+          else if (m.type === "assistant_delta_end") pt.onDeltaEnd(m.session_uuid);
+        }
         const out = JSON.stringify(m);
         for (const c of wss.clients) {
           if (c.readyState === c.OPEN) c.send(out, () => { /* noop */ });

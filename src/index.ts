@@ -16,6 +16,8 @@ import { RelayClient } from "./relay-client.js";
 import { HUB_HOME, PORT_FILE, DB_FILE, CONFIG_FILE, LOG_FILE, migrateLegacyHubHome } from "./data-dir.js";
 import { killOrphans } from "./wrap-process.js";
 import { VersionChecker } from "./version-check.js";
+import { PerfStore } from "./perf-store.js";
+import { PerfTracker } from "./perf-tracker.js";
 
 const PROJECTS_ROOT = path.join(os.homedir(), ".claude", "projects");
 const DEFAULT_PORT = 8765;
@@ -138,7 +140,9 @@ async function main(): Promise<void> {
   }
   const resolver = new SessionResolver(PROJECTS_ROOT);
   const notifier = new Notifier();
-  const handler = new HookHandler(store, resolver, notifier);
+  const perfStore = new PerfStore(DB_FILE);
+  const perfTracker = new PerfTracker(perfStore);
+  const handler = new HookHandler(store, resolver, notifier, perfTracker);
   const bridge = new VscodeBridge();
   // Resolve dist/web relative to this source file. After a global npm install
   // the daemon's process.cwd() is the user's calling dir, not the package
@@ -158,7 +162,7 @@ async function main(): Promise<void> {
   // is already resolved.
   void versionChecker.refresh();
 
-  const { app, server } = createApp({ store, handler, bridge, notifier, webDir, log, versionChecker });
+  const { app, server } = createApp({ store, handler, bridge, notifier, webDir, log, versionChecker, perfStore, perfTracker });
 
   // Serve web UI if built
   const express = (await import("express")).default;
@@ -208,7 +212,7 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     log.info("shutting down");
     if (relay) { try { await relay.stop(); } catch { /* ignore */ } }
-    server.close(() => { store.close(); process.exit(0); });
+    server.close(() => { store.close(); perfStore.close(); process.exit(0); });
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
