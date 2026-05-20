@@ -35,6 +35,12 @@ const STATUS_COLOR: Record<Session["status"], string> = {
   stale: "bg-red-500",
 };
 
+interface MetricPoint {
+  ts: number;
+  ttft_ms: number | null;
+  tps: number | null;
+}
+
 // Status labels are computed via t() per render so locale switches take effect
 // without remounting. Keep STATUS_COLOR (Tailwind class names) static.
 function statusLabel(s: Session["status"]): string {
@@ -312,8 +318,12 @@ function SessionCard({
       <div class="text-[10px] text-slate-600 font-mono break-all">
         session_uuid: {s.session_uuid ?? <span class="text-amber-400">{t("phone.session.noUuid")}</span>}
       </div>
-      {s.last_message_preview && (
-        <div class="text-sm text-slate-300 line-clamp-2">{s.last_message_preview}</div>
+      {(s.last_message_preview || s.status === "active" || s.status === "waiting") && (
+        <div class="text-sm text-slate-300 line-clamp-2">
+          {s.last_message_preview}
+          {s.status === "active"  && <span class="phone-cursor phone-cursor--streaming" aria-label="streaming">▌</span>}
+          {s.status === "waiting" && <span class="phone-cursor phone-cursor--thinking"  aria-label="thinking">▌</span>}
+        </div>
       )}
       <div class="flex gap-2 mt-1">
         <button
@@ -339,6 +349,121 @@ function SessionCard({
           {t("phone.session.send")}
         </button>
       </div>
+    </div>
+  );
+}
+
+// ── Monit Components ─────────────────────────────────────────────────────
+
+function MetricChart({ data, field, color, label, unit, fleetAvg }: {
+  data: MetricPoint[];
+  field: "ttft_ms" | "tps";
+  color: string;
+  label: string;
+  unit: string;
+  fleetAvg: number | null;
+}) {
+  if (data.length === 0) {
+    return (
+      <div class="flex items-center justify-center h-14 text-xs" style={{ color: "#475569" }}>
+        {label}: no data
+      </div>
+    );
+  }
+  const values = data.map(p => p[field] ?? 0);
+  const maxV = Math.max(...values, 1);
+  const W = 280, H = 56, PAD = 4;
+  const pts = data.map((p, i) => {
+    const x = PAD + (i / Math.max(data.length - 1, 1)) * (W - 2 * PAD);
+    const y = H - PAD - ((p[field] ?? 0) / maxV) * (H - 2 * PAD);
+    return [x, y] as [number, number];
+  });
+  const seg = pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" L");
+  const linePath = "M" + seg;
+  const areaPath = linePath +
+    ` L${(PAD + W - 2 * PAD).toFixed(1)},${(H - PAD).toFixed(1)}` +
+    ` L${PAD},${(H - PAD).toFixed(1)} Z`;
+  const fleetY = fleetAvg != null ? H - PAD - (fleetAvg / maxV) * (H - 2 * PAD) : null;
+  return (
+    <div>
+      <div class="text-xs mb-1" style={{ color: "#64748b" }}>{label} ({unit})</div>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ display: "block" }}>
+        <path d={areaPath} fill={color} fillOpacity={0.15} />
+        <path d={linePath} fill="none" stroke={color} strokeWidth={1.5} />
+        {fleetY != null && (
+          <line x1={PAD} y1={fleetY} x2={W - PAD} y2={fleetY}
+            stroke="#818cf8" strokeWidth={1} strokeDasharray="3 2" />
+        )}
+      </svg>
+    </div>
+  );
+}
+
+type MonitWindow = "1h" | "6h" | "24h" | "48h";
+const MONIT_WINS: MonitWindow[] = ["1h", "6h", "24h", "48h"];
+
+function MonitPanel({ proxyFetch }: { proxyFetch: (path: string) => Promise<unknown> }) {
+  const [win, setWin] = useState<MonitWindow>("24h");
+  const [data, setData] = useState<MetricPoint[]>([]);
+  const [fleetTtft, setFleetTtft] = useState<number | null>(null);
+  const [fleetTps, setFleetTps] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load(w: MonitWindow) {
+    setLoading(true); setError(null);
+    try {
+      const res = await proxyFetch(`/metrics?window=${w}`) as {
+        metrics?: MetricPoint[];
+        fleet_avg_ttft?: number | null;
+        fleet_avg_tps?: number | null;
+      };
+      setData(res.metrics ?? []);
+      setFleetTtft(res.fleet_avg_ttft ?? null);
+      setFleetTps(res.fleet_avg_tps ?? null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "fetch failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { void load(win); }, [win]);
+
+  return (
+    <div class="border border-slate-800 rounded-lg bg-slate-900 p-3 mb-2">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="text-sm font-semibold" style={{ color: "#a5b4fc" }}>⚡ Monit</span>
+        <div class="ml-auto flex gap-1 items-center">
+          {MONIT_WINS.map(w => (
+            <button
+              key={w}
+              class="px-2 py-0.5 rounded text-xs transition-colors"
+              style={{ background: w === win ? "#3730a3" : "#1e293b", color: w === win ? "#e0e7ff" : "#64748b" }}
+              onClick={() => setWin(w)}
+            >{w}</button>
+          ))}
+          <button
+            class="ml-1 px-2 py-0.5 rounded text-xs"
+            style={{ background: "#1e293b", color: "#64748b" }}
+            onClick={() => void load(win)}
+          >↺</button>
+        </div>
+      </div>
+      {loading && <div class="text-xs text-center py-3" style={{ color: "#64748b" }}>Loading…</div>}
+      {error && <div class="text-xs py-2" style={{ color: "#f87171" }}>{error}</div>}
+      {!loading && !error && (
+        <div class="flex flex-col gap-3">
+          <MetricChart data={data} field="ttft_ms" color="#4ade80" label="TTFT" unit="ms" fleetAvg={fleetTtft} />
+          <MetricChart data={data} field="tps" color="#60a5fa" label="TPS" unit="chars/s" fleetAvg={fleetTps} />
+          {(fleetTtft != null || fleetTps != null) && (
+            <div class="text-[10px] flex gap-4" style={{ color: "#475569" }}>
+              {fleetTtft != null && <span>fleet TTFT: <span style={{ color: "#94a3b8" }}>{Math.round(fleetTtft)}ms</span></span>}
+              {fleetTps != null && <span>fleet TPS: <span style={{ color: "#94a3b8" }}>{fleetTps.toFixed(1)}</span></span>}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -370,11 +495,13 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
   const [connStatus, setConnStatus] = useState<ConnStatus>("connecting");
   const [log, setLog] = useState<LogEntry[]>([]);
   const [unpairing, setUnpairing] = useState(false);
+  const [monitOpen, setMonitOpen] = useState(false);
   const [myPeerId, setMyPeerId] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const backoffRef = useRef(1000);
   const mountedRef = useRef(true);
   const unpairingRef = useRef(false);
+  const pendingRequestsRef = useRef<Map<string, (data: unknown) => void>>(new Map());
 
   const sharedSecret = fromBase64(state.shared_secret_b64);
 
@@ -524,6 +651,16 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
           const others = prev.filter((x) => x.cwd !== s.cwd);
           return [s, ...others].sort((a, b) => b.last_event_at - a.last_event_at);
         });
+      } else if (plain.kind === "http_proxy_response") {
+        const reqId = (plain as { request_id?: string }).request_id;
+        if (reqId) {
+          const resolver = pendingRequestsRef.current.get(reqId);
+          if (resolver) {
+            pendingRequestsRef.current.delete(reqId);
+            try { resolver(JSON.parse((plain as { body?: string }).body ?? "{}")); }
+            catch { resolver({}); }
+          }
+        }
       } else {
         addLog("warn", t("phone.log.unknownKind"), { kind: plain.kind });
       }
@@ -563,6 +700,26 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
     sendEncrypted({ kind: "cmd_send", cwd, prompt }, "cmd_send");
   };
 
+  function proxyFetch(path: string): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const request_id = Math.random().toString(36).slice(2);
+      const timer = setTimeout(() => {
+        pendingRequestsRef.current.delete(request_id);
+        reject(new Error("proxy timeout"));
+      }, 10_000);
+      pendingRequestsRef.current.set(request_id, (data) => {
+        clearTimeout(timer);
+        resolve(data);
+      });
+      const ok = sendEncrypted({ kind: "http_proxy", path, method: "GET", request_id }, "http_proxy");
+      if (!ok) {
+        clearTimeout(timer);
+        pendingRequestsRef.current.delete(request_id);
+        reject(new Error("ws not open"));
+      }
+    });
+  }
+
   return (
     <div class="min-h-screen bg-slate-950 text-slate-100">
       <header class="sticky top-0 bg-slate-900 border-b border-slate-800 px-4 py-3 flex items-center gap-3">
@@ -573,7 +730,13 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
         </div>
         <PhoneLocaleSelector />
         <button
-          class="bg-slate-700 hover:bg-slate-600 disabled:opacity-60 rounded px-3 py-1 text-sm ml-3 transition-colors"
+          class="rounded px-2 py-1 text-xs transition-colors"
+          style={{ background: monitOpen ? "#3730a3" : "#334155", color: "#a5b4fc" }}
+          onClick={() => setMonitOpen(m => !m)}
+          title="Performance Monit"
+        >⚡</button>
+        <button
+          class="bg-slate-700 hover:bg-slate-600 disabled:opacity-60 rounded px-3 py-1 text-sm ml-1 transition-colors"
           onClick={requestUnpair}
           disabled={unpairing}
         >
@@ -582,6 +745,7 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
       </header>
 
       <main class="max-w-2xl mx-auto p-4 flex flex-col gap-4">
+        {monitOpen && <MonitPanel proxyFetch={proxyFetch} />}
         {sessions.length === 0 && connStatus === "connected" && (
           <div class="text-slate-500 text-center py-10 text-sm space-y-2">
             <p class="text-base">{t("phone.empty.title")}</p>

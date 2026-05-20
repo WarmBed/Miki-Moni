@@ -120,6 +120,16 @@ miki start
   <img src="docs/images/mode-picker.jpg" width="240" alt="Mode 切换 popover">
 </p>
 
+### 性能监控
+
+- **TTFT 折线图** — 每个 `miki claude` wrap session 的 Time-to-First-Token（ms），追踪 Claude 开始回复的速度
+- **TPS 折线图** — streaming 期间每秒字符数，一眼看出模型或网络劣化
+- **Fleet 平均线** — 虚线显示 48 小时滚动平均，让单次数据有参照基准
+- **时间窗选择** — 1h / 6h / 24h / 48h 滚动视窗，无需重新加载即可切换
+- **手机同等** — 手机端点击 ⚡ Monit 按钮，通过加密 relay proxy 查看同样的图表
+
+> **注意：** TTFT / TPS 数据只在 `miki claude`（wrap 模式）起的 session 中收集。纯 hook 模式的 session 会出现在 dashboard 上，但不产生性能指标。
+
 ### 手机
 
 - **手机 dashboard** — 一样的网格，单列、移动设备友好的点击区
@@ -232,7 +242,7 @@ pnpm typecheck
 
 Source tree：`src/` daemon · `web/` dashboard SPA · `web-phone/` 手机 bootstrap · `worker/` Cloudflare Worker · `extension/` VSCode helper · `hooks/` PS hook scripts · `bin/miki.js` CLI 入口。
 
-Branch：`main` 出 release（当前 **v0.3.3**），`dev` 跑开发、每个改动 bump `package.json`。
+Branch：`main` 出 release（当前 **v0.3.18**），`dev` 跑开发、每个改动 bump `package.json`。
 
 ## 相关项目
 

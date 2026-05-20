@@ -120,6 +120,16 @@ Full protocol details in [`docs/protocols/relay-protocol.md`](docs/protocols/rel
   <img src="docs/images/mode-picker.jpg" width="240" alt="Mode picker popover">
 </p>
 
+### Performance monitoring
+
+- **TTFT chart** — Time-to-First-Token (ms) plotted per turn for every `miki claude` wrapped session; track how fast Claude starts replying.
+- **TPS chart** — tokens (chars) per second during streaming; spot model or network degradation at a glance.
+- **Fleet average** — dashed reference line shows the rolling 48 h average across all sessions so individual turns have context.
+- **Window selector** — switch between 1 h / 6 h / 24 h / 48 h rolling views without reloading.
+- **Phone parity** — the ⚡ Monit button in the phone app header shows the same charts via the encrypted relay proxy.
+
+> **Note:** TTFT/TPS data is only collected for sessions started with `miki claude` (wrap mode). Hook-only sessions appear in the grid but do not generate performance metrics.
+
 ### Mobile
 
 - **Phone dashboard** — same grid, single-column layout, scoped tap targets.
@@ -232,7 +242,7 @@ pnpm typecheck
 
 Source tree: `src/` daemon · `web/` dashboard SPA · `web-phone/` phone bootstrap · `worker/` Cloudflare Worker · `extension/` VSCode helper · `hooks/` PS hook scripts · `bin/miki.js` CLI entry.
 
-Branch model: `main` ships releases (current **v0.3.3**), `dev` carries active work with a `package.json` version bump on every change.
+Branch model: `main` ships releases (current **v0.3.18**), `dev` carries active work with a `package.json` version bump on every change.
 
 ## Related
 
