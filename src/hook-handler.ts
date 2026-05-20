@@ -3,6 +3,7 @@ import type { HookEvent, Session, SessionStatus } from "./types.js";
 import type { SessionStore } from "./session-store.js";
 import type { SessionResolver } from "./session-resolver.js";
 import type { Notifier } from "./notifier.js";
+import type { PerfTracker } from "./perf-tracker.js";
 
 const STATUS_BY_EVENT: Record<HookEvent["event_type"], SessionStatus> = {
   session_start: "active",
@@ -37,6 +38,7 @@ export class HookHandler {
     private store: SessionStore,
     private resolver: SessionResolver,
     private notifier?: Notifier,
+    private perfTracker?: PerfTracker,
   ) {}
 
   async handle(ev: HookEvent): Promise<void> {
@@ -82,6 +84,10 @@ export class HookHandler {
       vscode_pid: existing?.vscode_pid ?? null,
     };
     this.store.upsert(next);
+
+    if (ev.event_type === "user_prompt" && this.perfTracker) {
+      this.perfTracker.onUserPrompt(sessionUuid, ev.timestamp);
+    }
 
     const wasWaiting = existing?.status === "waiting";
     const isWaiting = next.status === "waiting";

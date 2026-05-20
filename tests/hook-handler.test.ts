@@ -209,3 +209,22 @@ describe("HookHandler + Notifier", () => {
     expect(sends).toHaveLength(1);
   });
 });
+
+describe("HookHandler + PerfTracker", () => {
+  it("calls perfTracker.onUserPrompt when user_prompt event arrives", async () => {
+    const store = new SessionStore(":memory:");
+    const resolver = new StubResolver();
+    const onUserPrompt = vi.fn();
+    const mockPerfTracker = { onUserPrompt } as any;
+    const handler = new HookHandler(store, resolver as any, undefined, mockPerfTracker);
+
+    await handler.handle({
+      event_type: "user_prompt",
+      cwd: "d:\\code\\test",
+      session_uuid: "uuid-perf-1",
+      timestamp: 99000,
+    });
+
+    expect(onUserPrompt).toHaveBeenCalledWith("uuid-perf-1", 99000);
+  });
+});
