@@ -3,6 +3,7 @@ import type { ComponentChildren } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { marked } from "marked";
 import { t, useLocale, setLocale as setLocaleGlobal, LOCALES, LOCALE_LABELS, type Locale } from "@shared/i18n";
+import { stripCodexBrowserContext } from "@shared/codex-display";
 import { apiFetch, apiWebSocket } from "./api";
 import { assembleRenderTurns } from "./lib/transcript-assembly";
 import { loadHiddenSet, addHidden, removeHidden, HIDDEN_KEY } from "./lib/hidden-sessions.js";
@@ -111,6 +112,14 @@ function displaySession(s: Session, preview?: SessionPreview): Session {
 
 function agentLabel(agent: AgentId): string {
   return agent === "codex" ? "codex" : "claude";
+}
+
+function userFacingWrapError(error: unknown, status: number): string {
+  const key = typeof error === "string" ? error : "";
+  if (key === "codex_wrap_unsupported") return t("wrapNotice.codexUnsupported");
+  if (key === "session already wrapped") return t("wrapNotice.alreadyWrapped");
+  if (key === "session not found") return t("wrapNotice.sessionNotFound");
+  return key || `HTTP ${status}`;
 }
 
 const OPENAI_LOGO_PATH = "M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a5.985 5.985 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.051 6.051 0 0 0 6.515 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.997-2.9 6.056 6.056 0 0 0-.747-7.073zM13.26 22.43a4.476 4.476 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.795.795 0 0 0 .392-.681v-6.737l2.02 1.168a.071.071 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494zM3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.771.771 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646zM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.766.766 0 0 0 .388.676l5.815 3.355-2.02 1.168a.076.076 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855-5.833-3.387L15.119 7.2a.076.076 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667zm2.01-3.023-.141-.085-4.774-2.782a.776.776 0 0 0-.785 0L9.409 9.23V6.897a.066.066 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.795.795 0 0 0-.393.681zm1.097-2.365 2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5z";
@@ -673,9 +682,13 @@ function MetricChart({
 }
 
 type MetricWindow = "1h" | "6h" | "24h" | "48h";
+type MetricAgentFilter = "all" | AgentId;
 
 interface MetricsApiRow {
   ts: number; session_uuid: string;
+  agent: AgentId | null;
+  project_name?: string | null;
+  cwd?: string | null;
   ttft_ms: number | null; tps: number | null;
   char_count: number; duration_ms: number;
 }
@@ -684,21 +697,30 @@ interface MetricsApiResponse {
   metrics: MetricsApiRow[];
   fleet_avg_ttft: number | null;
   fleet_avg_tps: number | null;
+  agent: AgentId | null;
   window_ms: number;
 }
 
 function MonitPanel({ onClose }: { onClose: () => void }) {
   const [window_, setWindow] = useState<MetricWindow>("24h");
+  const [agentFilter, setAgentFilter] = useState<MetricAgentFilter>("all");
   const [data, setData] = useState<MetricsApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    setLoading(true);
-    fetch(`/metrics?window=${window_}`)
-      .then(r => r.json())
-      .then((d: MetricsApiResponse) => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, [window_]);
+    let cancelled = false;
+    const doFetch = (isInitial: boolean) => {
+      if (isInitial) setLoading(true);
+      const agentParam = agentFilter === "all" ? "" : `&agent=${agentFilter}`;
+      fetch(`/metrics?window=${window_}${agentParam}`)
+        .then(r => r.json())
+        .then((d: MetricsApiResponse) => { if (!cancelled) { setData(d); setLoading(false); } })
+        .catch(() => { if (!cancelled) setLoading(false); });
+    };
+    doFetch(true);
+    const timer = setInterval(() => doFetch(false), 30_000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [window_, agentFilter]);
 
   const ttftPoints: MetricPoint[] = (data?.metrics ?? [])
     .filter(m => m.ttft_ms !== null)
@@ -709,10 +731,15 @@ function MonitPanel({ onClose }: { onClose: () => void }) {
     .map(m => ({ ts: m.ts, value: m.tps! }));
 
   const WINDOWS: MetricWindow[] = ["1h", "6h", "24h", "48h"];
+  const AGENTS: Array<{ key: MetricAgentFilter; label: string }> = [
+    { key: "all", label: "全部" },
+    { key: "claude", label: "Claude" },
+    { key: "codex", label: "Codex" },
+  ];
 
   return (
     <div class="fixed inset-0 z-50 flex items-start justify-end pointer-events-none">
-      <div class="pointer-events-auto mt-14 mr-2 w-[400px] rounded-lg flex flex-col overflow-hidden"
+      <div class="pointer-events-auto mt-14 mr-2 w-[400px] max-w-[calc(100vw-16px)] rounded-lg flex flex-col overflow-hidden"
            style={{ background: "var(--bg-elev)", border: "1px solid var(--border-hi)", boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }}>
         <div class="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
           <span class="text-sm font-medium" style={{ color: "var(--fg)" }}>效能監控</span>
@@ -732,6 +759,23 @@ function MonitPanel({ onClose }: { onClose: () => void }) {
             <button onClick={onClose} style={{ color: "var(--fg-muted)", background: "none", border: "none", cursor: "pointer", display: "flex" }}>
               <IconX size={16}/>
             </button>
+          </div>
+        </div>
+        <div class="px-4 pt-3 flex items-center justify-between gap-2" style={{ borderBottom: "1px solid var(--border)" }}>
+          <div class="flex gap-1 pb-3">
+            {AGENTS.map(a => (
+              <button key={a.key}
+                class="px-2 py-0.5 rounded text-xs transition-colors"
+                style={agentFilter === a.key
+                  ? { background: "var(--sl4)", color: "var(--fg)", fontWeight: 600 }
+                  : { color: "var(--fg-muted)" }}
+                onClick={() => setAgentFilter(a.key)}>
+                {a.key === "all" ? "All" : a.label}
+              </button>
+            ))}
+          </div>
+          <div class="pb-3 text-[10px] tabular-nums" style={{ color: "var(--fg-subtle)" }}>
+            {(data?.metrics.length ?? 0)} turns
           </div>
         </div>
         <div class="p-4 flex flex-col gap-6">
@@ -926,8 +970,8 @@ function AskQuestionModal({ sessionUuid, ask, onSubmitted, onDismiss }: {
 
   return (
     <>
-      <div class="ask-modal-backdrop" onClick={(e) => { e.stopPropagation(); onDismiss(); }} />
-      <div class="ask-modal" onClick={(e) => e.stopPropagation()}>
+      <div class="dialog-backdrop ask-modal-backdrop" onClick={(e) => { e.stopPropagation(); onDismiss(); }} />
+      <div class="dialog-panel ask-modal" onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
           <strong style={{ fontSize: 14 }}>{t("ask.claudeAsking")}</strong>
           <span style={{ color: "var(--fg-subtle)", fontSize: 11, marginLeft: "auto" }}>{ask.questions.length > 1 ? `${currentQ + 1} / ${ask.questions.length}` : ""}</span>
@@ -1875,7 +1919,6 @@ function HeaderStats({ sessions, filter, onFilter, agentFilter, onAgentFilter, h
   return (
     <div style={{ display: "inline-flex", alignItems: "center", gap: 2, marginLeft: 4 }}>
       <HeaderStatChip n={liveCount}         label={t("header.live")}  icon={<IconActivity />} dot="dot-active" active={filter === "live"}  onClick={() => toggle("live")} />
-      <HeaderStatChip n={counts.idle ?? 0}  label={t("header.idle")}  icon={<IconPause />}    dot="dot-idle"   active={filter === "idle"}  onClick={() => toggle("idle")} />
       <HeaderStatChip n={counts.stale ?? 0} label={t("header.stale")} icon={<IconPlugOff />}  dot="dot-stale"  active={filter === "stale"} onClick={() => toggle("stale")} />
       <span class="header-stat-sep" />
       <HeaderStatChip n={agentCounts.claude ?? 0} label="Claude" icon={<AgentLogo agent="claude" />} active={agentFilter === "claude"} onClick={() => toggleAgent("claude")} />
@@ -1891,7 +1934,7 @@ function HeaderStats({ sessions, filter, onFilter, agentFilter, onAgentFilter, h
           }}
           title={t("filter.hiddenTooltip", { n: hiddenCount })}
           onClick={onToggleHidden}
-        >{t("filter.hiddenLabel")} {hiddenCount}</button>
+        ><span class="header-hidden-lbl">{t("filter.hiddenLabel")} </span>{hiddenCount}</button>
       )}
     </div>
   );
@@ -2776,7 +2819,7 @@ function WrapConfirmDialog({ sessionByUuid }: { sessionByUuid: Map<string, Sessi
       });
       if (!r.ok) {
         const body = await r.json().catch(() => ({}));
-        setErr(body?.error ?? `HTTP ${r.status}`);
+        setErr(userFacingWrapError(body?.error, r.status));
       } else {
         close();
       }
@@ -2799,23 +2842,13 @@ function WrapConfirmDialog({ sessionByUuid }: { sessionByUuid: Map<string, Sessi
 
   if (!request) return null;
   return (
-    <div
-      role="alertdialog"
-      aria-modal="false"
-      style={{
-        position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)",
-        zIndex: 70,
-        maxWidth: 540, minWidth: 360,
-        padding: "12px 14px",
-        background: "var(--bg)",
-        border: "1px solid var(--warn)",
-        borderLeft: "3px solid var(--warn)",
-        borderRadius: 6,
-        boxShadow: "0 6px 24px rgba(0,0,0,0.22)",
-        fontSize: 12, lineHeight: 1.5, color: "var(--fg)",
-        animation: "miki-toast-in 0.18s ease-out",
-      }}
-    >
+    <div class="dialog-backdrop wrap-confirm-backdrop" onClick={() => { if (!pending) close(); }}>
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        class="dialog-panel wrap-confirm-dialog"
+        onClick={(e) => e.stopPropagation()}
+      >
       <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
         <span style={{ fontSize: 16, lineHeight: 1, marginTop: 1 }}>⚠️</span>
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -2847,6 +2880,7 @@ function WrapConfirmDialog({ sessionByUuid }: { sessionByUuid: Map<string, Sessi
             >{t("wrapNotice.later")}</button>
           </div>
         </div>
+      </div>
       </div>
     </div>
   );
@@ -3373,7 +3407,7 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, userOverla
         {/* CLI ("start wrap") button sits to the LEFT of the copy button so
          * the top row reads: title … [🔌 CLI] [📋 copy]. Hidden for wrapped
          * sessions (already wrapped — nothing to start). */}
-        {!s.wrapped && s.session_uuid && <WrapStartButton sessionUuid={s.session_uuid} />}
+        {!s.wrapped && agentOf(s) === "claude" && s.session_uuid && <WrapStartButton sessionUuid={s.session_uuid} />}
         <CloseCardButton
           sessionUuid={s.session_uuid ?? ""}
           wrapped={s.wrapped ?? false}
@@ -3977,10 +4011,10 @@ function CellModal({ s, onClose, clientType, onSetClientType, onFocus, onSend, s
   }, [onClose]);
 
   return (
-    <div class="cell-modal-backdrop" onClick={onClose}>
+    <div class="dialog-backdrop cell-modal-backdrop" onClick={onClose}>
       <div
         ref={modalPanelRef}
-        class="cell-modal"
+        class="dialog-panel cell-modal"
         onClick={(e) => e.stopPropagation()}
       >
         <button class="cell-modal-close" onClick={onClose} title={t("session.modalClose")}>×</button>
@@ -4344,7 +4378,7 @@ function App() {
   // transcripts. Cap at 10000 (matches the "load all" option).
   function effectiveLimit(limit: number, withTools: boolean): number {
     if (withTools) return limit;
-    return Math.min(10000, limit * 4);
+    return Math.min(10000, limit * 50);
   }
   const [statusFilter, setStatusFilterState] = useState<StatusFilter>(() => loadStatusFilterFromLS());
   function setStatusFilter(v: StatusFilter) {
@@ -4912,7 +4946,7 @@ function App() {
   }
   async function onSend(uuid: string, prompt: string, submit: boolean, images?: AttachedImage[]) {
     const imgPayload = images?.map(({ media_type, data }) => ({ media_type, data }));
-    const overlayText = prompt.trim() || (imgPayload && imgPayload.length > 0 ? `[image x ${imgPayload.length}]` : "");
+    const overlayText = stripCodexBrowserContext(prompt).trim() || (imgPayload && imgPayload.length > 0 ? `[image x ${imgPayload.length}]` : "");
     if (overlayText) {
       setUserOverlay((prev) => ({ ...prev, [uuid]: { text: overlayText, ts: Date.now() } }));
     }
@@ -4969,18 +5003,20 @@ function App() {
         >
           <IconSleepingCat size={24} />
         </h1>
-        <HeaderStats
-          sessions={displaySessions}
-          filter={statusFilter}
-          onFilter={setStatusFilter}
-          agentFilter={agentFilter}
-          onAgentFilter={setAgentFilter}
-          hiddenCount={hiddenSet.size}
-          showHidden={showHidden}
-          onToggleHidden={() => setShowHidden(v => !v)}
-        />
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--fg-subtle)" }}>
-          <NewCliButton recentCwds={recentCwds} />
+        <div class="header-stats-bar">
+          <HeaderStats
+            sessions={displaySessions}
+            filter={statusFilter}
+            onFilter={setStatusFilter}
+            agentFilter={agentFilter}
+            onAgentFilter={setAgentFilter}
+            hiddenCount={hiddenSet.size}
+            showHidden={showHidden}
+            onToggleHidden={() => setShowHidden(v => !v)}
+          />
+        </div>
+        <div style={{ marginLeft: "auto", flexShrink: 0, display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--fg-subtle)" }}>
+          <span class="header-newcli"><NewCliButton recentCwds={recentCwds} /></span>
           <button
             class="p-1.5 rounded text-neutral-400 hover:text-neutral-200 hover:bg-neutral-700 transition-colors"
             title="效能監控"

@@ -468,6 +468,16 @@ html, body { overflow-x: hidden; max-width: 100vw; }
 @media (max-width: 480px) {
   .app-shell { padding: 10px 10px 48px; }
 }
+/* ── Header layout ────────────────────────────────────────────────── */
+/* Stats bar must shrink so right-side action buttons are never pushed off. */
+.header-stats-bar { flex: 1 1 0; min-width: 0; overflow: hidden; }
+/* NewCLI button is a desktop-only shortcut; hide on narrow screens. */
+@media (max-width: 640px) {
+  .header-newcli { display: none; }
+  /* Drop "已隱藏" label text, keep just the number to save space. */
+  .header-hidden-lbl { display: none; }
+}
+
 .cell { min-width: 0; overflow: hidden; }
 .cell-preview, .cell-convo, .cell-head, .cell-cwd, .cell-foot { min-width: 0; }
 .cell-turn { min-width: 0; }
@@ -789,10 +799,24 @@ html, body { overflow-x: hidden; max-width: 100vw; }
 }
 
 /* AskUserQuestion modal — must beat CellModal (z-60) including its own backdrop. */
-.ask-modal-backdrop {
+.dialog-backdrop {
   position: fixed; inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.32);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  animation: cell-modal-fade-in 0.12s ease-out;
+  overscroll-behavior: contain;
+}
+.dialog-panel {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+  color: var(--fg);
+}
+.ask-modal-backdrop {
   z-index: 1000;
-  background: rgba(0, 0, 0, 0.18);
 }
 .ask-modal {
   position: fixed;
@@ -800,12 +824,20 @@ html, body { overflow-x: hidden; max-width: 100vw; }
   transform: translate(-50%, -50%);
   width: min(560px, 90vw);
   max-height: 80vh; overflow-y: auto;
-  background: var(--bg);
   border: 1px solid var(--border-hi);
-  border-radius: 10px;
-  box-shadow: 0 12px 40px rgba(0,0,0,0.28);
   padding: 16px;
   z-index: 1001;
+}
+.wrap-confirm-backdrop {
+  z-index: 70;
+}
+.wrap-confirm-dialog {
+  width: min(540px, calc(100vw - 32px));
+  padding: 12px 14px;
+  border-color: var(--warn);
+  border-left: 3px solid var(--warn);
+  font-size: 12px;
+  line-height: 1.5;
 }
 .ask-tab {
   font-size: 11px;
@@ -1256,12 +1288,7 @@ html, body { overflow-x: hidden; max-width: 100vw; }
 /* ── Cell modal (centered, tall overlay) ───────────────────────────── */
 
 .cell-modal-backdrop {
-  position: fixed; inset: 0;
   z-index: 60;
-  background: rgba(0, 0, 0, 0.32);
-  display: flex; align-items: center; justify-content: center;
-  padding: 24px;
-  animation: cell-modal-fade-in 0.12s ease-out;
 }
 @keyframes cell-modal-fade-in {
   from { opacity: 0; }
@@ -1271,10 +1298,6 @@ html, body { overflow-x: hidden; max-width: 100vw; }
   position: relative;
   width: min(760px, 100%);
   height: min(85vh, 900px);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
   display: flex; flex-direction: column;
   overflow: hidden;
   /* Belt-and-braces: stop scroll chaining from inner scrollers up to body. */
