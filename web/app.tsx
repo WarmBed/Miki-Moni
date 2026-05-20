@@ -101,10 +101,12 @@ function agentOf(s: Pick<Session, "agent">): AgentId {
 const CODEX_PREVIEW_ACTIVE_MS = 15 * 60 * 1000;
 
 function displaySession(s: Session, preview?: SessionPreview): Session {
-  if (agentOf(s) !== "codex" || s.status !== "stale" || !preview?.last_modified_ms) return s;
-  const previewIsNewer = preview.last_modified_ms > s.last_event_at;
-  const previewIsRecent = Date.now() - preview.last_modified_ms <= CODEX_PREVIEW_ACTIVE_MS;
-  return previewIsNewer && previewIsRecent ? { ...s, status: "active", last_event_at: preview.last_modified_ms } : s;
+  if (agentOf(s) !== "codex" || s.status !== "stale") return s;
+  const previewIsNewer = (preview?.last_modified_ms ?? 0) > s.last_event_at;
+  const previewIsRecent = Date.now() - (preview?.last_modified_ms ?? 0) <= CODEX_PREVIEW_ACTIVE_MS;
+  if (previewIsNewer && previewIsRecent) return { ...s, status: "active", last_event_at: preview!.last_modified_ms };
+  const sessionPreviewIsRecent = Date.now() - s.last_event_at <= CODEX_PREVIEW_ACTIVE_MS;
+  return s.last_message_preview && sessionPreviewIsRecent ? { ...s, status: "active" } : s;
 }
 
 function agentLabel(agent: AgentId): string {
@@ -547,6 +549,216 @@ function IconRefresh({ size = 13, spinning = false }: { size?: number; spinning?
       <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" />
       <path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14" />
     </svg>
+  );
+}
+
+function IconMonit({ size = 20, class: cls = "" }: { size?: number; class?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 20 20" fill="none" class={cls}
+         xmlns="http://www.w3.org/2000/svg">
+      <rect x="2" y="4" width="16" height="10" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M5 11 L7.5 8 L10 10 L13 6.5 L15 8.5" stroke="currentColor" stroke-width="1.5"
+            stroke-linecap="round" stroke-linejoin="round"/>
+      <line x1="7" y1="16" x2="13" y2="16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    </svg>
+  );
+}
+
+interface MetricPoint { ts: number; value: number; }
+
+function MetricChart({
+  data,
+  fleetAvg,
+  label,
+  unit,
+  higherIsBetter,
+}: {
+  data: MetricPoint[];
+  fleetAvg: number | null;
+  label: string;
+  unit: string;
+  higherIsBetter: boolean;
+}) {
+  const W = 340, H = 90;
+
+  if (data.length === 0) {
+    return (
+      <div class="flex flex-col gap-1">
+        <div class="text-xs text-neutral-400 font-medium">{label}</div>
+        <div class="flex items-center justify-center h-[90px] text-xs text-neutral-500">暫無資料</div>
+      </div>
+    );
+  }
+
+  const xs = data.map(d => d.ts);
+  const ys = data.map(d => d.value);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const maxY = Math.max(...ys) * 1.25 || 1;
+
+  const scaleX = (ts: number) => ((ts - minX) / (maxX - minX || 1)) * W;
+  const scaleY = (v: number) => H - (v / maxY) * H;
+
+  const pts = data.map(d => ({ x: scaleX(d.ts), y: scaleY(d.value), v: d.value }));
+  const avgY = fleetAvg !== null ? scaleY(fleetAvg) : null;
+
+  function buildAreaPath(points: typeof pts, above: boolean): string {
+    if (avgY === null || points.length < 2) return "";
+    const segs: Array<typeof pts> = [];
+    let cur: typeof pts = [];
+    for (let i = 0; i < points.length; i++) {
+      const pt = points[i]!;
+      const isAbove = pt.y < avgY;
+      if ((above && isAbove) || (!above && !isAbove)) {
+        cur.push(pt);
+      } else {
+        if (cur.length >= 1) segs.push(cur);
+        cur = [];
+      }
+    }
+    if (cur.length >= 1) segs.push(cur);
+
+    return segs.map(seg => {
+      if (seg.length === 1) return "";
+      const top = seg.map(p => `${p.x},${p.y}`).join(" ");
+      const bot = `${seg[seg.length - 1]!.x},${avgY} ${seg[0]!.x},${avgY}`;
+      return `M ${seg[0]!.x},${avgY} L ${top} L ${bot} Z`;
+    }).join(" ");
+  }
+
+  const greenPath = buildAreaPath(pts, higherIsBetter);
+  const redPath   = buildAreaPath(pts, !higherIsBetter);
+  const linePts = pts.map(p => `${p.x},${p.y}`).join(" ");
+
+  const lastVal = data[data.length - 1]?.value ?? 0;
+  const fmt = (v: number) => unit === "ms" ? `${Math.round(v)}ms` : `${v.toFixed(1)}/s`;
+
+  return (
+    <div class="flex flex-col gap-1">
+      <div class="flex items-center justify-between">
+        <span class="text-xs text-neutral-400 font-medium">{label}</span>
+        <span class="text-xs text-neutral-300 tabular-nums">{fmt(lastVal)}</span>
+      </div>
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} class="overflow-visible">
+        {avgY !== null && (
+          <line x1={0} y1={avgY} x2={W} y2={avgY}
+                stroke="#60a5fa" stroke-width="1" stroke-dasharray="4 3" opacity="0.7"/>
+        )}
+        {greenPath && <path d={greenPath} fill="#22c55e" opacity="0.25"/>}
+        {redPath   && <path d={redPath}   fill="#ef4444" opacity="0.25"/>}
+        <polyline points={linePts} fill="none" stroke="#d4d4d4" stroke-width="1.5"
+                  stroke-linejoin="round" stroke-linecap="round"/>
+        {pts.length > 0 && (
+          <circle cx={pts[pts.length - 1]!.x} cy={pts[pts.length - 1]!.y}
+                  r="2.5" fill="#d4d4d4"/>
+        )}
+      </svg>
+      {avgY !== null && fleetAvg !== null && (
+        <div class="flex items-center gap-3 text-[10px] text-neutral-500">
+          <span class="flex items-center gap-1">
+            <span class="inline-block w-2 h-2 rounded-sm bg-green-500 opacity-60"/>
+            {higherIsBetter ? "超越" : "超越"}
+          </span>
+          <span class="flex items-center gap-1">
+            <span class="inline-block w-2 h-2 rounded-sm bg-red-500 opacity-60"/>
+            落後
+          </span>
+          <span class="flex items-center gap-1">
+            <span class="inline-block w-4 border-t border-dashed border-blue-400 opacity-70"/>
+            fleet 平均 ({fmt(fleetAvg)})
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+type MetricWindow = "1h" | "6h" | "24h" | "48h";
+
+interface MetricsApiRow {
+  ts: number; session_uuid: string;
+  ttft_ms: number | null; tps: number | null;
+  char_count: number; duration_ms: number;
+}
+
+interface MetricsApiResponse {
+  metrics: MetricsApiRow[];
+  fleet_avg_ttft: number | null;
+  fleet_avg_tps: number | null;
+  window_ms: number;
+}
+
+function MonitPanel({ onClose }: { onClose: () => void }) {
+  const [window_, setWindow] = useState<MetricWindow>("24h");
+  const [data, setData] = useState<MetricsApiResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`/metrics?window=${window_}`)
+      .then(r => r.json())
+      .then((d: MetricsApiResponse) => { setData(d); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [window_]);
+
+  const ttftPoints: MetricPoint[] = (data?.metrics ?? [])
+    .filter(m => m.ttft_ms !== null)
+    .map(m => ({ ts: m.ts, value: m.ttft_ms! }));
+
+  const tpsPoints: MetricPoint[] = (data?.metrics ?? [])
+    .filter(m => m.tps !== null)
+    .map(m => ({ ts: m.ts, value: m.tps! }));
+
+  const WINDOWS: MetricWindow[] = ["1h", "6h", "24h", "48h"];
+
+  return (
+    <div class="fixed inset-0 z-50 flex items-start justify-end pointer-events-none">
+      <div class="pointer-events-auto mt-14 mr-2 w-[400px] bg-neutral-900 border border-neutral-700
+                  rounded-lg shadow-2xl flex flex-col overflow-hidden">
+        <div class="flex items-center justify-between px-4 py-3 border-b border-neutral-700">
+          <span class="text-sm font-medium text-neutral-200">效能監控</span>
+          <div class="flex items-center gap-3">
+            <div class="flex gap-1">
+              {WINDOWS.map(w => (
+                <button key={w}
+                  class={`px-2 py-0.5 rounded text-xs transition-colors ${
+                    window_ === w
+                      ? "bg-neutral-600 text-white"
+                      : "text-neutral-400 hover:text-neutral-200"
+                  }`}
+                  onClick={() => setWindow(w)}>
+                  {w}
+                </button>
+              ))}
+            </div>
+            <button onClick={onClose} class="text-neutral-400 hover:text-neutral-200 transition-colors">
+              <IconX size={16}/>
+            </button>
+          </div>
+        </div>
+        <div class="p-4 flex flex-col gap-6">
+          {loading ? (
+            <div class="flex items-center justify-center h-24 text-xs text-neutral-500">載入中…</div>
+          ) : (
+            <>
+              <MetricChart
+                data={ttftPoints}
+                fleetAvg={data?.fleet_avg_ttft ?? null}
+                label="TTFT 趨勢"
+                unit="ms"
+                higherIsBetter={false}
+              />
+              <MetricChart
+                data={tpsPoints}
+                fleetAvg={data?.fleet_avg_tps ?? null}
+                label="TPS 趨勢"
+                unit="/s"
+                higherIsBetter={true}
+              />
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1064,13 +1276,14 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
   const agent = agentOf(s);
   const isCli = clientType === "cli";
   const isWrapped = !!s.wrapped;
+  const canSend = isWrapped || agent === "codex";
   // Only wrapped CLI sessions allow send. VSCode-panel mode is disabled because
   // claude-code's primaryEditor.open(uuid) creates a FRESH empty panel when the
   // session UUID isn't already in its sessionPanels map, and there's no
   // exposed API to load by UUID — so sends would silently target the wrong
   // (new, empty) conversation. CLI WITHOUT wrap also blocked: -p costs $$ +
   // injects a resume marker. Wrap-push is the only reliable delivery path.
-  const sendBlocked = !isWrapped;
+  const sendBlocked = !canSend;
   const [collapsed, setCollapsed] = useState(!defaultExpanded);
   const [draft, setDraft] = useState("");
   const [draftImages, setDraftImages] = useState<AttachedImage[]>([]);
@@ -1116,7 +1329,7 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, [transcriptMenuOpen]);
-  const imagesSupported = isWrapped;  // only wrap-push can carry image blocks
+  const imagesSupported = isWrapped || agent === "codex";
   // Default = prefill (free, uses your already-running VSCode panel session).
   // For wrapped sessions, server-side intercepts ANY mode and routes via WS push,
   // so submitMode doesn't matter — but keep it false so UI labels don't scream "💸".
@@ -1146,6 +1359,8 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
       const r = await onSend(sessionUuid, prompt, submitMode, sendImages);
       const label = !r.ok
         ? t("send.httpFail", { status: r.status })
+        : agent === "codex"
+          ? t("send.codexReplied", { ms: r.duration_ms ?? "?" })
         : submitMode
           ? t("send.claudeReplied", { ms: r.duration_ms ?? "?" })
           : t("send.sentToVSCode");
@@ -1390,6 +1605,14 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
                 : transcript.turns
                     .filter((tn) => !tn.tool_use && !tn.tool_result)
                     .slice(-transcriptLimit);
+              const fallbackTurns: TranscriptTurn[] = baseTurns.length === 0 && agent === "codex" && s.last_message_preview
+                ? [{
+                    ts: new Date(s.last_event_at || Date.now()).toISOString(),
+                    role: "assistant",
+                    text: s.last_message_preview,
+                    raw_type: "codex:dashboard-reply",
+                  }]
+                : baseTurns;
               // Merge canonical baseTurns with optimistic overlays and
               // chronologically sort. Pure logic lives in
               // web/lib/transcript-assembly.ts — the historical bug was
@@ -1402,7 +1625,7 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
               const stream = streamingText && streamingText.length > 0
                 ? { text: streamingText, startTs: streamingStartTs ?? 0 }
                 : undefined;
-              const renderTurns = assembleRenderTurns(baseTurns, overlay, stream, activity);
+              const renderTurns = assembleRenderTurns(fallbackTurns, overlay, stream, activity);
               return (
                 <div style={fixedHeight ? { flex: 1, minHeight: 0, display: "flex" } : { maxHeight: 480, overflow: "hidden", display: "flex" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -1490,6 +1713,8 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
                   ? (isCli
                       ? t(modalMode ? "composer.cliNotWrappedShort" : "composer.cliNotWrapped", { short: sessionUuid.slice(0, 8) })
                       : t(modalMode ? "composer.vscodeDisabledShort" : "composer.vscodeDisabledWrap", { short: sessionUuid.slice(0, 8) }))
+                  : agent === "codex"
+                    ? t(modalMode ? "composer.inputPromptCodexShort" : "composer.inputPromptCodex")
                   : t(modalMode ? "composer.inputPromptShort" : "composer.inputPrompt")
               }
               value={draft}
@@ -1533,7 +1758,7 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
                 }}
               />
             </label>
-            {isWrapped && (
+            {(isWrapped || (agent === "codex" && busy)) && (
               <button
                 class="btn-ghost icon-btn"
                 style={{ height: 34, width: 34, padding: 0, fontSize: 16, lineHeight: 1, display: "inline-flex", alignItems: "center", justifyContent: "center" }}
@@ -1548,12 +1773,13 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
               ><IconStop size={14} /></button>
             )}
             <button
-              class={isWrapped ? "btn-primary icon-btn" : "btn-ghost icon-btn"}
+              class={canSend ? "btn-primary icon-btn" : "btn-ghost icon-btn"}
               style={{ height: 34, width: 34, padding: 0, display: "inline-flex", alignItems: "center", justifyContent: "center" }}
               disabled={(!draft.trim() && draftImages.length === 0) || busy || sendBlocked}
               onClick={handleSend}
               title={
                 sendBlocked ? t("composer.needWrapHint")
+                : agent === "codex" ? t("composer.codexExecHint")
                 : isWrapped ? t("composer.wrapWSHint")
                 : t("composer.needWrapBadge")
               }
@@ -1591,17 +1817,22 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
             </>
           )}
 
-          {/* Send result — only show when there's an actual error worth surfacing.
-              Success / streaming-placeholder reply / URI / diag are noise — the
-              real answer streams into the transcript above anyway. */}
-          {sendResult && !sendResult.ok && (
+          {/* Send result. Claude wrapper success streams into the transcript,
+              but Codex exec can return before a transcript exists, so surface
+              that reply directly. */}
+          {sendResult && (!sendResult.ok || (agent === "codex" && sendResult.reply)) && (
             <div style={{ marginTop: 4 }}>
-              <div style={{ fontSize: 12, color: "var(--accent)" }}>
-                {t("send.sendFailed", { label: sendResult.label })}
+              <div style={{ fontSize: 12, color: sendResult.ok ? "var(--pass)" : "var(--accent)" }}>
+                {sendResult.ok ? sendResult.label : t("send.sendFailed", { label: sendResult.label })}
               </div>
               {sendResult.error && (
                 <div style={{ marginTop: 6, fontSize: 12, color: "var(--accent)", padding: 8, background: "var(--bg-subtle)", borderRadius: 4 }}>
                   ⚠️ {sendResult.error}
+                </div>
+              )}
+              {sendResult.reply && (
+                <div style={{ marginTop: 6, maxHeight: 180, overflowY: "auto", fontSize: 13, lineHeight: 1.5, padding: 8, background: "var(--bg-subtle)", borderRadius: 4 }}>
+                  <MD text={sendResult.reply} />
                 </div>
               )}
             </div>
@@ -2972,7 +3203,10 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, userOverla
     ? userOverlayText
     : preview?.last_user_text;
   // Live stream wins over JSONL-derived preview while a turn is in flight.
-  const lastAssistantRaw = streamingText && streamingText.length > 0 ? streamingText : preview?.last_assistant_text;
+  // Pending Codex sessions may not have a transcript file yet, so fall back
+  // to the daemon's latest exec reply preview.
+  const codexPreviewFallback = agent === "codex" && !preview?.last_assistant_text ? s.last_message_preview : undefined;
+  const lastAssistantRaw = streamingText && streamingText.length > 0 ? streamingText : preview?.last_assistant_text ?? codexPreviewFallback;
   const lastTool = preview?.last_tool_use ?? null;
   const lastUser = useMemo(() => (lastUserRaw ? mdToPlainText(lastUserRaw) : ""), [lastUserRaw]);
   const lastAssistant = useMemo(() => (lastAssistantRaw ? mdToPlainText(lastAssistantRaw) : ""), [lastAssistantRaw]);
@@ -3347,11 +3581,13 @@ function Popover({ s, x, y, clientType, onSetClientType, onClose, onSend, sendKe
   sendKey: SendKey;
 }) {
   const isCli = clientType === "cli";
+  const agent = agentOf(s);
   const isWrapped = !!s.wrapped;
+  const canSend = isWrapped || agent === "codex";
   // Only wrapped CLI sessions allow send. VSCode-panel mode is disabled
   // (claude-code creates fresh empty panel when uuid not in its sessionPanels).
   // Wrap-push is the only reliable delivery path.
-  const sendBlocked = !isWrapped;
+  const sendBlocked = !canSend;
   const [prompt, setPrompt] = useState("");
   const [images, setImages] = useState<AttachedImage[]>([]);
   // VSCode: prefill (free). Wrapped: server routes ANY mode through wrap WS push, so mode doesn't matter.
@@ -3361,7 +3597,7 @@ function Popover({ s, x, y, clientType, onSetClientType, onClose, onSend, sendKe
   const [result, setResult] = useState<{ ok: boolean; label: string; reply?: string } | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
   // Images only travel through wrap-push. Warn user when in any other mode.
-  const imagesSupported = isWrapped;
+  const imagesSupported = isWrapped || agent === "codex";
 
   // Position: open below-right of cursor and clamp to viewport on desktop.
   // On narrow screens (mobile), the 360px popover would overflow horizontally
@@ -3389,7 +3625,6 @@ function Popover({ s, x, y, clientType, onSetClientType, onClose, onSend, sendKe
     if ((!hasText && !hasImages) || !s.session_uuid) return;
     setBusy(true); setResult(null);
     try {
-      // Drop images on paths that can't carry them.
       const sendImages = imagesSupported ? images : undefined;
       const r = await onSend(s.session_uuid, prompt.trim(), submitMode, sendImages);
       if (r.ok) {
@@ -3452,6 +3687,8 @@ function Popover({ s, x, y, clientType, onSetClientType, onClose, onSend, sendKe
               ? (isCli
                   ? t("composer.cliNotWrapped", { short: s.session_uuid?.slice(0, 8) ?? "" })
                   : t("composer.vscodeDisabledWrap2", { short: s.session_uuid?.slice(0, 8) ?? "" }))
+              : agent === "codex"
+                ? t("composer.inputPromptCodex")
               : t("composer.inputPrompt")
           }
           value={prompt}
@@ -3460,7 +3697,7 @@ function Popover({ s, x, y, clientType, onSetClientType, onClose, onSend, sendKe
           onKeyDown={(e) => {
             if (shouldSendOnKey(e as unknown as KeyboardEvent, sendKey)) {
               e.preventDefault();
-              if (!busy && !sendBlocked && prompt.trim()) handleSend();
+              if (!busy && !sendBlocked && (prompt.trim() || images.length > 0)) handleSend();
             }
           }}
           disabled={busy || sendBlocked}
@@ -3494,7 +3731,7 @@ function Popover({ s, x, y, clientType, onSetClientType, onClose, onSend, sendKe
               }}
             />
           </label>
-          {isWrapped && (
+          {(isWrapped || (agent === "codex" && busy)) && (
             <button
               class="btn-ghost"
               style={{ marginLeft: "auto", height: 32, padding: "0 10px", fontSize: 14, lineHeight: 1 }}
@@ -3510,13 +3747,13 @@ function Popover({ s, x, y, clientType, onSetClientType, onClose, onSend, sendKe
             ><IconStop size={14} /></button>
           )}
           <button
-            class={isWrapped ? "btn-primary" : "btn-ghost"}
-            disabled={!prompt.trim() || busy || sendBlocked}
+            class={canSend ? "btn-primary" : "btn-ghost"}
+            disabled={(!prompt.trim() && images.length === 0) || busy || sendBlocked}
             onClick={handleSend}
-            style={isWrapped ? undefined : { marginLeft: "auto" }}
-            title={sendBlocked ? t("composer.needWrapHint2") : t("composer.wrapWSShort")}
+            style={canSend ? undefined : { marginLeft: "auto" }}
+            title={sendBlocked ? t("composer.needWrapHint2") : agent === "codex" ? t("composer.codexExecHint") : t("composer.wrapWSShort")}
           >
-            {busy ? t("composer.sendBusy") : isWrapped ? t("composer.sendWrapped") : t("composer.sendNeedWrap")}
+            {busy ? t("composer.sendBusy") : canSend ? t("composer.sendWrapped") : t("composer.sendNeedWrap")}
           </button>
         </div>
         <div style={{ marginTop: 4, fontSize: 10, color: "var(--fg-subtle)" }}>
@@ -4073,6 +4310,7 @@ function App() {
   const [sendKey, setSendKeyState] = useState<SendKey>(() => loadSendKeyFromLS());
   const [theme, setThemeState] = useState<Theme>(() => loadThemeFromLS());
   const [showSettings, setShowSettings] = useState(false);
+  const [monitOpen, setMonitOpen] = useState(false);
   const [modalFor, setModalFor] = useState<Session | null>(null);
   // Modal transcript — lifted up from Card so the App-level WS handler +
   // polling tick own a single update pipeline for all session data shown in
@@ -4675,13 +4913,17 @@ function App() {
   }
   async function onSend(uuid: string, prompt: string, submit: boolean, images?: AttachedImage[]) {
     const imgPayload = images?.map(({ media_type, data }) => ({ media_type, data }));
+    const overlayText = prompt.trim() || (imgPayload && imgPayload.length > 0 ? `[image x ${imgPayload.length}]` : "");
+    if (overlayText) {
+      setUserOverlay((prev) => ({ ...prev, [uuid]: { text: overlayText, ts: Date.now() } }));
+    }
     addLog("info", `POST /send (mode=${submit ? "submit" : "prefill"})`, { uuid: uuid.slice(0, 8), len: prompt.length, images: imgPayload?.length ?? 0 });
     try {
       const r = await apiFetch("/send", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_uuid: uuid, prompt, submit, images: imgPayload }) });
       let body: any = null; try { body = await r.json(); } catch {}
       addLog(r.ok ? "info" : "error", `/send ${r.status}`, { mode: body?.mode, reply_preview: body?.reply?.slice(0, 60), duration_ms: body?.duration_ms, diag: body?.diag });
       // refresh previews so the cell shows the new reply
-      if (r.ok && submit) scheduleRefresh();
+      if (r.ok) scheduleRefresh();
       return { ok: r.ok, status: r.status, url: body?.url, reply: body?.reply, duration_ms: body?.duration_ms, diag: body?.diag, error: body?.error };
     } catch (e) { addLog("error", "/send throw", { error: String(e) }); return { ok: false, status: 0 }; }
   }
@@ -4740,6 +4982,12 @@ function App() {
         />
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--fg-subtle)" }}>
           <NewCliButton recentCwds={recentCwds} />
+          <button
+            class="p-1.5 rounded text-neutral-400 hover:text-neutral-200 hover:bg-neutral-700 transition-colors"
+            title="效能監控"
+            onClick={() => setMonitOpen(v => !v)}>
+            <IconMonit size={18}/>
+          </button>
           <button
             class="btn-ghost"
             style={{ fontSize: 11, padding: "2px 6px", display: "inline-flex", alignItems: "center" }}
@@ -5053,6 +5301,8 @@ function App() {
           />
         );
       })()}
+
+      {monitOpen && <MonitPanel onClose={() => setMonitOpen(false)}/>}
     </div>
   );
 }
