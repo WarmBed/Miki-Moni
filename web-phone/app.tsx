@@ -744,8 +744,27 @@ function DashboardScreen({ state, onUnpair }: { state: PhoneState; onUnpair: () 
         </button>
       </header>
 
+      {monitOpen && (
+        <div
+          style={{
+            position: "fixed",
+            top: 57,
+            left: 0,
+            right: 0,
+            zIndex: 40,
+            maxHeight: "70vh",
+            overflowY: "auto",
+            background: "#020617",
+            borderBottom: "1px solid #1e293b",
+            padding: "12px 16px 16px",
+          }}
+        >
+          <MonitPanel proxyFetch={proxyFetch} />
+        </div>
+      )}
+
       <main class="max-w-2xl mx-auto p-4 flex flex-col gap-4">
-        {monitOpen && <MonitPanel proxyFetch={proxyFetch} />}
+
         {sessions.length === 0 && connStatus === "connected" && (
           <div class="text-slate-500 text-center py-10 text-sm space-y-2">
             <p class="text-base">{t("phone.empty.title")}</p>
