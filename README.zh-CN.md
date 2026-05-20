@@ -128,6 +128,10 @@ miki start
 - **时间窗选择** — 1h / 6h / 24h / 48h 滚动视窗，无需重新加载即可切换
 - **手机同等** — 手机端点击 ⚡ Monit 按钮，通过加密 relay proxy 查看同样的图表
 
+<p align="center">
+  <img src="docs/images/monit-panel.png" width="820" alt="Monit 面板 — TTFT 与 TPS 折线图含 fleet 平均线">
+</p>
+
 > **注意：** TTFT / TPS 数据只在 `miki claude`（wrap 模式）起的 session 中收集。纯 hook 模式的 session 会出现在 dashboard 上，但不产生性能指标。
 
 ### 手机

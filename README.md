@@ -128,6 +128,10 @@ Full protocol details in [`docs/protocols/relay-protocol.md`](docs/protocols/rel
 - **Window selector** — switch between 1 h / 6 h / 24 h / 48 h rolling views without reloading.
 - **Phone parity** — the ⚡ Monit button in the phone app header shows the same charts via the encrypted relay proxy.
 
+<p align="center">
+  <img src="docs/images/monit-panel.png" width="820" alt="Monit panel — TTFT and TPS charts with fleet average">
+</p>
+
 > **Note:** TTFT/TPS data is only collected for sessions started with `miki claude` (wrap mode). Hook-only sessions appear in the grid but do not generate performance metrics.
 
 ### Mobile
