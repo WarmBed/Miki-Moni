@@ -8,6 +8,7 @@ import {
   findCodexRolloutPath,
   findLatestCodexRolloutByCwd,
   parsePendingCodexCwd,
+  parsePendingCodexLaunchMs,
   readCodexSessionPreview,
   readCodexTranscriptTail,
   readSessionPreview,
@@ -164,8 +165,17 @@ describe("Codex rollout transcript parsing", () => {
   it("parses pending Codex cwd while preserving the drive colon", () => {
     expect(parsePendingCodexCwd("codex-pending:d:\\code\\cc-hub:5a552878-02e5-48df-b41a-3c90ee9c0e5a"))
       .toBe("d:\\code\\cc-hub");
+    expect(parsePendingCodexCwd("codex-pending:d:\\code\\cc-hub:1779370339000-5a552878-02e5-48df-b41a-3c90ee9c0e5a"))
+      .toBe("d:\\code\\cc-hub");
     expect(parsePendingCodexCwd("codex-pending:d:\\code\\cc-hub"))
       .toBe("d:\\code\\cc-hub");
+  });
+
+  it("parses pending Codex launch timestamps when present", () => {
+    expect(parsePendingCodexLaunchMs("codex-pending:d:\\code\\cc-hub:1779370339000-5a552878-02e5-48df-b41a-3c90ee9c0e5a"))
+      .toBe(1779370339000);
+    expect(parsePendingCodexLaunchMs("codex-pending:d:\\code\\cc-hub:5a552878-02e5-48df-b41a-3c90ee9c0e5a"))
+      .toBeNull();
   });
 
   it("finds latest Codex rollout by cwd for provisional pending sessions", async () => {
@@ -190,9 +200,15 @@ describe("Codex rollout transcript parsing", () => {
     await fs.utimes(vscodePath, new Date("2026-05-20T14:00:00.000Z"), new Date("2026-05-20T14:00:00.000Z"));
 
     await expect(findLatestCodexRolloutByCwd(dir, "D:\\code\\cc-hub")).resolves.toBe(latestPath);
+    await expect(findLatestCodexRolloutByCwd(dir, "D:\\code\\cc-hub", { minMtimeMs: Date.parse("2026-05-20T13:54:31.000Z") }))
+      .resolves.toBeNull();
+    await expect(findLatestCodexRolloutByCwd(dir, "D:\\code\\cc-hub", { maxMtimeMs: Date.parse("2026-05-19T14:53:09.000Z") }))
+      .resolves.toBe(firstPath);
     const resolver = new SessionResolver(path.join(dir, "no-claude"), dir);
     await expect(resolver.findTranscript("codex-pending:d:\\code\\cc-hub:5a552878-02e5-48df-b41a-3c90ee9c0e5a"))
       .resolves.toEqual({ source: "codex", path: latestPath });
+    await expect(resolver.findTranscript("codex-pending:d:\\code\\cc-hub:5a552878-02e5-48df-b41a-3c90ee9c0e5a", { minMtimeMs: Date.parse("2026-05-20T13:54:31.000Z") }))
+      .resolves.toBeNull();
   });
 
   it("builds preview from real user, latest assistant, and latest tool", async () => {
@@ -208,12 +224,34 @@ describe("Codex rollout transcript parsing", () => {
     const turns = await readCodexTranscriptTail(tpath, 20);
     const summary = turns.map((t) => `${t.role}:${t.text || t.tool_use?.name || t.tool_result?.content}`);
     expect(summary).toEqual([
-      "system:# AGENTS.md instructions for D:\\code\\cc-hub\n\n<environment_context>...</environment_context>",
       "user:open the dashboard",
       "assistant:I will inspect it.",
       "assistant:shell_command",
       "user:Exit code: 0\nPASS",
       "assistant:Done.",
+    ]);
+  });
+
+  it("hides Codex bootstrap system and harness messages from transcript turns", async () => {
+    const uuid = "019e4abc-996b-7c83-95e5-0580d9274dac";
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-bootstrap-"));
+    const nested = path.join(dir, "2026", "05", "21");
+    await fs.mkdir(nested, { recursive: true });
+    const tpath = path.join(nested, `rollout-2026-05-21T23-12-28-${uuid}.jsonl`);
+    const entries = [
+      { timestamp: "2026-05-21T15:12:28.000Z", type: "session_meta", payload: { id: uuid, cwd: "D:\\code" } },
+      { timestamp: "2026-05-21T15:12:28.100Z", type: "response_item", payload: { type: "message", role: "system", content: [{ type: "input_text", text: "Filesystem sandboxing defines which files can be read or written." }] } },
+      { timestamp: "2026-05-21T15:12:28.200Z", type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<permissions instructions>\nFilesystem sandboxing defines which files can be read or written.\n</permissions instructions>" }] } },
+      { timestamp: "2026-05-21T15:12:28.300Z", type: "response_item", payload: { type: "message", role: "developer", content: [{ type: "input_text", text: "internal developer policy" }] } },
+      { timestamp: "2026-05-21T15:12:29.000Z", type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "test" }] } },
+      { timestamp: "2026-05-21T15:12:31.000Z", type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "test received." }] } },
+    ];
+    await fs.writeFile(tpath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+
+    const turns = await readCodexTranscriptTail(tpath, 20);
+    expect(turns.map((t) => `${t.role}:${t.text}`)).toEqual([
+      "user:test",
+      "assistant:test received.",
     ]);
   });
 });

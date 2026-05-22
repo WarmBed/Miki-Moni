@@ -225,6 +225,41 @@ describe("server POST /wrap/start agent selection", () => {
     expect(codexCalls[0]).toMatchObject({ sessionUuid: pending?.session_uuid, cwd: pending?.cwd, prompt: "describe this", images });
   });
 
+  it("binds a pending Codex card to the real rollout uuid after the first send", async () => {
+    const codexCalls: any[] = [];
+    store.close();
+    store = new SessionStore(":memory:");
+    const handler = new HookHandler(store, new SessionResolver(fixturesRoot));
+    ({ app } = createApp({
+      store,
+      handler,
+      bridge: null as any,
+      notifier: null as any,
+      webDir: "/tmp/none",
+      terminalSpawner: (args) => {
+        spawned.push(args);
+        return { on: () => undefined, unref: () => undefined };
+      },
+      codexRunner: async (opts) => {
+        codexCalls.push(opts);
+        return { reply: `ok-${codexCalls.length}`, durationMs: 20, sessionUuid: "real-codex-session" };
+      },
+    }));
+
+    await request(app).post("/wrap/start").send({ cwd: tmpDir, agent: "codex" });
+    const pending = store.list().find((s) => s.agent === "codex");
+    const first = await request(app).post("/send").send({ session_uuid: pending?.session_uuid, prompt: "first" });
+    const second = await request(app).post("/send").send({ session_uuid: pending?.session_uuid, prompt: "second" });
+
+    expect(first.status).toBe(200);
+    expect(first.body.session_uuid).toBe("real-codex-session");
+    expect(second.status).toBe(200);
+    expect(second.body.session_uuid).toBe("real-codex-session");
+    expect(codexCalls.map((c) => c.sessionUuid)).toEqual([pending?.session_uuid, "real-codex-session"]);
+    expect(store.get(pending!.session_uuid!)).toBeUndefined();
+    expect(store.get("real-codex-session")?.last_message_preview).toBe("ok-2");
+  });
+
   it("rejects invalid agent", async () => {
     const res = await request(app).post("/wrap/start").send({ cwd: tmpDir, agent: "gpt" });
 

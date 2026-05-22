@@ -193,6 +193,8 @@ export const zhTW: Dict = {
   // session card / row
   "session.cliMarkTooltip":   "標記為 CLI session — 預填送出已停用（URI handler 不支援 terminal）。點一下改回 VSCode。",
   "session.vscodeMarkTooltip":"標記為 VSCode session — 點一下改成 CLI。",
+  "session.codexClientBadge": "Codex CLI",
+  "session.codexClientTooltip": "Codex 透過 Codex CLI / exec 從 dashboard 送出；不走 VSCode focus / wrap。",
   "session.waitingBadge":     "🔔 待回應",
   "session.waitingTooltip":   "Claude 還在等你回答 — 點開重新顯示問題",
   "session.openTab":          "開到 tab",
@@ -494,6 +496,8 @@ export const zhCN: Dict = {
 
   "session.cliMarkTooltip":    "标记为 CLI session — 预填送出已停用（URI handler 不支持 terminal）。点一下改回 VSCode。",
   "session.vscodeMarkTooltip": "标记为 VSCode session — 点一下改成 CLI。",
+  "session.codexClientBadge":  "Codex CLI",
+  "session.codexClientTooltip": "Codex 透过 Codex CLI / exec 从 dashboard 送出；不走 VSCode focus / wrap。",
   "session.waitingBadge":      "🔔 待回应",
   "session.waitingTooltip":    "Claude 还在等你回答 — 点开重新显示问题",
   "session.openTab":           "开到 tab",
@@ -790,6 +794,8 @@ export const en: Dict = {
 
   "session.cliMarkTooltip":    "Marked as CLI session — prefilled send is disabled (URI handler doesn't support terminal). Click to switch back to VSCode.",
   "session.vscodeMarkTooltip": "Marked as VSCode session — click to switch to CLI.",
+  "session.codexClientBadge":  "Codex CLI",
+  "session.codexClientTooltip": "Codex sends through Codex CLI / exec from the dashboard; VSCode focus / wrap is not used.",
   "session.waitingBadge":      "🔔 Awaiting reply",
   "session.waitingTooltip":    "Claude is still waiting for your answer — click to re-show the question",
   "session.openTab":           "Open in tab",

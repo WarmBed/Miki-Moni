@@ -40,7 +40,7 @@ export class SessionResolver {
     return findClaudeTranscriptPath(this.projectsRoot, sessionUuid);
   }
 
-  async findTranscript(sessionUuid: string): Promise<ResolvedTranscript | null> {
+  async findTranscript(sessionUuid: string, opts: { minMtimeMs?: number; maxMtimeMs?: number } = {}): Promise<ResolvedTranscript | null> {
     const claudePath = await findClaudeTranscriptPath(this.projectsRoot, sessionUuid);
     if (claudePath) return { source: "claude", path: claudePath };
     if (!this.codexSessionsRoot) return null;
@@ -48,7 +48,7 @@ export class SessionResolver {
     if (codexPath) return { source: "codex", path: codexPath };
     const pendingCwd = parsePendingCodexCwd(sessionUuid);
     if (pendingCwd) {
-      const pendingCodexPath = await findLatestCodexRolloutByCwd(this.codexSessionsRoot, pendingCwd);
+      const pendingCodexPath = await findLatestCodexRolloutByCwd(this.codexSessionsRoot, pendingCwd, opts);
       if (pendingCodexPath) return { source: "codex", path: pendingCodexPath };
     }
     return null;
@@ -204,11 +204,19 @@ export function parsePendingCodexCwd(sessionUuid: string): string | null {
   let rest = sessionUuid.slice(prefix.length);
   // Current generated IDs append a launch UUID after the cwd. Legacy pending
   // IDs were only codex-pending:<cwd>, so strip only a real UUID-shaped suffix.
-  rest = rest.replace(/:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, "");
+  rest = rest.replace(/:(?:\d{12,}-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, "");
   return rest ? normalizeCodexCwd(rest) : null;
 }
 
-async function readCodexSessionMeta(filePath: string): Promise<{ id?: string; cwd?: string; source?: string } | null> {
+export function parsePendingCodexLaunchMs(sessionUuid: string): number | null {
+  if (!parsePendingCodexCwd(sessionUuid)) return null;
+  const match = sessionUuid.match(/:(\d{12,})-[^:]+$/);
+  if (!match) return null;
+  const ms = Number(match[1]);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+export async function readCodexSessionMeta(filePath: string): Promise<{ id?: string; cwd?: string; source?: string } | null> {
   let fh: fs.FileHandle | null = null;
   try {
     fh = await fs.open(filePath, "r");
@@ -235,7 +243,7 @@ async function readCodexSessionMeta(filePath: string): Promise<{ id?: string; cw
   return null;
 }
 
-export async function findLatestCodexRolloutByCwd(sessionsRoot: string, cwd: string): Promise<string | null> {
+export async function findLatestCodexRolloutByCwd(sessionsRoot: string, cwd: string, opts: { minMtimeMs?: number; maxMtimeMs?: number } = {}): Promise<string | null> {
   const wanted = normalizeCodexCwd(cwd);
   const stack = [sessionsRoot];
   let best: { path: string; mtimeMs: number } | null = null;
@@ -259,6 +267,8 @@ export async function findLatestCodexRolloutByCwd(sessionsRoot: string, cwd: str
       if (meta.source === "vscode") continue;
       try {
         const stat = await fs.stat(full);
+        if (opts.minMtimeMs != null && stat.mtimeMs < opts.minMtimeMs) continue;
+        if (opts.maxMtimeMs != null && stat.mtimeMs > opts.maxMtimeMs) continue;
         if (!best || stat.mtimeMs > best.mtimeMs) best = { path: full, mtimeMs: stat.mtimeMs };
       } catch { /* ignore raced deletion */ }
     }
@@ -781,12 +791,12 @@ export async function readCodexTranscriptTail(
       if (payload.role !== "user" && payload.role !== "assistant" && payload.role !== "developer" && payload.role !== "system") continue;
       const text = codexDisplayText(payload);
       if (!text.trim()) continue;
+      if (payload.role !== "assistant" && isCodexInjectedUserMessage(payload)) continue;
+      if (payload.role === "developer" || payload.role === "system") continue;
       const role: TranscriptTurn["role"] =
         payload.role === "assistant"
           ? "assistant"
-          : payload.role === "user" && !isCodexInjectedUserMessage(payload)
-            ? "user"
-            : "system";
+          : "user";
       turns.push({ ts, role, text, raw_type: payload.phase ? `codex:${payload.phase}` : "codex:message" });
     } else if (payload.type === "function_call") {
       const name = codexToolName(payload);

@@ -9,12 +9,15 @@ import type { AgentId, HookEvent, Session } from "./types.js";
 import { normalizeCwd, pendingCodexSessionUuid } from "./hook-handler.js";
 import {
   SessionResolver,
+  findLatestCodexRolloutByCwd,
+  readCodexSessionMeta,
   readTranscriptTail,
   readSessionPreview,
   readTranscriptPreview,
   readTranscriptTailForSource,
   sessionHasAnyTurns,
   readOriginalCwd,
+  parsePendingCodexLaunchMs,
   type SessionPreview,
 } from "./session-resolver.js";
 import path from "node:path";
@@ -41,8 +44,36 @@ type Log = { info: (obj: Record<string, unknown>, msg?: string) => void; warn: (
 type TerminalChild = { on: (event: "error", cb: (err: Error) => void) => unknown; unref: () => void };
 type TerminalSpawner = (args: string[]) => TerminalChild;
 type CodexImage = { media_type: string; data: string };
-type CodexRunResult = { reply: string; durationMs: number };
+type CodexRunResult = { reply: string; durationMs: number; sessionUuid?: string; transcriptPath?: string };
 type CodexRunner = (opts: { sessionUuid: string; cwd: string; prompt: string; images?: CodexImage[]; signal?: AbortSignal; timeoutMs?: number }) => Promise<CodexRunResult>;
+const CODEX_PENDING_LAUNCH_PREVIEW = "Codex CLI launched - waiting for first turn";
+
+function pendingCodexMtimeWindow(sessionUuid: string, session?: Session | null, allSessions: Session[] = []): { minMtimeMs?: number; maxMtimeMs?: number } {
+  if (!sessionUuid.startsWith("codex-pending:")) return {};
+  const encodedLaunchMs = parsePendingCodexLaunchMs(sessionUuid);
+  const launchMs = encodedLaunchMs ?? session?.last_event_at;
+  if (!session) return launchMs != null ? { minMtimeMs: launchMs } : {};
+
+  if (session.last_message_preview === CODEX_PENDING_LAUNCH_PREVIEW) {
+    const newerSameCwdPending = allSessions.some((s) =>
+      s.session_uuid !== sessionUuid &&
+      s.agent === "codex" &&
+      s.session_uuid?.startsWith("codex-pending:") &&
+      s.cwd.toLowerCase() === session.cwd.toLowerCase() &&
+      s.last_event_at > session.last_event_at
+    );
+    if (newerSameCwdPending) return { minMtimeMs: Number.POSITIVE_INFINITY };
+    return launchMs != null ? { minMtimeMs: launchMs } : {};
+  }
+
+  // A dashboard /send updates last_event_at right after `codex exec` writes the
+  // rollout. Keep this card bound to rollouts near that send, not every future
+  // rollout from the same cwd.
+  return {
+    minMtimeMs: Math.max(0, session.last_event_at - 10 * 60_000),
+    maxMtimeMs: session.last_event_at + 10 * 60_000,
+  };
+}
 
 export interface ServerDeps {
   store: SessionStore;
@@ -83,14 +114,18 @@ async function writeCodexImageFiles(images: CodexImage[] | undefined): Promise<{
   return { dir, files };
 }
 
+export function buildCodexExecArgs(opts: { sessionUuid: string; cwd: string; imageFiles?: string[] }): string[] {
+  const isPending = opts.sessionUuid.startsWith("codex-pending:");
+  const imageArgs = opts.imageFiles?.flatMap((file) => ["--image", file]) ?? [];
+  return isPending
+    ? ["exec", "--skip-git-repo-check", "-C", opts.cwd, ...imageArgs, "-"]
+    : ["exec", "--skip-git-repo-check", "resume", ...imageArgs, opts.sessionUuid, "-"];
+}
+
 async function runCodexExec(opts: { sessionUuid: string; cwd: string; prompt: string; images?: CodexImage[]; signal?: AbortSignal; timeoutMs?: number }): Promise<CodexRunResult> {
   const start = Date.now();
-  const isPending = opts.sessionUuid.startsWith("codex-pending:");
   const imageFiles = await writeCodexImageFiles(opts.images);
-  const imageArgs = imageFiles?.files.flatMap((file) => ["--image", file]) ?? [];
-  const codexArgs = isPending
-    ? ["exec", "-C", opts.cwd, ...imageArgs, "-"]
-    : ["exec", "resume", ...imageArgs, opts.sessionUuid, "-"];
+  const codexArgs = buildCodexExecArgs({ sessionUuid: opts.sessionUuid, cwd: opts.cwd, imageFiles: imageFiles?.files });
   return new Promise((resolve, reject) => {
     let settled = false;
     const child = spawn("cmd.exe", ["/d", "/s", "/c", "codex", ...codexArgs], {
@@ -131,7 +166,22 @@ async function runCodexExec(opts: { sessionUuid: string; cwd: string; prompt: st
     child.on("close", (code) => {
       opts.signal?.removeEventListener("abort", onAbort);
       if (code === 0) {
-        finish(() => resolve({ reply: stdout.trim() || stderr.trim(), durationMs: Date.now() - start }));
+        finish(() => {
+          void (async () => {
+            const transcriptPath = await findLatestCodexRolloutByCwd(
+              path.join(os.homedir(), ".codex", "sessions"),
+              opts.cwd,
+              { minMtimeMs: Math.max(0, start - 5_000) },
+            );
+            const meta = transcriptPath ? await readCodexSessionMeta(transcriptPath) : null;
+            resolve({
+              reply: stdout.trim() || stderr.trim(),
+              durationMs: Date.now() - start,
+              sessionUuid: meta?.id,
+              transcriptPath: transcriptPath ?? undefined,
+            });
+          })().catch(() => resolve({ reply: stdout.trim() || stderr.trim(), durationMs: Date.now() - start }));
+        });
       } else {
         finish(() => reject(new Error(`codex exec exited ${code}: ${(stderr || stdout).trim()}`)));
       }
@@ -168,6 +218,8 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   }));
   const codexRunner = deps.codexRunner ?? runCodexExec;
   const activeCodexExecs = new Map<string, AbortController>();
+  const codexSessionAliases = new Map<string, string>();
+  const canonicalSessionUuid = (sessionUuid: string) => codexSessionAliases.get(sessionUuid) ?? sessionUuid;
   // 20mb to accommodate pasted images (base64) on /send. Hook payloads are tiny.
   app.use(express.json({ limit: "20mb" }));
 
@@ -484,7 +536,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
     const previews: SessionPreview[] = [];
     await Promise.all(sessions.map(async (s) => {
       if (!s.session_uuid) return;
-      const resolved = await transcriptResolver.findTranscript(s.session_uuid);
+      const resolved = await transcriptResolver.findTranscript(s.session_uuid, pendingCodexMtimeWindow(s.session_uuid, s, sessions));
       if (!resolved) return;
       try {
         const p = await readTranscriptPreview(resolved.source, s.session_uuid, resolved.path);
@@ -498,7 +550,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   });
 
   app.get("/sessions/:session_uuid", (req, res) => {
-    const session = deps.store.get(decodeURIComponent(req.params.session_uuid!));
+    const session = deps.store.get(canonicalSessionUuid(decodeURIComponent(req.params.session_uuid!)));
     if (!session) { res.status(404).end(); return; }
     res.json(session);
   });
@@ -507,12 +559,13 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   // Client polls this every ~2s; if last_modified/file_size differ from cached,
   // re-fetch the full transcript. Cheap = fs.stat only.
   app.get("/sessions/:session_uuid/transcript-meta", async (req, res) => {
-    const sessionUuid = decodeURIComponent(req.params.session_uuid!);
+    const sessionUuid = canonicalSessionUuid(decodeURIComponent(req.params.session_uuid!));
     const projectsRoot = deps.transcriptRoots?.claudeProjectsRoot ?? path.join(os.homedir(), ".claude", "projects");
     const codexSessionsRoot = deps.transcriptRoots?.codexSessionsRoot ?? path.join(os.homedir(), ".codex", "sessions");
     const transcriptResolver = new SessionResolver(projectsRoot, codexSessionsRoot);
     try {
-      const resolved = await transcriptResolver.findTranscript(sessionUuid);
+      const session = deps.store.get(sessionUuid);
+      const resolved = await transcriptResolver.findTranscript(sessionUuid, pendingCodexMtimeWindow(sessionUuid, session, deps.store.list()));
       if (resolved) {
         const stat = await fs.stat(resolved.path);
         res.json({ session_uuid: sessionUuid, file_size: stat.size, last_modified: stat.mtime.toISOString() });
@@ -520,7 +573,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       }
       // Same pending-session courtesy as the full /transcript endpoint:
       // freshly-spawned wrap CLI may not have a .jsonl yet.
-      if (deps.store.get(sessionUuid)) {
+      if (session) {
         res.json({ session_uuid: sessionUuid, file_size: 0, last_modified: null, pending: true });
         return;
       }
@@ -531,18 +584,19 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   });
 
   app.get("/sessions/:session_uuid/transcript", async (req, res) => {
-    const sessionUuid = decodeURIComponent(req.params.session_uuid!);
+    const sessionUuid = canonicalSessionUuid(decodeURIComponent(req.params.session_uuid!));
     const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "20"), 10) || 20, 1), 10000);
     const projectsRoot = deps.transcriptRoots?.claudeProjectsRoot ?? path.join(os.homedir(), ".claude", "projects");
     const codexSessionsRoot = deps.transcriptRoots?.codexSessionsRoot ?? path.join(os.homedir(), ".codex", "sessions");
     const transcriptResolver = new SessionResolver(projectsRoot, codexSessionsRoot);
-    const resolved = await transcriptResolver.findTranscript(sessionUuid);
+    const session = deps.store.get(sessionUuid);
+    const resolved = await transcriptResolver.findTranscript(sessionUuid, pendingCodexMtimeWindow(sessionUuid, session, deps.store.list()));
     if (!resolved) {
       // Session may have been just spawned — wrap CLI registered with daemon
       // but Claude SDK hasn't written the .jsonl yet. If it's a known session
       // in our store, return an empty pending transcript instead of 404 so
       // the dashboard can show "waiting for first message" cleanly.
-      if (deps.store.get(sessionUuid)) {
+      if (session) {
         res.json({
           session_uuid: sessionUuid,
           transcript_path: null,
@@ -592,8 +646,9 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
   // a cwd-only request still works: we pick the most recently active session in that cwd.
   function resolveSession(body: any): { session: Session | null; key: string; via: "session_uuid" | "cwd" | null } {
     if (typeof body?.session_uuid === "string" && body.session_uuid) {
-      const s = deps.store.get(body.session_uuid);
-      return { session: s ?? null, key: body.session_uuid, via: "session_uuid" };
+      const alias = codexSessionAliases.get(body.session_uuid);
+      const s = deps.store.get(body.session_uuid) ?? (alias ? deps.store.get(alias) : undefined);
+      return { session: s ?? null, key: alias ?? body.session_uuid, via: "session_uuid" };
     }
     if (typeof body?.cwd === "string" && body.cwd) {
       const cwd = normalizeCwd(body.cwd);
@@ -770,7 +825,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
       if (managedWrap) wrapProc.recordSpawn({ sessionUuid, cwd });
       if (!managedWrap && agent === "codex" && !sessionUuid) {
         const cwdNorm = normalizeCwd(cwd);
-        const pendingUuid = pendingCodexSessionUuid(cwdNorm, randomUUID());
+        const pendingUuid = pendingCodexSessionUuid(cwdNorm, `${Date.now()}-${randomUUID()}`);
         spawnedSessionUuid = pendingUuid;
         deps.store.upsert({
           session_uuid: pendingUuid,
@@ -779,7 +834,7 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
           project_name: path.basename(cwdNorm.replace(/\\/g, "/")),
           status: "active",
           last_event_at: Date.now(),
-          last_message_preview: "Codex CLI launched - waiting for first turn",
+          last_message_preview: CODEX_PENDING_LAUNCH_PREVIEW,
           tokens_in: 0,
           tokens_out: 0,
           vscode_pid: null,
@@ -943,18 +998,30 @@ export function createApp(deps: ServerDeps): { app: Express; server: http.Server
           images,
           signal: controller.signal,
         });
-        deps.perfTracker?.recordCompletedTurn(session.session_uuid, start, result.reply);
-        deps.store.upsert({
+        const originalSessionUuid = session.session_uuid;
+        const actualSessionUuid =
+          originalSessionUuid.startsWith("codex-pending:") && result.sessionUuid
+            ? result.sessionUuid
+            : originalSessionUuid;
+        const nextSession: Session = {
           ...session,
+          session_uuid: actualSessionUuid,
           status: "active",
           last_event_at: Date.now(),
           last_message_preview: (result.reply || (hasPrompt ? promptText : `[image x ${images?.length ?? 0}]`)).slice(0, 240),
-        });
-        deps.log?.info({ route: "/send", mode: "codex-exec", session_uuid: session.session_uuid, cwd: session.cwd, durationMs: result.durationMs, promptLength: prompt?.length ?? 0, imageCount: images?.length ?? 0 }, "codex exec OK");
+        };
+        if (actualSessionUuid !== originalSessionUuid) {
+          codexSessionAliases.set(originalSessionUuid, actualSessionUuid);
+          deps.store.remove(originalSessionUuid);
+        }
+        deps.perfTracker?.recordCompletedTurn(actualSessionUuid, start, result.reply);
+        deps.store.upsert(nextSession);
+        deps.log?.info({ route: "/send", mode: "codex-exec", session_uuid: actualSessionUuid, requested_session_uuid: originalSessionUuid, cwd: session.cwd, durationMs: result.durationMs, promptLength: prompt?.length ?? 0, imageCount: images?.length ?? 0 }, "codex exec OK");
         res.status(200).json({
           ok: true,
           mode: "codex-exec",
-          session_uuid: session.session_uuid,
+          session_uuid: actualSessionUuid,
+          requested_session_uuid: originalSessionUuid,
           cwd: session.cwd,
           project: session.project_name,
           reply: result.reply,

@@ -1133,7 +1133,7 @@ function ToolResultBox({ turn }: { turn: TranscriptTurn }) {
   );
 }
 
-function TurnView({ turn, agent = "claude" }: { turn: TranscriptTurn; agent?: AgentId }) {
+function TurnView({ turn, agent = "claude", durationMs }: { turn: TranscriptTurn; agent?: AgentId; durationMs?: number }) {
   const isUser = turn.role === "user" && !turn.tool_result;
   const isSystem = turn.role === "system";
   const isTool = !!(turn.tool_use || turn.tool_result);
@@ -1177,7 +1177,12 @@ function TurnView({ turn, agent = "claude" }: { turn: TranscriptTurn; agent?: Ag
             ? null
             : isStreaming
               ? <span style={{ color: "var(--pass)", fontSize: 10 }}>streaming…</span>
-              : <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>{fmtDateTime(turn.ts)}</span>}
+              : (
+                <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>
+                  {fmtDateTime(turn.ts)}
+                  {agent === "codex" && durationMs != null ? ` · ${durationMs} ms` : ""}
+                </span>
+              )}
           {turn.tool_use && (
             <span style={{ color: "var(--fg-subtle)", fontSize: 10 }}>· 🔧 {turn.tool_use.name}</span>
           )}
@@ -1237,7 +1242,7 @@ function TurnView({ turn, agent = "claude" }: { turn: TranscriptTurn; agent?: Ag
 // A turn that has BOTH text and tool_use shows the text on the left and the tool box on the right.
 // Auto follow-tail: each column auto-scrolls to bottom on new content unless the user has
 // manually scrolled up. Scrolling back to bottom re-engages follow.
-function SingleColumnTranscript({ turns, agent = "claude" }: { turns: TranscriptTurn[]; agent?: AgentId }) {
+function SingleColumnTranscript({ turns, agent = "claude", assistantDurationMs }: { turns: TranscriptTurn[]; agent?: AgentId; assistantDurationMs?: number }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // ref (not state) so toggling doesn't re-render; only the scroll effect reads it.
   const sticky = useRef(true);
@@ -1267,6 +1272,15 @@ function SingleColumnTranscript({ turns, agent = "claude" }: { turns: Transcript
   if (turns.length === 0) {
     return <div style={{ padding: "12px 14px", color: "var(--fg-subtle)", fontSize: 12 }}>{t("transcript.empty")}</div>;
   }
+  const durationTurnIndex = assistantDurationMs != null
+    ? (() => {
+        for (let i = turns.length - 1; i >= 0; i--) {
+          const tn = turns[i]!;
+          if (tn.role === "assistant" && !tn.tool_use && !tn.tool_result) return i;
+        }
+        return -1;
+      })()
+    : -1;
   return (
     // overscrollBehavior:contain — when this scroller hits its top/bottom on
     // iOS, the touchmove momentum stops here instead of chaining up to the
@@ -1275,7 +1289,14 @@ function SingleColumnTranscript({ turns, agent = "claude" }: { turns: Transcript
       <div style={{ position: "sticky", top: 0, zIndex: 1, padding: "6px 14px", fontSize: 10, fontWeight: 600, color: "var(--fg-subtle)", textTransform: "uppercase", letterSpacing: "0.08em", background: "var(--sl2)", borderBottom: "1px solid var(--border)" }}>
         {t("transcript.conversation")} · {turns.length}
       </div>
-      {turns.map((turn, i) => <TurnView key={i} turn={turn} agent={agent} />)}
+      {turns.map((turn, i) => (
+        <TurnView
+          key={i}
+          turn={turn}
+          agent={agent}
+          durationMs={i === durationTurnIndex ? assistantDurationMs : undefined}
+        />
+      ))}
     </div>
   );
 }
@@ -1290,7 +1311,7 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
   clientType: ClientType;
   onSetClientType: (uuid: string, type: ClientType) => void;
   onFocus: (uuid: string) => Promise<{ ok: boolean; status: number; url?: string }>;
-  onSend: (uuid: string, prompt: string, submit: boolean, images?: AttachedImage[]) => Promise<{ ok: boolean; status: number; url?: string; reply?: string; duration_ms?: number; diag?: string; error?: string }>;
+  onSend: (uuid: string, prompt: string, submit: boolean, images?: AttachedImage[]) => Promise<{ ok: boolean; status: number; url?: string; reply?: string; duration_ms?: number; diag?: string; error?: string; session_uuid?: string }>;
   sendKey: SendKey;
   modalMode?: boolean;
   onAfterSend?: () => void;
@@ -1473,15 +1494,13 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
           title={isCli ? t("focus.cliNotSupported") : t("focus.bringVSCode")}
           disabled={isCli}
         >{s.project_name}</button>
-        {s.wrapped ? (
-          <span class="client-badge client-badge-wrap client-badge-md" title={t("focus.wrappedTitle")}>{t("focus.wrappedBadge")}</span>
-        ) : (
-          <ClientTypeBadge
-            type={clientType}
-            onToggle={() => onSetClientType(sessionUuid, isCli ? "vscode" : "cli")}
-            size="md"
-          />
-        )}
+        <SessionClientBadge
+          agent={agent}
+          wrapped={!!s.wrapped}
+          clientType={clientType}
+          onToggle={() => onSetClientType(sessionUuid, isCli ? "vscode" : "cli")}
+          size="md"
+        />
         {/* Desktop (non-modal): keep the original chips in the header.
             Phone (modalMode): omit them — they move to the composer status line. */}
         {!modalMode && (
@@ -1672,7 +1691,11 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
               return (
                 <div style={fixedHeight ? { flex: 1, minHeight: 0, display: "flex" } : { maxHeight: 480, overflow: "hidden", display: "flex" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <SingleColumnTranscript turns={renderTurns} agent={agent} />
+                    <SingleColumnTranscript
+                      turns={renderTurns}
+                      agent={agent}
+                      assistantDurationMs={agent === "codex" && sendResult?.ok ? sendResult.durationMs : undefined}
+                    />
                   </div>
                 </div>
               );
@@ -1860,10 +1883,9 @@ function Card({ s, defaultExpanded, clientType, onSetClientType, onFocus, onSend
             </>
           )}
 
-          {/* Send result. Claude wrapper success streams into the transcript,
-              but Codex exec can return before a transcript exists, so surface
-              that reply directly. */}
-          {sendResult && (!sendResult.ok || (agent === "codex" && sendResult.reply)) && (
+          {/* Send result: successful replies live in the transcript. Keep only
+              failures here so the composer doesn't duplicate the conversation. */}
+          {sendResult && !sendResult.ok && (
             <div style={{ marginTop: 4 }}>
               <div style={{ fontSize: 12, color: sendResult.ok ? "var(--pass)" : "var(--accent)" }}>
                 {sendResult.ok ? sendResult.label : t("send.sendFailed", { label: sendResult.label })}
@@ -2054,6 +2076,39 @@ function ClientTypeBadge({ type, onToggle, size = "sm" }: {
       title={title}
     >{label}</button>
   );
+}
+
+function CodexClientBadge({ size = "sm" }: { size?: "sm" | "md" }) {
+  return (
+    <span
+      class={"client-badge client-badge-codex-client" + (size === "md" ? " client-badge-md" : "")}
+      title={t("session.codexClientTooltip")}
+    >
+      {t("session.codexClientBadge")}
+    </span>
+  );
+}
+
+function SessionClientBadge({ agent, wrapped, clientType, onToggle, size = "sm", wrappedTitleKey = "focus.wrappedTitle" }: {
+  agent: AgentId;
+  wrapped: boolean;
+  clientType: ClientType;
+  onToggle: () => void;
+  size?: "sm" | "md";
+  wrappedTitleKey?: string;
+}) {
+  if (wrapped) {
+    return (
+      <span
+        class={"client-badge client-badge-wrap" + (size === "md" ? " client-badge-md" : "")}
+        title={t(wrappedTitleKey)}
+      >
+        {t("focus.wrappedBadge")}
+      </span>
+    );
+  }
+  if (agent === "codex") return <CodexClientBadge size={size} />;
+  return <ClientTypeBadge type={clientType} onToggle={onToggle} size={size} />;
 }
 
 // ── Permission mode badge (only for wrapped CLI sessions) ─────────────────
@@ -2896,20 +2951,21 @@ function WrapConfirmDialog({ sessionByUuid }: { sessionByUuid: Map<string, Sessi
 // the `sessions` prop). 30s safety timer also dismisses + shows an error
 // hint in case the wt window crashed silently and no wrap ever connects.
 function SpawnPendingBanner({ sessions }: { sessions: Session[] }) {
-  interface Pending { cwd: string; agent: AgentId; startedAt: number; timedOut: boolean }
+  interface Pending { cwd: string; agent: AgentId; sessionUuid?: string; startedAt: number; timedOut: boolean }
   const [pendings, setPendings] = useState<Pending[]>([]);
 
   // Listen for spawn-pending events fired by <NewCliButton> on /wrap/start success.
   useEffect(() => {
     function onSpawn(e: Event) {
-      const ce = e as CustomEvent<{ cwd: string; agent?: AgentId }>;
+      const ce = e as CustomEvent<{ cwd: string; agent?: AgentId; session_uuid?: string }>;
       const cwd = ce.detail?.cwd;
       const agent = ce.detail?.agent === "codex" ? "codex" : "claude";
+      const sessionUuid = typeof ce.detail?.session_uuid === "string" ? ce.detail.session_uuid : undefined;
       if (!cwd) return;
       setPendings((prev) => {
         // De-dupe: replace existing entry for same cwd (re-clicks reset timer).
         const without = prev.filter((p) => p.cwd.toLowerCase() !== cwd.toLowerCase());
-        return [...without, { cwd, agent, startedAt: Date.now(), timedOut: false }];
+        return [...without, { cwd, agent, sessionUuid, startedAt: Date.now(), timedOut: false }];
       });
     }
     window.addEventListener("miki-moni:spawn-pending", onSpawn);
@@ -2929,16 +2985,15 @@ function SpawnPendingBanner({ sessions }: { sessions: Session[] }) {
     return () => window.clearInterval(id);
   }, [pendings.length]);
 
-  // Auto-dismiss when a real session for that cwd has shown up post-event.
-  // We treat "appeared" as: any session row whose cwd matches AND
-  // last_event_at >= the spawn's startedAt (the session row could have
-  // pre-existed from VSCode-panel hooks). The `sessions` prop refreshes
-  // every 2s via the App's polling tick, so this resolves naturally.
+  // Auto-dismiss when the spawned session appears. Prefer the server-returned
+  // session_uuid because /wrap/start creates the row before the browser records
+  // startedAt; pure timestamp matching can be a few ms too strict.
   useEffect(() => {
     if (pendings.length === 0) return;
     setPendings((prev) => prev.filter((p) => {
+      if (p.sessionUuid && sessions.some((s) => s.session_uuid === p.sessionUuid)) return false;
       const match = sessions.find(
-        (s) => s.cwd.toLowerCase() === p.cwd.toLowerCase() && s.last_event_at >= p.startedAt,
+        (s) => agentOf(s) === p.agent && s.cwd.toLowerCase() === p.cwd.toLowerCase() && s.last_event_at >= p.startedAt - 5_000,
       );
       return !match;
     }));
@@ -3064,8 +3119,8 @@ function NewCliButton({ recentCwds }: { recentCwds: string[] }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ cwd: trimmed, agent }),
       });
+      const body = await r.json().catch(() => ({}));
       if (!r.ok) {
-        const body = await r.json().catch(() => ({}));
         setErr(body?.error ?? `HTTP ${r.status}`);
       } else {
         setOk(true);
@@ -3075,7 +3130,7 @@ function NewCliButton({ recentCwds }: { recentCwds: string[] }) {
         // the grid. Without this the user has zero visual feedback for the
         // 3–5s between click and card-appearing.
         window.dispatchEvent(new CustomEvent("miki-moni:spawn-pending", {
-          detail: { cwd: trimmed, agent },
+          detail: { cwd: trimmed, agent, session_uuid: body?.session_uuid },
         }));
         // Auto-close after a beat so user sees the success indicator briefly.
         window.setTimeout(() => { setOpen(false); setCwd(""); }, 800);
@@ -3419,15 +3474,13 @@ function Cell({ s, preview, activity, streamingText, userOverlayText, userOverla
       <div class="cell-cwd" style={{ color: c.label, display: "flex", alignItems: "center", gap: 6 }} title={s.cwd}>
         <strong style={{ fontWeight: 600 }}>{s.project_name}</strong>
         <AgentBadge agent={agent} />
-        {s.wrapped ? (
-          // Wrapped session: it's inherently CLI + we own it. One badge says it all.
-          <span class="client-badge client-badge-wrap" title={t("session.wrappedDetailed")}>{t("focus.wrappedBadge")}</span>
-        ) : (
-          <ClientTypeBadge
-            type={clientType}
-            onToggle={() => onSetClientType(s.session_uuid ?? "", clientType === "cli" ? "vscode" : "cli")}
-          />
-        )}
+        <SessionClientBadge
+          agent={agent}
+          wrapped={!!s.wrapped}
+          clientType={clientType}
+          onToggle={() => onSetClientType(s.session_uuid ?? "", clientType === "cli" ? "vscode" : "cli")}
+          wrappedTitleKey="session.wrappedDetailed"
+        />
         {/* Last TOOL inline next to the VSCode/CLI badge — was a separate
          * preview row before, which pushed assistant/user content down and
          * wasted vertical space. Truncates via cell-cwd's ellipsis. */}
@@ -3693,14 +3746,12 @@ function Popover({ s, x, y, clientType, onSetClientType, onClose, onSend, sendKe
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
           <span class={STATUS_DOT[s.status]} />
           <strong style={{ fontSize: 13 }}>{s.project_name}</strong>
-          {s.wrapped ? (
-            <span class="client-badge client-badge-wrap" title={t("focus.wrappedTitle")}>{t("focus.wrappedBadge")}</span>
-          ) : (
-            <ClientTypeBadge
-              type={clientType}
-              onToggle={() => onSetClientType(s.session_uuid ?? "", isCli ? "vscode" : "cli")}
-            />
-          )}
+          <SessionClientBadge
+            agent={agent}
+            wrapped={!!s.wrapped}
+            clientType={clientType}
+            onToggle={() => onSetClientType(s.session_uuid ?? "", isCli ? "vscode" : "cli")}
+          />
           <button class="btn-ghost" style={{ marginLeft: "auto", padding: "2px 8px" }} onClick={onClose} title={t("session.closeKey")}>×</button>
         </div>
         <div style={{ fontSize: 10, color: "var(--fg-subtle)", fontFamily: "ui-monospace, monospace", marginBottom: 8, wordBreak: "break-all" }}>
@@ -4955,9 +5006,22 @@ function App() {
       const r = await apiFetch("/send", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_uuid: uuid, prompt, submit, images: imgPayload }) });
       let body: any = null; try { body = await r.json(); } catch {}
       addLog(r.ok ? "info" : "error", `/send ${r.status}`, { mode: body?.mode, reply_preview: body?.reply?.slice(0, 60), duration_ms: body?.duration_ms, diag: body?.diag });
+      if (r.ok && typeof body?.session_uuid === "string" && body.session_uuid && body.session_uuid !== uuid) {
+        const nextUuid = body.session_uuid;
+        setUserOverlay((prev) => {
+          const current = prev[uuid];
+          if (!current) return prev;
+          const next: Record<string, { text: string; ts: number }> = { ...prev, [nextUuid]: current };
+          delete next[uuid];
+          return next;
+        });
+        setModalFor((prev) => prev?.session_uuid === uuid ? { ...prev, session_uuid: nextUuid } : prev);
+        modalSessionUuidRef.current = nextUuid;
+        void loadTranscript(nextUuid, effectiveLimit(transcriptLimitRef.current, showToolsRef.current));
+      }
       // refresh previews so the cell shows the new reply
       if (r.ok) scheduleRefresh();
-      return { ok: r.ok, status: r.status, url: body?.url, reply: body?.reply, duration_ms: body?.duration_ms, diag: body?.diag, error: body?.error };
+      return { ok: r.ok, status: r.status, url: body?.url, reply: body?.reply, duration_ms: body?.duration_ms, diag: body?.diag, error: body?.error, session_uuid: body?.session_uuid };
     } catch (e) { addLog("error", "/send throw", { error: String(e) }); return { ok: false, status: 0 }; }
   }
 
